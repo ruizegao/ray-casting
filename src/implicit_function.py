@@ -1,11 +1,8 @@
 from functools import partial
 
-import numpy as np
 
 import jax
-import jax.numpy as jnp
-
-import utils
+import torch
 
 # "enums" integer codes denoting the sign of the implicit function with a region
 SIGN_UNKNOWN = 0    # could be anything
@@ -25,6 +22,7 @@ class ImplicitFunction:
     def __call__(self, params, x):
         raise RuntimeError("ImplicitFunction does not implement a __call__() operator. Subclasses must provide an implementation if is to be used.")
 
+
     def classify_box(self, params, box_lower, box_upper, offset=0.):
         '''
         Determine the sign of the function within a box (reports one of SIGN_UNKNOWN, etc)
@@ -33,7 +31,7 @@ class ImplicitFunction:
         # delegate to the more general version
         center = 0.5 * (box_lower + box_upper)
         pos_vec = box_upper - center
-        vecs = jnp.diag(pos_vec)
+        vecs = torch.diag(pos_vec)
         return self.classify_general_box(params, center, vecs, offset=offset)
 
     # General version for non-axis-aligned boxes

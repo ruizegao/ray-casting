@@ -3,9 +3,9 @@ from functools import partial
 
 import numpy as np
 import jax
-import jax.numpy as jnp
 from skimage import measure
-
+from functorch import vmap
+import torch
 import argparse
 
 import polyscope as ps
@@ -104,16 +104,19 @@ def main():
 
         # Construct the regular grid
         grid_res = 128
-        ax_coords = jnp.linspace(-1., 1., grid_res)
-        grid_x, grid_y, grid_z = jnp.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
-        grid = jnp.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), axis=-1)
+        ax_coords = torch.linspace(-1., 1., grid_res)
+        grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
+        # grid_x = grid_x.T
+        # grid_y = grid_y.T
+        # grid_z = grid_z.T
+        grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
         delta = (grid[1,2] - grid[0,2]).item()
-        sdf_vals = jax.vmap(partial(implicit_func, params))(grid)
+        sdf_vals = vmap(partial(implicit_func, params))(grid)
         sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
         bbox_min = grid[0,:]
-        verts, faces, normals, values = measure.marching_cubes(np.array(sdf_vals), level=0., spacing=(delta, delta, delta))
-        verts = verts + bbox_min[None,:]
-        ps_surf = ps.register_surface_mesh(name, verts, faces) 
+        verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
+        verts = verts + bbox_min[None,:].cpu().numpy()
+        ps_surf = ps.register_surface_mesh(name, verts, faces)
         return ps_surf
 
     print("Registering grids")
@@ -129,15 +132,15 @@ def main():
         func_tuple = (implicit_funcA, implicit_funcB)
         params_tuple = (paramsA, paramsB)
         data_bound = opts['data_bound']
-        lower = jnp.array((-data_bound, -data_bound, -data_bound))
-        upper = jnp.array((data_bound, data_bound, data_bound))
+        lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+        upper = torch.tensor((data_bound, data_bound, data_bound))
         eps = opts['intersection_eps']
 
         with Timer("intersection"):
             found_int, found_int_A, found_int_B, found_int_loc = kd_tree.find_any_intersection(func_tuple, params_tuple, lower, upper, eps)
 
         if found_int:
-            pos = np.array(found_int_loc)[None,:]
+            pos = torch.tensor(found_int_loc)[None,:]
             ps_int_cloud = ps.register_point_cloud("intersection location", pos, enabled=True, radius=0.01, color=(1., 0., 0.))
         else:
             ps.remove_point_cloud("intersection location", error_if_absent=False)
@@ -148,8 +151,8 @@ def main():
         func_tuple = (implicit_funcA, implicit_funcB)
         params_tuple = (paramsA, paramsB)
         data_bound = opts['data_bound']
-        lower = jnp.array((-data_bound, -data_bound, -data_bound))
-        upper = jnp.array((data_bound, data_bound, data_bound))
+        lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+        upper = torch.tensor((data_bound, data_bound, data_bound))
         eps = opts['intersection_eps']
 
         found_int, found_int_A, found_int_B, found_int_loc, nodes_lower, nodes_upper, nodes_type = kd_tree.find_any_intersection(func_tuple, params_tuple, lower, upper, eps, viz_nodes=True)
@@ -157,8 +160,8 @@ def main():
         
         verts, inds = kd_tree.generate_tree_viz_nodes_simple(nodes_lower, nodes_upper)
         
-        ps_vol_nodes = ps.register_volume_mesh("search tree nodes", np.array(verts), hexes=np.array(inds))
-        ps_vol_nodes.add_scalar_quantity("type", np.array(nodes_type), defined_on='cells')
+        ps_vol_nodes = ps.register_volume_mesh("search tree nodes", torch.tensor(verts), hexes=torch.tensor(inds))
+        ps_vol_nodes.add_scalar_quantity("type", torch.tensor(nodes_type), defined_on='cells')
         ps_vol_nodes.set_enabled(True)
 
 
@@ -174,7 +177,7 @@ def main():
 
             # TODO this absurdity makes it the transform behave as expected.
             # I think there just miiiiight be a bug in the transforms Polyscope is returning
-            R_inv = jnp.linalg.inv(R)
+            R_inv = np.linalg.inv(R)
             t = R_inv @ R_inv @ T[:3,3]
 
             params["0000.spatial_transformation.R"] = R_inv * scale

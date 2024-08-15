@@ -1,12 +1,12 @@
 import jax
-import jax.numpy as jnp
-
 from functools import partial
 import math
-
+from functorch import vmap
 import numpy as np
-
+import torch
 import utils
+
+# torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 # The raw table of all 256 cases (from http://www.paulbourke.net/geometry/polygonise/)
 MC_TRI_TABLE_RAW = [
@@ -267,7 +267,7 @@ MC_TRI_TABLE_RAW = [
             [0, 3, 8, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1],
             [-1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1]]
 
-MC_TRI_TABLE_NP = np.array(MC_TRI_TABLE_RAW)
+MC_TRI_TABLE_NP = torch.tensor(MC_TRI_TABLE_RAW)
 
 
 # an enumeration of the edges corresponding to the table above
@@ -286,7 +286,7 @@ EDGE_VERTS_RAW = [
         [3 , 7], # 11
     ]
 
-EDGE_VERTS_NP = np.array(EDGE_VERTS_RAW)
+EDGE_VERTS_NP = torch.tensor(EDGE_VERTS_RAW)
 
 
 # which vert is which, matches the indexing above
@@ -301,69 +301,68 @@ VERT_LOGICAL_COORDS_RAW = [
         [0,0,1], #7 (1)
     ]
 
-VERT_LOGICAL_COORDS_NP = np.array(VERT_LOGICAL_COORDS_RAW, dtype=bool)
+VERT_LOGICAL_COORDS_NP = torch.tensor(VERT_LOGICAL_COORDS_RAW, dtype=torch.bool)
 
 def get_mc_data():
-    tri_table = jnp.array(MC_TRI_TABLE_NP)
-    edge_verts = jnp.array(EDGE_VERTS_NP)
-    vert_logical_coords = jnp.array(VERT_LOGICAL_COORDS_NP)
+    tri_table = MC_TRI_TABLE_NP.clone().detach()
+    edge_verts = torch.tensor(EDGE_VERTS_NP)
+    vert_logical_coords = torch.tensor(VERT_LOGICAL_COORDS_NP)
     return tri_table, edge_verts, vert_logical_coords
 
 
 # Returns a list of triangles for this cells, as a [5,3,3] array of vertex positions, and a [5,] mask of which triangles are valid.
-@partial(jax.jit, static_argnames=("func"))
 def extract_triangles_from_cell(func, params, mc_data, cell_lower, cell_upper, vert_vals=None):
 
     tri_table, edge_verts, vert_logical_coords = mc_data
 
     # expand out positions for the 8 cube vertices
-    vert_pos = jnp.where(vert_logical_coords, cell_upper[None,:], cell_lower[None,:])
+    vert_pos = torch.where(vert_logical_coords, cell_upper[None,:], cell_lower[None,:])
 
     # evaluate the function at each of the vertex locations
     # (or use precomputed values if we have them)
     if vert_vals is None: 
-        vert_vals = jax.vmap(partial(func,params))(vert_pos)
+        vert_vals = vmap(partial(func,params))(vert_pos)
 
     # compute the crossing locations on each edge, and whether there is a crossing there
     def check_edge(inds):
         # gather values
-        indA = inds[0]
-        indB = inds[1]
+        indA = inds[0].unsqueeze(-1)
+        indB = inds[1].unsqueeze(-1)
         valA = vert_vals[indA]
         valB = vert_vals[indB]
         posA = vert_pos[indA,:]
         posB = vert_pos[indB,:]
 
         # compute the crossing
-        t_cross = -valA / (valB - valA)
-        t_cross = jnp.nan_to_num(t_cross)
-        t_cross = jnp.clip(t_cross, a_min=0, a_max=1)
+        t_cross = - valA / (valB - valA)
+        # t_cross = - vert_vals[indA] / (vert_vals[indB] - vert_vals[indA])
+        t_cross = torch.nan_to_num(t_cross)
+        t_cross = torch.clip(t_cross, min=0, max=1)
         cross_loc = (1. - t_cross) * posA + t_cross * posB
-        has_cross = jnp.sign(valA) != jnp.sign(valB)
+        has_cross = torch.sign(valA) != torch.sign(valB)
         return cross_loc, has_cross
 
     # compute all crossing values
-    edge_cross_loc, edge_has_cross = jax.vmap(check_edge)(edge_verts)
+    edge_cross_loc, edge_has_cross = vmap(check_edge)(edge_verts)
    
     # enumerate which case we are in
-    case_bits = jnp.power(2, jnp.arange(8))
-    case_id = jnp.sum((vert_vals < 0) * case_bits)
+    case_bits = torch.pow(2, torch.arange(8))
+    case_id = torch.sum((vert_vals < 0) * case_bits).unsqueeze(-1)
     
     # get the triangles for this case
-    case_tris = jnp.reshape(tri_table[case_id,:15], (-1,3))
+    case_tris = torch.reshape(tri_table[case_id,:15], (-1,3))
 
     # for each triangle, gather the vertex positions
     def get_tri_pos(tri):
         is_valid = tri[0] != -1
-        ind0 = jnp.clip(tri[0], a_min=0)
-        ind1 = jnp.clip(tri[1], a_min=0)
-        ind2 = jnp.clip(tri[2], a_min=0)
-        return jnp.stack((edge_cross_loc[ind0,:], edge_cross_loc[ind1,:], edge_cross_loc[ind2,:]), axis=0), is_valid
-    all_tri_pos, tri_is_valid = jax.vmap(get_tri_pos)(case_tris)
+        ind0 = torch.clip(tri[0].unsqueeze(-1), min=0)
+        ind1 = torch.clip(tri[1].unsqueeze(-1), min=0)
+        ind2 = torch.clip(tri[2].unsqueeze(-1), min=0)
+        return torch.stack((edge_cross_loc[ind0,:], edge_cross_loc[ind1,:], edge_cross_loc[ind2,:]), dim=0), is_valid
+    all_tri_pos, tri_is_valid = vmap(get_tri_pos)(case_tris)
 
     return all_tri_pos, tri_is_valid
 
-@partial(jax.jit, static_argnames=("func", "n_sub_depth", "batch_eval_size"))
 def extract_triangles_from_subcells(func, params, mc_data, n_sub_depth, cell_lower, cell_upper, batch_eval_size=4096):
     
     tri_table, edge_verts, vert_logical_coords = mc_data
@@ -371,36 +370,39 @@ def extract_triangles_from_subcells(func, params, mc_data, n_sub_depth, cell_low
     # construct the grid of subcells
     side_n_sub_cells = 2**n_sub_depth
     side_n_pts = (1+side_n_sub_cells)
-    side_coords0 = jnp.linspace(cell_lower[0], cell_upper[0], num=side_n_pts)
-    side_coords1 = jnp.linspace(cell_lower[1], cell_upper[1], num=side_n_pts)
-    side_coords2 = jnp.linspace(cell_lower[2], cell_upper[2], num=side_n_pts)
-    grid_coords0, grid_coords1, grid_coords2 = jnp.meshgrid(side_coords0, side_coords1, side_coords2, indexing='ij')
-    grid_coords = jnp.stack((grid_coords0, grid_coords1, grid_coords2), axis=-1)
+
+    def linspace(start, end, steps):
+        return start + torch.arange(0, steps) * (end - start) / (steps - 1)
+    side_coords0 = linspace(cell_lower[0], cell_upper[0], steps=side_n_pts)
+    side_coords1 = linspace(cell_lower[1], cell_upper[1], steps=side_n_pts)
+    side_coords2 = linspace(cell_lower[2], cell_upper[2], steps=side_n_pts)
+    grid_coords0, grid_coords1, grid_coords2 = torch.meshgrid(side_coords0, side_coords1, side_coords2, indexing='ij')
+    grid_coords = torch.stack((grid_coords0, grid_coords1, grid_coords2), dim=-1)
 
     # evaluate the function 
-    flat_coords = jnp.reshape(grid_coords, (-1,3))
+    flat_coords = torch.reshape(grid_coords, (-1,3))
     if flat_coords.shape[0] > batch_eval_size:
         # for very large sets, break in to batches
         nb = flat_coords.shape[0] // batch_eval_size
         stragglers = flat_coords[nb*batch_eval_size:,:]
-        batched_flat_coords = jnp.reshape(flat_coords[:nb*batch_eval_size,:], (-1, batch_eval_size, 3))
-        vfunc = jax.vmap(partial(func, params))
-        batched_vals = jax.lax.map(vfunc, batched_flat_coords)
-        batched_vals = jnp.reshape(batched_vals, (-1,))
+        batched_flat_coords = torch.reshape(flat_coords[:nb*batch_eval_size,:], (-1, batch_eval_size, 3))
+        vfunc = vmap(partial(func, params))
+        batched_vals = vmap(vfunc, batched_flat_coords)
+        batched_vals = torch.reshape(batched_vals, (-1,))
         
         # evaluate any stragglers in the very last batch
-        straggler_vals = jax.vmap(partial(func,params))(stragglers)
+        straggler_vals = vmap(partial(func,params))(stragglers)
 
-        flat_vals = jnp.concatenate((batched_vals, straggler_vals))
+        flat_vals = torch.concatenate((batched_vals, straggler_vals))
     else:
-        flat_vals = jax.vmap(partial(func,params))(flat_coords)
-    grid_vals = jnp.reshape(flat_vals, (side_n_pts, side_n_pts, side_n_pts))
+        flat_vals = vmap(partial(func,params))(flat_coords)
+    grid_vals = torch.reshape(flat_vals, (side_n_pts, side_n_pts, side_n_pts))
 
     # logical grid of subcell inds
-    side_inds = jnp.arange(side_n_sub_cells)
-    grid_inds0, grid_inds1, grid_inds2 = jnp.meshgrid(side_inds, side_inds, side_inds, indexing='ij')
-    grid_inds = jnp.stack((grid_inds0, grid_inds1, grid_inds2), axis=-1)
-    subcell_inds = jnp.reshape(grid_inds, (-1,3))
+    side_inds = torch.arange(side_n_sub_cells)
+    grid_inds0, grid_inds1, grid_inds2 = torch.meshgrid(side_inds, side_inds, side_inds, indexing='ij')
+    grid_inds = torch.stack((grid_inds0, grid_inds1, grid_inds2), dim=-1)
+    subcell_inds = torch.reshape(grid_inds, (-1,3))
 
     # compute the extents of each cell
     subcell_delta = (cell_upper - cell_lower) / side_n_sub_cells
@@ -409,13 +411,13 @@ def extract_triangles_from_subcells(func, params, mc_data, n_sub_depth, cell_low
 
     # fetch the function values for each cell
     subcell_vert_inds = subcell_inds[:,None,:] + vert_logical_coords[None,:,:]
-    subcell_vert_vals = grid_vals.at[subcell_vert_inds[:,:,0], subcell_vert_inds[:,:,1], subcell_vert_inds[:,:,2]].get()
+    subcell_vert_vals = grid_vals[subcell_vert_inds[:,:,0], subcell_vert_inds[:,:,1], subcell_vert_inds[:,:,2]]
 
     # apply the extraction routine to each subcell
-    subcell_tri_pos, subcell_tri_is_valid = jax.vmap(partial(extract_triangles_from_cell, func, params, mc_data))(subcell_lower, subcell_upper, subcell_vert_vals)
+    subcell_tri_pos, subcell_tri_is_valid = vmap(partial(extract_triangles_from_cell, func, params, mc_data))(subcell_lower, subcell_upper, subcell_vert_vals)
 
     # combine all results
-    subcell_tri_pos = jnp.reshape(subcell_tri_pos, (-1,3,3))
-    subcell_tri_is_valid = jnp.reshape(subcell_tri_is_valid, (-1,))
+    subcell_tri_pos = torch.reshape(subcell_tri_pos, (-1,3,3))
+    subcell_tri_is_valid = torch.reshape(subcell_tri_is_valid, (-1,))
 
     return subcell_tri_pos, subcell_tri_is_valid

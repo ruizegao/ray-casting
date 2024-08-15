@@ -6,7 +6,6 @@ import argparse
 
 import numpy as np
 import jax
-import jax.numpy as jnp
 from jax.example_libraries import optimizers
 
 # Imports from this project
@@ -67,7 +66,7 @@ def main():
         raise ValueError("output file should end with .npz")
 
     # Force jax to initialize itself so errors get thrown early
-    _ = jnp.zeros(())
+    _ = np.zeros(())
    
     # Set jax things
     if args.log_compiles:
@@ -82,8 +81,8 @@ def main():
     # load the input
     print(f"Loading mesh {args.input_file}")
     V, F = igl.read_triangle_mesh(args.input_file)
-    V = jnp.array(V)
-    F = jnp.array(F)
+    V = np.array(V)
+    F = np.array(F)
     print(f"  ...done")
 
     # preprocess (center and scale)
@@ -97,14 +96,14 @@ def main():
 
     if args.fit_mode == 'occupancy':
         samp_target = (samp_SDF > 0) * 1.0
-        n_pos = jnp.sum(samp_target > 0)
+        n_pos = np.sum(samp_target > 0)
         n_neg = samp_target.shape[0] - n_pos
         w_pos = n_neg / (n_pos + n_neg)
         w_neg = n_pos / (n_pos + n_neg)
-        samp_weight = jnp.where(samp_target > 0, w_pos, w_neg)
+        samp_weight = np.where(samp_target > 0, w_pos, w_neg)
     elif args.fit_mode in ['sdf', 'tanh']:
         samp_target = samp_SDF
-        samp_weight = jnp.ones_like(samp_target)
+        samp_weight = np.ones_like(samp_target)
     else: raise ValueError("bad arg")
     print(f"  ...done")
 
@@ -129,7 +128,7 @@ def main():
 
     # test eval to ensure the function isn't broken
     print(f"Network test evaluation...")
-    implicit_func(orig_params, jnp.array((0.1, 0.2, 0.3)))
+    implicit_func(orig_params, np.array((0.1, 0.2, 0.3)))
     print(f"...done")
 
     # Create an optimizer
@@ -171,7 +170,7 @@ def main():
     def generate_batch(rngkey, samples_in, samples_out, samples_weight):
 
         # concatenate to make processing easier
-        samples = jnp.concatenate((samples_in, samples_out[:,None], samples_weight[:,None]), axis=-1)
+        samples = np.concatenate((samples_in, samples_out[:,None], samples_weight[:,None]), axis=-1)
 
         # shuffle
         samples = jax.random.permutation(rngkey, samples, axis=0)
@@ -187,9 +186,9 @@ def main():
         samples_out = samples[:,3]
         samples_weight = samples[:,4]
 
-        batch_in = jnp.reshape(samples_in, (batch_count, args.batch_size, 3))
-        batch_out = jnp.reshape(samples_out, (batch_count, args.batch_size))
-        batch_weight = jnp.reshape(samples_weight, (batch_count, args.batch_size))
+        batch_in = np.reshape(samples_in, (batch_count, args.batch_size, 3))
+        batch_out = np.reshape(samples_out, (batch_count, args.batch_size))
+        batch_weight = np.reshape(samples_weight, (batch_count, args.batch_size))
 
         return batch_in, batch_out, batch_weight, batch_count
     
@@ -204,11 +203,11 @@ def main():
                 return binary_cross_entropy_loss(pred, target)
             elif args.fit_mode == 'sdf':
                 #L1 sdf loss
-                return jnp.abs(pred - target)
+                return np.abs(pred - target)
             else: raise ValueError("bad arg")
         
         loss_terms = jax.vmap(partial(loss_one, params))(batch_coords, batch_target, batch_weight)
-        loss_sum = jnp.mean(loss_terms)
+        loss_sum = np.mean(loss_terms)
         return loss_sum
 
     def batch_count_correct(params, batch_coords, batch_target):
@@ -219,15 +218,15 @@ def main():
             pred = implicit_func(params, coords)
 
             if args.fit_mode == 'occupancy':
-                is_correct_sign = jnp.sign(pred) == jnp.sign(target - .5)
+                is_correct_sign = np.sign(pred) == np.sign(target - .5)
                 return is_correct_sign
             elif args.fit_mode in ['sdf']:
-                is_correct_sign = jnp.sign(pred) == jnp.sign(target)
+                is_correct_sign = np.sign(pred) == np.sign(target)
                 return is_correct_sign
             else: raise ValueError("bad arg")
         
         correct_sign = jax.vmap(partial(loss_one, params))(batch_coords, batch_target)
-        correct_count = jnp.sum(correct_sign)
+        correct_count = np.sum(correct_sign)
         return correct_count
 
     @jax.jit

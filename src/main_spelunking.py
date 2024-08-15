@@ -1,17 +1,16 @@
-import igl # work around some env/packaging problems by loading this first
+# import igl # work around some env/packaging problems by loading this first
 
 import sys, os, time, math
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-
+import numpy as np
 import argparse
+import torch
 import matplotlib
 import matplotlib.pyplot as plt
 import imageio
 from skimage import measure
-
+from functorch import vmap
 
 import polyscope as ps
 import polyscope.imgui as psim
@@ -34,46 +33,57 @@ import slope_interval_layers
 
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
-def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color):
-
-    root = ps.get_camera_world_position()
-    look, up, left = ps.get_camera_frame()
-    fov_deg = ps.get_field_of_view()
+def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, cast_opt_based=False):
+    root = torch.tensor([2., 0., 0.])
+    look = torch.tensor([-1., 0., 0.])
+    up = torch.tensor([0., 1., 0.])
+    left = torch.tensor([0., 0., 1.])
+    # root = torch.tensor([0., -2., 0.])
+    # left = torch.tensor([1., 0., 0.])
+    # look = torch.tensor([0., 1., 0.])
+    # up = torch.tensor([0., 0., 1.])
+    fov_deg = 60.
     res = args.res // opts['res_scale']
 
     surf_color = tuple(surf_color)
 
-    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,))
+    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,), opt_based=cast_opt_based)
+    print(depth, count, _, eval_sum)
 
     # flip Y
-    img = img[::-1,:,:]
-
+    # img = img[::-1,:,:]
+    img = torch.flip(img, [0])
+    # print(img[:3][:3][:3])
     # append an alpha channel
-    alpha_channel = (jnp.min(img,axis=-1) < 1.) * 1.
-    # alpha_channel = jnp.ones_like(img[:,:,0])
-    img_alpha = jnp.concatenate((img, alpha_channel[:,:,None]), axis=-1)
-    img_alpha = jnp.clip(img_alpha, a_min=0., a_max=1.)
-    img_alpha = np.array(img_alpha)
+    # alpha_channel = (torch.min(img,dim=-1) < 1.) * 1.
+    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
+    # print(alpha_channel[:3, :3])
+    # alpha_channel = torch.ones_like(img[:,:,0])
+    img_alpha = torch.concatenate((img, alpha_channel[:,:,None]), dim=-1)
+    img_alpha = torch.clip(img_alpha, min=0., max=1.)
     print(f"Saving image to {args.image_write_path}")
-    imageio.imwrite(args.image_write_path, img_alpha)
+    imageio.imwrite(args.image_write_path, img_alpha.cpu().detach().numpy())
 
 
 def do_sample_surface(opts, implicit_func, params, n_samples, sample_width, n_node_thresh, do_viz_tree, do_uniform_sample):
     data_bound = opts['data_bound']
-    lower = jnp.array((-data_bound, -data_bound, -data_bound))
-    upper = jnp.array((data_bound, data_bound, data_bound))
+    lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+    upper = torch.tensor((data_bound, data_bound, data_bound))
 
-    rngkey = jax.random.PRNGKey(0)
+    rngkey = torch.Generator(device=device).manual_seed(42)
 
     print(f"do_sample_surface n_node_thresh {n_node_thresh}")
 
     with Timer("sample points"):
         sample_points = sample_surface(implicit_func, params, lower, upper, n_samples, sample_width, rngkey, n_node_thresh=n_node_thresh)
-        sample_points.block_until_ready()
+        # sample_points.block_until_ready()
+        torch.cuda.synchronize()
 
-    ps.register_point_cloud("sampled points", np.array(sample_points))
+    ps.register_point_cloud("sampled points", sample_points.cpu().numpy())
 
 
     # Build the tree all over again so we can visualize it
@@ -85,25 +95,32 @@ def do_sample_surface(opts, implicit_func, params, n_samples, sample_width, n_no
         node_lower = node_lower[node_valid,:]
         node_upper = node_upper[node_valid,:]
         verts, inds = generate_tree_viz_nodes_simple(node_lower, node_upper, shrink_factor=0.05)
-        ps_vol = ps.register_volume_mesh("tree nodes", np.array(verts), hexes=np.array(inds))
+        ps_vol = ps.register_volume_mesh("tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
     # If requested, also do uniform sampling
     if do_uniform_sample:
 
         with Timer("sample points uniform"):
             sample_points = sample_surface_uniform(implicit_func, params, lower, upper, n_samples, sample_width, rngkey)
-            sample_points.block_until_ready()
+            # sample_points.block_until_ready()
+            torch.cuda.synchronize()
 
-        ps.register_point_cloud("uniform sampled points", np.array(sample_points))
+        ps.register_point_cloud("uniform sampled points", sample_points.cpu().numpy())
 
+
+
+# def split_generator(generator, num_splits=2):
+#     return [torch.Generator().manual_seed(generator.initial_seed() + i + 1) for i in range(num_splits)]
 
 
 def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost):
 
 
     data_bound = opts['data_bound']
-    lower = jnp.array((-data_bound, -data_bound, -data_bound))
-    upper = jnp.array((data_bound, data_bound, data_bound))
+    # data_bound = 2.
+
+    lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+    upper = torch.tensor((data_bound, data_bound, data_bound))
 
 
     print(f"do_hierarchical_mc {n_mc_depth}")
@@ -111,11 +128,12 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
 
     with Timer("extract mesh"):
         tri_pos = hierarchical_marching_cubes(implicit_func, params, lower, upper, n_mc_depth, n_subcell_depth=3)
-        tri_pos.block_until_ready()
+        # tri_pos.block_until_ready()
+        torch.cuda.synchronize()
 
-    tri_inds = jnp.reshape(jnp.arange(3*tri_pos.shape[0]), (-1,3))
-    tri_pos = jnp.reshape(tri_pos, (-1,3))
-    ps.register_surface_mesh("extracted mesh", np.array(tri_pos), np.array(tri_inds))
+    tri_inds = torch.reshape(torch.arange(3*tri_pos.shape[0]), (-1,3))
+    tri_pos = torch.reshape(tri_pos, (-1,3))
+    ps.register_surface_mesh("extracted mesh", tri_pos.cpu().numpy(), tri_inds.cpu().numpy())
 
     # Build the tree all over again so we can visualize it
     if do_viz_tree:
@@ -128,7 +146,7 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
         node_lower = node_lower[node_valid,:]
         node_upper = node_upper[node_valid,:]
         verts, inds = generate_tree_viz_nodes_simple(node_lower, node_upper, shrink_factor=0.05)
-        ps_vol = ps.register_volume_mesh("unknown tree nodes", np.array(verts), hexes=np.array(inds))
+        ps_vol = ps.register_volume_mesh("unknown tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
         node_valid = out_dict['interior_node_valid']
         node_lower = out_dict['interior_node_lower']
@@ -137,7 +155,7 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
         node_upper = node_upper[node_valid,:]
         if node_lower.shape[0] > 0:
             verts, inds = generate_tree_viz_nodes_simple(node_lower, node_upper, shrink_factor=0.05)
-            ps_vol = ps.register_volume_mesh("interior tree nodes", np.array(verts), hexes=np.array(inds))
+            ps_vol = ps.register_volume_mesh("interior tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
         
         node_valid = out_dict['exterior_node_valid']
         node_lower = out_dict['exterior_node_lower']
@@ -146,59 +164,61 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
         node_upper = node_upper[node_valid,:]
         if node_lower.shape[0] > 0:
             verts, inds = generate_tree_viz_nodes_simple(node_lower, node_upper, shrink_factor=0.05)
-            ps_vol = ps.register_volume_mesh("exterior tree nodes", np.array(verts), hexes=np.array(inds))
+            ps_vol = ps.register_volume_mesh("exterior tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
 def do_closest_point(opts, func, params, n_closest_point):
 
     data_bound = float(opts['data_bound'])
     eps = float(opts['hit_eps'])
-    lower = jnp.array((-data_bound, -data_bound, -data_bound))
-    upper = jnp.array((data_bound,   data_bound,  data_bound))
+    lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+    upper = torch.tensor((data_bound,   data_bound,  data_bound))
 
     print(f"do_closest_point {n_closest_point}")
    
     # generate some query points
-    rngkey = jax.random.PRNGKey(n_closest_point)
-    rngkey, subkey = jax.random.split(rngkey)
-    query_points = jax.random.uniform(subkey, (n_closest_point,3), minval=lower, maxval=upper)
+    rngkey = torch.Generator().manual_seed(n_closest_point)
+
+    rngkey, subkey = split_generator(rngkey)
+    query_points = (upper - lower) * torch.rand((n_closest_point,3), generator=subkey) + lower
 
     with Timer("closest point"):
         query_dist, query_min_loc = closest_point(func, params, lower, upper, query_points, eps=eps)
-        query_dist.block_until_ready()
+        # query_dist.block_until_ready()
+        torch.cuda.synchronize()
 
     # visualize only the outside ones
-    is_outside = jax.vmap(partial(func,params))(query_points) > 0
-    query_points = query_points[is_outside,:]
+    is_outside = vmap(partial(func,params))(query_points) > 0
+    query_points = torch.tensor(query_points[is_outside,:])
     query_dist = query_dist[is_outside]
-    query_min_loc = query_min_loc[is_outside,:]
+    query_min_loc = torch.tensor(query_min_loc[is_outside,:])
 
-    viz_line_nodes = jnp.reshape(jnp.stack((query_points, query_min_loc), axis=1), (-1,3))
-    viz_line_edges = jnp.reshape(jnp.arange(2*query_points.shape[0]), (-1,2))
-    ps.register_point_cloud("closest point query", np.array(query_points))
-    ps.register_point_cloud("closest point result", np.array(query_min_loc))
-    ps.register_curve_network("closest point line", np.array(viz_line_nodes), np.array(viz_line_edges))
+    viz_line_nodes = torch.reshape(torch.stack((query_points, query_min_loc), dim=1), (-1,3))
+    viz_line_edges = torch.reshape(torch.arange(2*query_points.shape[0]), (-1,2))
+    ps.register_point_cloud("closest point query", query_points.cpu().numpy())
+    ps.register_point_cloud("closest point result", query_min_loc.cpu().numpy())
+    ps.register_curve_network("closest point line", viz_line_nodes.cpu().numpy(), viz_line_edges.cpu().numpy())
 
 
 def compute_bulk(args, implicit_func, params, opts):
     
     data_bound = float(opts['data_bound'])
-    lower = jnp.array((-data_bound, -data_bound, -data_bound))
-    upper = jnp.array((data_bound, data_bound, data_bound))
+    lower = torch.tensor((-data_bound, -data_bound, -data_bound))
+    upper = torch.tensor((data_bound, data_bound, data_bound))
         
-    rngkey = jax.random.PRNGKey(0)
+    rngkey = torch.Generator().manual_seed(0)
 
     with Timer("bulk properties"):
         mass, centroid = bulk_properties(implicit_func, params, lower, upper, rngkey)
-        mass.block_until_ready()
+        # mass.block_until_ready()
+        torch.cuda.synchronize()
 
     print(f"Bulk properties:")
     print(f"  Mass: {mass}")
     print(f"  Centroid: {centroid}")
 
-    ps.register_point_cloud("centroid", np.array([centroid]))
+    ps.register_point_cloud("centroid", centroid.unsqueeze(0).cpu().numpy())
 
 def main():
-
     parser = argparse.ArgumentParser()
 
     # Build arguments
@@ -216,21 +236,22 @@ def main():
     # Parse arguments
     args = parser.parse_args()
 
+    print(device)
     ## Small options
     debug_log_compiles = False
     debug_disable_jit = False
     debug_debug_nans = False
-    if args.log_compiles:
-        jax.config.update("jax_log_compiles", 1)
-        debug_log_compiles = True
-    if args.disable_jit:
-        jax.config.update('jax_disable_jit', True)
-        debug_disable_jit = True
-    if args.debug_nans:
-        jax.config.update("jax_debug_nans", True)
-        debug_debug_nans = True
-    if args.enable_double_precision:
-        jax.config.update("jax_enable_x64", True)
+    # if args.log_compiles:
+    #     jax.config.update("jax_log_compiles", 1)
+    #     debug_log_compiles = True
+    # if args.disable_jit:
+    #     jax.config.update('jax_disable_jit', True)
+    #     debug_disable_jit = True
+    # if args.debug_nans:
+    #     jax.config.update("jax_debug_nans", True)
+    #     debug_debug_nans = True
+    # if args.enable_double_precision:
+    #     jax.config.update("jax_enable_x64", True)
 
 
     # GUI Parameters
@@ -240,12 +261,18 @@ def main():
     opts['tree_max_depth'] = 12
     opts['tree_split_aff'] = False
     cast_frustum = False
+    cast_opt_based = False
     mode = 'affine_fixed'
-    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval']
+    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'affine+backward']
     affine_opts = {}
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
     affine_opts['sdf_lipschitz'] = 1.
+    affine_opts['crown'] = 1.
+    affine_opts['alpha_crown'] = 1.
+    affine_opts['forward+backward'] = 1.
+    affine_opts['forward'] = 1.
+    affine_opts['affine+backward'] = 1.
     truncate_policies = ['absolute', 'relative']
     affine_opts['affine_truncate_policy'] = 'absolute'
     n_sample_pts = 100000
@@ -266,7 +293,7 @@ def main():
 
     def callback():
 
-        nonlocal implicit_func, params, mode, modes, cast_frustum, debug_log_compiles, debug_disable_jit, debug_debug_nans, shade_style, surf_color, n_sample_pts, sample_width, n_node_thresh, do_uniform_sample, do_viz_tree, n_mc_depth, compute_dense_cost, n_closest_point
+        nonlocal implicit_func, params, mode, modes, cast_frustum, cast_opt_based, debug_log_compiles, debug_disable_jit, debug_debug_nans, shade_style, surf_color, n_sample_pts, sample_width, n_node_thresh, do_uniform_sample, do_viz_tree, n_mc_depth, compute_dense_cost, n_closest_point
             
     
         ## Options for general affine evaluation
@@ -303,6 +330,34 @@ def main():
                 if changed:
                     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
+            if mode == 'crown':
+
+                changed, affine_opts['crown'] = psim.InputFloat("crown", affine_opts['crown'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+
+            if mode == 'alpha_crown':
+
+                changed, affine_opts['alpha_crown'] = psim.InputFloat("alpha_crown", affine_opts['alpha_crown'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+
+            if mode == 'forward+backward':
+
+                changed, affine_opts['forward+backward'] = psim.InputFloat("forward+backward", affine_opts['forward+backward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'forward':
+
+                changed, affine_opts['forward'] = psim.InputFloat("forward", affine_opts['forward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'affine+backward':
+                changed, affine_opts['affine+backward'] = psim.InputFloat("affine+backward", affine_opts['affine+backward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
             psim.PopItemWidth()
             psim.TreePop()
@@ -313,10 +368,11 @@ def main():
             psim.PushItemWidth(100)
         
             if psim.Button("Save Render"):
-                save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color)
+                save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, cast_opt_based=cast_opt_based)
             
 
             _, cast_frustum = psim.Checkbox("cast frustum", cast_frustum)
+            _, cast_opt_based = psim.Checkbox("cast opt based", cast_opt_based)
             _, opts['hit_eps'] = psim.InputFloat("delta", opts['hit_eps'])
             _, opts['max_dist'] = psim.InputFloat("max_dist", opts['max_dist'])
 
@@ -391,16 +447,16 @@ def main():
             psim.PushItemWidth(100)
 
             changed, debug_log_compiles = psim.Checkbox("debug_log_compiles", debug_log_compiles)
-            if changed:
-                jax.config.update("jax_log_compiles", 1 if debug_log_compiles else 0)
-
-            changed, debug_disable_jit = psim.Checkbox("debug_disable_jit", debug_disable_jit)
-            if changed:
-                jax.config.update('jax_disable_jit', debug_disable_jit)
-            
-            changed, debug_debug_nans = psim.Checkbox("debug_debug_nans", debug_debug_nans)
-            if changed:
-                jax.config.update("jax_debug_nans", debug_debug_nans)
+            # if changed:
+            #     jax.config.update("jax_log_compiles", 1 if debug_log_compiles else 0)
+            #
+            # changed, debug_disable_jit = psim.Checkbox("debug_disable_jit", debug_disable_jit)
+            # if changed:
+            #     jax.config.update('jax_disable_jit', debug_disable_jit)
+            #
+            # changed, debug_debug_nans = psim.Checkbox("debug_debug_nans", debug_debug_nans)
+            # if changed:
+            #     jax.config.update("jax_debug_nans", debug_debug_nans)
 
             
             psim.PopItemWidth()
@@ -410,22 +466,22 @@ def main():
     ps.init()
 
 
-
     # Visualize the data via quick coarse marching cubes, so we have something to look at
 
     # Construct the regular grid
     grid_res = 128
-    ax_coords = jnp.linspace(-1., 1., grid_res)
-    grid_x, grid_y, grid_z = jnp.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
-    grid = jnp.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), axis=-1)
+    ax_coords = torch.linspace(-1., 1., grid_res)
+    grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
+    grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
     delta = (grid[1,2] - grid[0,2]).item()
-    sdf_vals = jax.vmap(partial(implicit_func, params))(grid)
+    sdf_vals = vmap(partial(implicit_func, params))(grid)
     sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
     bbox_min = grid[0,:]
-    verts, faces, normals, values = measure.marching_cubes(np.array(sdf_vals), level=0., spacing=(delta, delta, delta))
+    verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
+    verts = torch.from_numpy(verts).to(device)
     verts = verts + bbox_min[None,:]
-    ps.register_surface_mesh("coarse shape preview", verts, faces) 
-   
+    ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)
+
     print("REMEMBER: All routines will be slow on the first invocation due to JAX kernel compilation. Subsequent calls will be fast.")
 
     # Hand off control to the main callback

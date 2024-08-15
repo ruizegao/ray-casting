@@ -1,13 +1,22 @@
 from functools import partial
 
+import torch
 import numpy as np
-import jax
-import jax.numpy as jnp
-
+import functorch
 # Imports from this project
 from utils import *
 import affine
 import slope_interval
+from auto_LiRPA import BoundedModule, BoundedTensor
+from auto_LiRPA.perturbations import PerturbationLpNorm
+
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
+device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+
+
+def split_generator(generator, num_splits=2):
+    return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
+
 
 # ===== High-level flow
 
@@ -34,7 +43,7 @@ def initialize_params(params, rngkey):
         if name in initialize_func:
 
             # apply the init function
-            subkey, rngkey = jax.random.split(rngkey)
+            subkey, rngkey = split_generator(rngkey)
             init_args = initialize_func[name](rngkey=subkey, **orig_args)
 
             # replace the updated data in the array
@@ -112,6 +121,77 @@ def func_from_spec(mode='default'):
 
     return eval_spec
 
+
+def bounded_func_from_spec(mode='affine'):
+    # be careful of mutable default arg ^^^
+
+    def eval_spec(params, x, mode_dict=None):
+        N_op = n_ops(params)
+        bound_dict = {}
+        # walk the list of operations, evaluating each
+        # TODO generalize w/ data tape to not assume linear dataflow
+        for i_op in range(N_op):
+            name, args = get_op_data(params, i_op)
+            if mode_dict is not None:
+                args.update(mode_dict)
+            if "_" in args:
+                del args["_"]
+            if mode_dict['ctx'].mode == 'affine+backward':
+                if name == 'dense':
+                    x = apply_func[mode][name](x, **args)
+                    bound_dict[i_op] = {}
+                    bound_dict[i_op]['name'] = 'dense'
+                    bound_dict[i_op]['A_l'] = torch.as_tensor(args['A']).squeeze().T
+                    bound_dict[i_op]['A_u'] = torch.as_tensor(args['A']).squeeze().T
+                    if i_op == N_op - 2:
+                        bound_dict[i_op]['b_l'] = torch.as_tensor(args['b'])
+                        bound_dict[i_op]['b_u'] = torch.as_tensor(args['b'])
+                    else:
+                        bound_dict[i_op]['b_l'] = torch.as_tensor(args['b']).unsqueeze(-1)
+                        bound_dict[i_op]['b_u'] = torch.as_tensor(args['b']).unsqueeze(-1)
+                    # bound_dict[i_op]['A_l'] = torch.as_tensor(args['A'])
+                    # bound_dict[i_op]['A_u'] = torch.as_tensor(args['A'])
+                    # bound_dict[i_op]['b_l'] = torch.as_tensor(args['b'])
+                    # bound_dict[i_op]['b_u'] = torch.as_tensor(args['b'])
+                elif name == 'relu':
+                    x, A, b_l, b_u = apply_func[mode][name](x, **args)
+                    bound_dict[i_op] = {}
+                    bound_dict[i_op]['name'] = 'relu'
+                    bound_dict[i_op]['A_l'] = torch.diag(A)
+                    bound_dict[i_op]['A_u'] = torch.diag(A)
+                    bound_dict[i_op]['b_l'] = b_l.unsqueeze(-1)
+                    bound_dict[i_op]['b_u'] = b_u.unsqueeze(-1)
+            else:
+                x = apply_func[mode][name](x, **args)
+
+        return x, bound_dict
+
+    return eval_spec
+
+
+def func_as_torch(params):
+    op_list = []
+    N_op = n_ops(params)
+    for i_op in range(N_op):
+        name, args = get_op_data(params, i_op)
+        # print(name)
+        # self.op_list.append((name, args))
+        if name == 'dense':
+            A = torch.tensor(args['A']).T#.to(device)
+            b = torch.tensor(args['b'])#.to(device)
+            linear = torch.nn.Linear(A.shape[1], A.shape[0])
+            linear.weight = torch.nn.Parameter(A)
+            linear.bias = torch.nn.Parameter(b)
+            op_list.append(linear)
+        elif name == 'relu':
+            op_list.append(torch.nn.ReLU())
+    model = torch.nn.Sequential(*op_list)
+    # model.to(device)
+    # print("Torch Model: ")
+    # print(model)
+    return model
+
+
 # ===== Utilities
 
 def get_op_data(params, i_op):
@@ -179,7 +259,7 @@ def load(filename):
             # convert numpy to jax arrays
             if isinstance(val, np.ndarray):
                 param_count += val.size
-                val = jnp.array(val)
+                val = np.array(val)
             out_params[key] = val
     print(f"Loaded MLP with {param_count} params")
     return out_params
@@ -189,7 +269,7 @@ def save(filename, params):
     np_params = {} # copy to a new dict, we will modify
     for key, val in params.items():
         # convert jax to numpy arrays
-        if isinstance(val, jnp.ndarray):
+        if isinstance(val, np.ndarray):
             val = np.array(val)
         np_params[key] = val
 
@@ -213,6 +293,7 @@ apply_func = {
         'slope_interval' : {}
     }
 
+
 # == Dense linear layer
 
 def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
@@ -225,7 +306,7 @@ def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
         A = (in_dim, out_dim)
     else:
         # use the input
-        A = jnp.array(A)
+        A = np.array(A)
         if A.shape != (in_dim,out_dim):
             raise ValueError(f"A should have shape ({in_dim},{out_dim}). Has shape {A.shape}.")
     
@@ -235,7 +316,7 @@ def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
         b = (out_dim,)
     else:
         # use the input
-        b = jnp.array(b)
+        b = np.array(b)
         if b.shape != (out_dim,):
             raise ValueError(f"b should have shape ({out_dim}). Has shape {b.shape}.")
 
@@ -251,8 +332,10 @@ def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
 opt_params['dense'] = ['A', 'b']
 
 def default_dense(input, A, b):
-    out = jnp.dot(input, A)
+    A = torch.tensor(A, dtype=input[0].dtype, device=input[0].device)
+    out = torch.matmul(input, A)
     if b is not None:
+        b = torch.tensor(b, dtype=input[0].dtype, device=input[0].device)
         out += b
     return out
 apply_func['default']['dense'] = default_dense
@@ -260,13 +343,13 @@ apply_func['default']['dense'] = default_dense
 def initialize_dense(rngkey=None, A=None, b=None):
     if isinstance(A, tuple): # if A needs initialization, it is a tuple giving the size
         check_rng_key(rngkey)
-        subkey, rngkey = jax.random.split(rngkey)
-        initF = jax.nn.initializers.glorot_normal()
+        subkey, rngkey = split_generator(rngkey)
+        initF = torch.nn.functional.initializers.glorot_normal()
         A = initF(subkey, A)
     if isinstance(b, tuple): # if b needs initialization, it is a tuple giving the size
         check_rng_key(rngkey)
-        subkey, rngkey = jax.random.split(rngkey)
-        initF = jax.nn.initializers.normal()
+        subkey, rngkey = split_generator(rngkey)
+        initF = torch.nn.functional.initializers.normal()
         b = initF(subkey, b)
 
     out_dict = { 'A' : A }
@@ -281,34 +364,34 @@ initialize_func['dense'] = initialize_dense
 # == Common activations
 
 def relu():
-    return {"relu._" : jnp.array([])}
+    return {"relu._" : np.array([])}
 def default_relu(input):
-    return jax.nn.relu(input)
+    return torch.nn.functional.relu(input)
 apply_func['default']['relu'] = default_relu
 
 def elu():
-    return {"elu._" : jnp.array([])}
+    return {"elu._" : np.array([])}
 def default_elu(input):
-    return jax.nn.elu(input)
+    return torch.nn.functional.elu(input)
 apply_func['default']['elu'] = default_elu
 
 
 def sin():
-    return {"sin._" : jnp.array([])}
+    return {"sin._" : np.array([])}
 def default_sin(input):
-    return jnp.sin(input)
+    return np.sin(input)
 apply_func['default']['sin'] = default_sin
 
 # == Positional encoding
 
 def pow2_frequency_encode(count_pow2, start_pow=0, with_shift=True):
-    pows = jax.lax.pow(2., jnp.arange(start=start_pow, stop=start_pow+count_pow2, dtype=float))
-    coefs = pows * jnp.pi
+    pows = np.power(2., np.arange(start=start_pow, stop=start_pow+count_pow2, dtype=float))
+    coefs = pows * np.pi
     
     if with_shift:
-        coefs = jnp.repeat(coefs, 2)
-        shift = jnp.zeros_like(coefs)
-        shift = shift.at[1::2].set(jnp.pi)
+        coefs = np.repeat(coefs, 2)
+        shift = np.zeros_like(coefs)
+        shift = shift.at[1::2].set(np.pi)
         return {"pow2_frequency_encode.coefs" : coefs, "pow2_frequency_encode.shift" : shift}
     else:
         return {"pow2_frequency_encode.coefs" : coefs}
@@ -326,23 +409,23 @@ apply_func['default']['pow2_frequency_encode'] = default_pow2_frequency_encode
 
 
 def squeeze_last():
-    return {"squeeze_last._" : jnp.array([])}
+    return {"squeeze_last._" : np.array([])}
 def default_squeeze_last(input):
-    return jnp.squeeze(input, axis=0)
+    return np.squeeze(input, axis=0)
 apply_func['default']['squeeze_last'] = default_squeeze_last
 
 # R,t are a transformation for the SHAPE, input points will get the opposite transform
 def spatial_transformation():
     return {
-            "spatial_transformation.R" : jnp.eye(3),
-            "spatial_transformation.t" : jnp.zeros(3),
+            "spatial_transformation.R" : np.eye(3),
+            "spatial_transformation.t" : np.zeros(3),
             }
 
 
 def default_spatial_transformation(input, R, t):
     # if the shape transforms by R,t, input points need the opposite transform
-    R_inv = jnp.linalg.inv(R)
-    t_inv = jnp.dot(R_inv, -t)
+    R_inv = np.linalg.inv(R)
+    t_inv = np.dot(R_inv, -t)
     return default_dense(input, A=R_inv, b=t_inv)
 apply_func['default']['spatial_transformation'] = default_spatial_transformation
 

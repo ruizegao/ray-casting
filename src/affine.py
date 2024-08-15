@@ -2,24 +2,23 @@ from functools import partial
 import dataclasses 
 from dataclasses import dataclass
 
-import numpy as np
 
-import jax
-import jax.numpy as jnp
-
+import torch
 import utils
 
 import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 
 # === Function wrappers
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 class AffineImplicitFunction(implicit_function.ImplicitFunction):
 
-    def __init__(self, affine_func, ctx):
+    def __init__(self, affine_func, ctx, bounded_func=None):
         super().__init__("classify-only")
         self.affine_func = affine_func
         self.ctx = ctx
+        self.bounded_func = bounded_func
         self.mode_dict = {'ctx' : self.ctx}
 
 
@@ -32,26 +31,24 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         # pass
         
     def classify_general_box(self, params, box_center, box_vecs, offset=0.):
-
         d = box_center.shape[-1]
         v = box_vecs.shape[-2]
-        assert box_center.shape == (d,), "bad box_vecs shape"
-        assert box_vecs.shape == (v,d), "bad box_vecs shape"
+        # assert box_center.shape == (d,), "bad box_vecs shape"
+        # assert box_vecs.shape == (v,d), "bad box_vecs shape"
         keep_ctx = dataclasses.replace(self.ctx, affine_domain_terms=v)
-
         # evaluate the function
         input = coordinates_in_general_box(keep_ctx, box_center, box_vecs)
-        output = self.affine_func(params, input, {'ctx' : keep_ctx})
-
-        # compute relevant bounds
-        may_lower, may_upper = may_contain_bounds(keep_ctx, output)
-        # must_lower, must_upper = must_contain_bounds(keep_ctx, output)
-
-        # determine the type of the region
-        output_type = SIGN_UNKNOWN
-        output_type = jnp.where(may_lower >  offset, SIGN_POSITIVE, output_type)
-        output_type = jnp.where(may_upper < -offset, SIGN_NEGATIVE, output_type)
-
+        if keep_ctx.mode == 'affine+backward':
+            _, bound_dict = self.bounded_func(params, input, {'ctx' : keep_ctx})
+            perts = torch.diag(box_vecs)
+            may_lower, may_upper = pseudo_crown(bound_dict, box_center-perts, box_center+perts)
+        else:
+            output = self.affine_func(params, input, {'ctx' : keep_ctx})
+            # compute relevant bounds
+            may_lower, may_upper = may_contain_bounds(keep_ctx, output)
+        output_type = torch.full_like(may_lower, SIGN_UNKNOWN)
+        output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
+        output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
         return output_type
 
 # === Affine utilities
@@ -68,7 +65,7 @@ class AffineContext():
     n_append: int = 0
 
     def __post_init__(self):
-        if self.mode not in ['interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all']:
+        if self.mode not in ['interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'affine+backward']:
             raise ValueError("invalid mode")
 
         if self.mode == 'affine_truncate':
@@ -85,7 +82,8 @@ def is_const(input):
 def radius(input):
     if is_const(input): return 0.
     base, aff, err = input
-    rad = jnp.sum(jnp.abs(aff), axis=0)
+    # print(aff.shape)
+    rad = torch.sum(torch.abs(aff), dim=0)
     if err is not None:
         rad += err
     return rad
@@ -95,7 +93,7 @@ def radius(input):
 def coordinates_in_box(ctx, lower, upper):
     center = 0.5 * (lower+upper)
     vec = upper - center
-    axis_vecs = jnp.diag(vec)
+    axis_vecs = torch.diag(vec)
     return coordinates_in_general_box(ctx, center, axis_vecs)
 
 # Constuct affine inputs for the coordinates in k-dimensional box,
@@ -109,20 +107,53 @@ def coordinates_in_box(ctx, lower, upper):
 def coordinates_in_general_box(ctx, center, vecs):
     base = center
     if ctx.mode == 'interval':
-        aff = jnp.zeros((0,center.shape[-1]))
-        err = jnp.sum(jnp.abs(vecs), axis=0)
+        aff = torch.zeros((0,center.shape[-1]))
+        err = torch.sum(torch.abs(vecs), dim=0)
     else:
         aff = vecs
-        err = jnp.zeros_like(center)
+        err = torch.zeros_like(center)
     return base, aff, err
 
-def may_contain_bounds(ctx, input,):
+def may_contain_bounds(ctx, input):
     '''
     An interval range of values that `input` _may_ take along the domain
     '''
     base, aff, err = input
     rad = radius(input)
     return base-rad, base+rad
+
+def pseudo_crown(bounds, lower, upper):
+    N_ops = len(bounds)
+    A_l = bounds[N_ops-1]['A_l']
+    A_u = bounds[N_ops-1]['A_u']
+    d_l = bounds[N_ops-1]['b_l']
+    d_u = bounds[N_ops-1]['b_u']
+    # print(A_l.shape, A_u.shape, d_l.shape, d_u.shape)
+    for i in range(len(bounds)-2, -1, -1):
+        # print("layer: ", i)
+        W_l = bounds[i]['A_l']
+        W_u = bounds[i]['A_u']
+        b_l = bounds[i]['b_l']
+        b_u = bounds[i]['b_u']
+        # print(W_l.shape, W_u.shape, b_l.shape, b_u.shape)
+        if bounds[i]['name'] == 'relu':
+            d_l = d_l + torch.where(A_l > 0, A_l, 0.) @ b_l + torch.where(A_l <= 0, A_l, 0.) @ b_u
+            d_u = d_u + torch.where(A_u > 0, A_u, 0.) @ b_u + torch.where(A_u <= 0, A_u, 0.) @ b_l
+            A_l = torch.where(A_l > 0, A_l, 0.) @ W_l + torch.where(A_l <= 0, A_l, 0.) @ W_u
+            A_u = torch.where(A_u > 0, A_u, 0.) @ W_u + torch.where(A_u <= 0, A_u, 0.) @ W_l
+        elif bounds[i]['name'] == 'dense':
+            # print(d_l.shape, A_l.shape, b_l.shape)
+            d_l = d_l + A_l @ b_l
+            d_u = d_u + A_u @ b_u
+            A_l = A_l @ W_l
+            A_u = A_u @ W_u
+        # print(A_l, A_u, d_l, d_u)
+    # print(A_l.shape, lower.shape, d_l.shape)
+    # print("all layers done")
+    lower_bound = lower @ A_l.T + d_l
+    upper_bound = upper @ A_u.T + d_u
+    # print(lower_bound.shape)
+    return lower_bound.sum(), upper_bound.sum()
 
 def truncate_affine(ctx, input):
     # do nothing if the input is a constant or we are not in truncate mode
@@ -141,15 +172,15 @@ def truncate_affine(ctx, input):
     # compute the magnitudes of each affine value
     # TODO fanicier policies?
     if ctx.truncate_policy == 'absolute':
-        affine_mags = jnp.sum(jnp.abs(aff), axis=-1)
+        affine_mags = torch.sum(torch.abs(aff), dim=-1)
     elif ctx.truncate_policy == 'relative':
-        affine_mags = jnp.sum(jnp.abs(aff), axis=-1) / jnp.abs(base)
+        affine_mags = torch.sum(torch.abs(aff), dim=-1) / torch.abs(base)
     else:
         raise RuntimeError("bad policy")
 
 
     # sort the affine terms by by magnitude
-    sort_inds = jnp.argsort(-affine_mags, axis=-1) # sort to decreasing order
+    sort_inds = torch.argsort(-affine_mags, dim=-1) # sort to decreasing order
     aff = aff[sort_inds,:]
 
     # keep the n_keep highest-magnitude entries
@@ -157,7 +188,7 @@ def truncate_affine(ctx, input):
     aff_drop = aff[n_keep:,:]
 
     # for all the entries we aren't keeping, add their contribution to the interval error
-    err = err + jnp.sum(jnp.abs(aff_drop), axis=0)
+    err = err + torch.sum(torch.abs(aff_drop), dim=0)
 
     return base, aff_keep, err
 
@@ -170,25 +201,32 @@ def apply_linear_approx(ctx, input, alpha, beta, delta):
     # This _should_ always be positive by definition. Always be sure your 
     # approximation routines are generating positive delta.
     # At most, we defending against floating point error here.
-    delta = jnp.abs(delta)
+    delta = torch.abs(delta)
 
     if ctx.mode in ['interval', 'affine_fixed']:
         err = alpha * err + delta
     elif ctx.mode in ['affine_truncate', 'affine_all']:
         err = alpha * err
-        new_aff = jnp.diag(delta)
-        aff = jnp.concatenate((aff, new_aff), axis=0)
+        new_aff = torch.diag(delta)
+        aff = torch.cat((aff, new_aff), dim=0)
         base, aff, err = truncate_affine(ctx, (base, aff, err))
-
+        # print(aff.shape)
+        # print(radius((base, aff, err)).shape)
     elif ctx.mode in ['affine_append']:
         err = alpha * err
         
-        keep_vals, keep_inds = jax.lax.top_k(delta, ctx.n_append)
-        row_inds = jnp.arange(ctx.n_append)
-        new_aff = jnp.zeros((ctx.n_append, aff.shape[-1]))
-        new_aff = new_aff.at[row_inds, keep_inds].set(keep_vals)
-        aff = jnp.concatenate((aff, new_aff), axis=0)
-        err = err + (jnp.sum(delta) - jnp.sum(keep_vals)) # add in the error for the affs we didn't keep
+        keep_vals, keep_inds = torch.topk(delta, ctx.n_append)
+        row_inds = torch.arange(ctx.n_append)
+        new_aff = torch.zeros((ctx.n_append, aff.shape[-1]))
+        new_aff[row_inds, keep_inds] = keep_vals
+        aff = torch.cat((aff, new_aff), dim=0)
+
+        err = err + (torch.sum(delta) - torch.sum(keep_vals)) # add in the error for the affs we didn't keep
+    elif ctx.mode in ['affine+backward']:
+        err = alpha * err
+        new_aff = torch.diag(delta)
+        aff = torch.cat((aff, new_aff), dim=0)
+        return (base, aff, err), alpha, beta - delta, beta + delta
 
     return base, aff, err
 

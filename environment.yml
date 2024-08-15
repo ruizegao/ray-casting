@@ -26,6 +26,7 @@ dependencies:
   - fonttools=4.25.0
   - freetype=2.11.0
   - fsspec=2022.1.0
+  - functorch=1.13.0
   - giflib=5.2.1
   - glib=2.69.1
   - gst-plugins-base=1.14.0
@@ -96,6 +97,7 @@ dependencies:
   - python-dateutil=2.8.2
   - python-flatbuffers=2.0
   - python_abi=3.9
+  - pytorch=1.11.0
   - pywavelets=1.1.1
   - pyyaml=6.0
   - qt=5.9.7

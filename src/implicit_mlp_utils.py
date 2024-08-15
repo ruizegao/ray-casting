@@ -1,12 +1,8 @@
 from functools import partial
 
-import numpy as np
-
-import jax
-import jax.numpy as jnp
 
 import utils
-import mlp, sdf, affine, slope_interval
+import mlp, sdf, affine, slope_interval, crown
 
 
 def generate_implicit_from_file(input_path, mode, **kwargs):
@@ -16,7 +12,6 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         params = mlp.load(input_path)
     else:
         raise ValueError("unrecognized filetype")
-
 
     # `params` is now populated
 
@@ -59,6 +54,32 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')
         return slope_interval.SlopeIntervalImplicitFunction(implicit_func), params
+
+    elif mode == 'crown':
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func), params
+
+    elif mode == 'alpha_crown':
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='alpha-CROWN'), params
+
+    elif mode == 'forward+backward':
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='Forward+Backward'), params
+
+    elif mode == 'forward':
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward'), params
+
+    elif mode == 'affine+backward':
+        implicit_func = mlp.func_from_spec(mode='affine')
+        bounded_func = mlp.bounded_func_from_spec(mode='affine')
+        affine_ctx = affine.AffineContext('affine+backward')
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, bounded_func), params
 
     else:
         raise RuntimeError("unrecognized mode")
