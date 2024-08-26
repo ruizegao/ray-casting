@@ -51,6 +51,7 @@ def construct_uniform_unknown_levelset_tree_iter(
 
     # print(type(func))
     if isinstance(func, CrownImplicitFunction):
+        print("using crown func")
         batch_size_per_iteration = 256
         total_samples = node_lower.shape[0]
         node_types = torch.empty((total_samples,))
@@ -62,19 +63,6 @@ def construct_uniform_unknown_levelset_tree_iter(
     else:
         # evaluate the function inside nodes
         node_types, node_split_dim = vmap(eval_one_node)(node_lower, node_upper)
-
-    # print("N_in: ", N_in)
-    num_node_valid = node_valid.sum() - 1
-    # first_node_invalid = min(num_node_valid + 1, N_in - 1)
-    # print(num_node_valid, first_node_invalid)
-    # print("node_valid: ", node_valid.sum())
-    # print("negative nodes: ", torch.logical_and(node_valid, node_types == SIGN_NEGATIVE).int().sum())
-    # print("positive nodes: ", torch.logical_and(node_valid, node_types == SIGN_POSITIVE).int().sum())
-    # print("unknown nodes: ", torch.logical_and(node_valid, node_types == SIGN_UNKNOWN).int().sum())
-    # print("node_lower: ", node_lower[num_node_valid], node_lower[first_node_invalid])
-    # print("node_upper: ", node_upper[num_node_valid], node_upper[first_node_invalid])
-    # print("node types: ", node_types[num_node_valid], node_types[first_node_invalid])
-    # print("node split dim: ", node_split_dim[num_node_valid], node_split_dim[first_node_invalid])
 
     # if requested, write out interior nodes
     if finished_interior_lower is not None:
@@ -277,7 +265,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
     return out_dict
 
 
-def construct_uniform_unknown_levelset_tree_iter_new(
+def construct_full_uniform_unknown_levelset_tree_iter(
         func, params, continue_splitting,
         node_lower, node_upper,
         split_level,
@@ -307,7 +295,6 @@ def construct_uniform_unknown_levelset_tree_iter_new(
         worst_dim = torch.argmax(upper - lower, dim=-1)
         return node_type, worst_dim
 
-    # print(type(func))
     node_types_temp = node_types[internal_node_mask]
     node_split_dim_temp = node_split_dim[internal_node_mask]
     if isinstance(func, CrownImplicitFunction):
@@ -323,10 +310,8 @@ def construct_uniform_unknown_levelset_tree_iter_new(
         node_split_dim[internal_node_mask] = node_split_dim_temp
     else:
         # evaluate the function inside nodes
-        # node_types[internal_node_mask], node_split_dim[internal_node_mask] = vmap(eval_one_node)(node_lower[internal_node_mask], node_upper[internal_node_mask])
         batch_size_per_iteration = 256
         total_samples = node_lower[internal_node_mask].shape[0]
-        # print(total_samples)
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
@@ -338,14 +323,9 @@ def construct_uniform_unknown_levelset_tree_iter_new(
 
     # split the unknown nodes to children
     # (if split_children is False this will just not create any children at all)
-    # print("node valid before split_mask: ", node_valid)
-    # print("internal_node_mask: ", internal_node_mask)
-    # print("node_types: ", node_types)
     split_mask = torch.logical_and(internal_node_mask, node_types == SIGN_UNKNOWN)
-    # print("split_mask: ", split_mask)
     ## now actually build the child nodes
     if continue_splitting:
-
         # extents of the new child nodes along each split dimension
         new_lower = node_lower
         new_upper = node_upper
@@ -367,8 +347,8 @@ def construct_uniform_unknown_levelset_tree_iter_new(
     return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val
 
 
-def construct_uniform_unknown_levelset_tree_new(func, params, lower, upper, split_depth=None,
-                                            offset=0.):
+def construct_full_uniform_unknown_levelset_tree(func, params, lower, upper, split_depth=None,
+                                                 offset=0.):
 
     d = lower.shape[-1]
 
@@ -383,13 +363,11 @@ def construct_uniform_unknown_levelset_tree_new(func, params, lower, upper, spli
     split_val = []
     N_curr_nodes = 1
     N_func_evals = 0
-
+    N_total_nodes = 1
     ## Recursively build the tree
     i_split = 0
     n_splits = split_depth + 1  # 1 extra because last round doesn't split
     for i_split in range(n_splits):
-        # print(i_split)
-        # Reshape in to batches of size <= B
         # Detect when to quit. On the last iteration we need to not do any more splitting, but still process existing nodes one last time
         quit_next = i_split + 1 == n_splits
         do_continue_splitting = not quit_next
@@ -398,23 +376,18 @@ def construct_uniform_unknown_levelset_tree_new(func, params, lower, upper, spli
             f"Uniform levelset tree. iter: {i_split}  N_curr_nodes: {N_curr_nodes}  quit next: {quit_next}  do_continue_splitting: {do_continue_splitting}")
 
 
-        # map over the batches
         total_n_valid = 0
         lower, upper, out_node_type, out_split_dim, out_split_val = (
-            construct_uniform_unknown_levelset_tree_iter_new(func, params, do_continue_splitting,
-                                                             lower, upper, i_split, offset=offset))
-        # print(lower.shape, upper.shape, out_node_type.shape, out_split_dim.shape, out_split_val.shape)
+            construct_full_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
+                                                              lower, upper, i_split, offset=offset))
         node_lower.append(lower)
         node_upper.append(upper)
         node_type.append(out_node_type)
         split_dim.append(out_split_dim)
         split_val.append(out_split_val)
-        # print("N_curr_nodes: ", N_curr_nodes)
-        # print("n_occ: ", n_occ)
-        # print("total_n_valid: ", total_n_valid)
         N_curr_nodes = torch.logical_not(lower[:, 0].isnan()).sum()
 
-
+        N_total_nodes += N_curr_nodes
         if quit_next:
             break
 
@@ -427,11 +400,11 @@ def construct_uniform_unknown_levelset_tree_new(func, params, lower, upper, spli
 
     # for key in out_dict:
     #     print(key, out_dict[key][:10])
+    print("Total number of nodes evaluated: ", N_total_nodes)
     return node_lower, node_upper, node_type, split_dim, split_val
 
 
-# @partial(jax.jit, static_argnames=("func", "n_samples_per_round"), donate_argnums=(8,9))
-def sample_surface_iter(func, params, n_samples_per_round, width, rngkey, 
+def sample_surface_iter(func, params, n_samples_per_round, width, rngkey,
         u_node_valid, u_node_lower, u_node_upper, 
         found_sample_points, found_start_ind):
 

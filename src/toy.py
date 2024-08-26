@@ -79,6 +79,10 @@ print(f'forward+backward bounds: lower={lb}, upper={ub}')
 print('forward+backward linear (symbolic) bounds: lA x + lbias <= f(x) <= uA x + ubias, where')
 print(A[lirpa_model.output_name[0]][lirpa_model.input_name[0]])
 
+# forward optimized.
+lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method='forward-optimized')
+print(f'forward optimized bounds: lower={lb}, upper={ub}')
+
 # layer = torch.nn.Linear(in_features=1, out_features=2)
 # layer.weight = torch.nn.Parameter(torch.tensor([[1.], [1.]]))
 # layer.bias = torch.nn.Parameter(torch.tensor([-1., -2.]))
@@ -103,8 +107,10 @@ bound_dict = {
 
 lower = torch.tensor([[-2.], [-1.]])
 upper = torch.tensor([[2.], [3.]])
+X_0 = torch.tensor([[0.], [1.]])
+epsilon = 2
 print("-----------")
-def pseudo_crown(bounds, lower, upper):
+def pseudo_crown(bounds, x_l, x_u):
     N_ops = len(bounds)
     A_l = bounds[N_ops-1]['A_l']
     A_u = bounds[N_ops-1]['A_u']
@@ -130,18 +136,22 @@ def pseudo_crown(bounds, lower, upper):
             A_u = A_u @ W_u
         print(A_l, A_u, d_l, d_u)
     # print(A_l.shape, lower.shape, d_l.shape)
-    lower_bound = A_l @ lower + d_l
-    upper_bound = A_u @ upper + d_u
+    # lower_bound = A_l @ x_0 - torch.norm(A_l, p=1) * eps + d_l
+    # upper_bound = A_u @ x_0 + torch.norm(A_u, p=1) * eps + d_u
+    center = (x_l + x_u) / 2.0
+    diff = (x_u - x_l) / 2.0
+    lower_bound = A_l @ center - A_l.abs() @ diff + d_l
+    upper_bound = A_u @ center + A_u.abs() @ diff + d_u
     # print(lower_bound.shape)
     return lower_bound, upper_bound
 
-results = pseudo_crown(bound_dict, lower, upper)
+results = pseudo_crown(bound_dict, x_l=lower, x_u=upper)
 print(results)
 
-print(bound_dict[0]['A_l'] @ lower)
-print(lower.flatten() @ bound_dict[0]['A_u'].T)
-
-diagonal = torch.diag(torch.tensor([3., 2., 2.5]))
-print(diagonal)
-diagonal = torch.diag(diagonal)
-print(diagonal)
+# print(bound_dict[0]['A_l'] @ lower)
+# print(lower.flatten() @ bound_dict[0]['A_u'].T)
+#
+# diagonal = torch.diag(torch.tensor([3., 2., 2.5]))
+# print(diagonal)
+# diagonal = torch.diag(diagonal)
+# print(diagonal)

@@ -39,9 +39,9 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         # evaluate the function
         input = coordinates_in_general_box(keep_ctx, box_center, box_vecs)
         if keep_ctx.mode == 'affine+backward':
-            _, bound_dict = self.bounded_func(params, input, {'ctx' : keep_ctx})
-            perts = torch.diag(box_vecs)
-            may_lower, may_upper = pseudo_crown(bound_dict, box_center-perts, box_center+perts)
+            bound_dict = self.bounded_func(params, input, {'ctx' : keep_ctx})
+            box_diff = torch.diag(box_vecs)
+            may_lower, may_upper = pseudo_crown(bound_dict, box_center, box_diff)
         else:
             output = self.affine_func(params, input, {'ctx' : keep_ctx})
             # compute relevant bounds
@@ -50,6 +50,28 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
         output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
         return output_type
+
+    def bound_box(self, params, box_lower, box_upper):
+        box_center = 0.5 * (box_lower + box_upper)
+        pos_vec = box_upper - box_center
+        box_vecs = torch.diag(pos_vec)
+        d = box_center.shape[-1]
+        v = box_vecs.shape[-2]
+        # assert box_center.shape == (d,), "bad box_vecs shape"
+        # assert box_vecs.shape == (v,d), "bad box_vecs shape"
+        keep_ctx = dataclasses.replace(self.ctx, affine_domain_terms=v)
+        # evaluate the function
+        input = coordinates_in_general_box(keep_ctx, box_center, box_vecs)
+        if keep_ctx.mode == 'affine+backward':
+            bound_dict = self.bounded_func(params, input, {'ctx': keep_ctx})
+            box_diff = torch.diag(box_vecs)
+            may_lower, may_upper = pseudo_crown(bound_dict, box_center, box_diff)
+        else:
+            output = self.affine_func(params, input, {'ctx': keep_ctx})
+            # compute relevant bounds
+            may_lower, may_upper = may_contain_bounds(keep_ctx, output)
+
+        return may_lower, may_upper
 
 # === Affine utilities
 
@@ -82,7 +104,6 @@ def is_const(input):
 def radius(input):
     if is_const(input): return 0.
     base, aff, err = input
-    # print(aff.shape)
     rad = torch.sum(torch.abs(aff), dim=0)
     if err is not None:
         rad += err
@@ -122,38 +143,33 @@ def may_contain_bounds(ctx, input):
     rad = radius(input)
     return base-rad, base+rad
 
-def pseudo_crown(bounds, lower, upper):
+def pseudo_crown(bounds, center, diff):
     N_ops = len(bounds)
-    A_l = bounds[N_ops-1]['A_l']
+    A_l = bounds[N_ops-1]['A_l']  # Initialize the linear bound coefficient with the parameters of the last linear layer
     A_u = bounds[N_ops-1]['A_u']
     d_l = bounds[N_ops-1]['b_l']
     d_u = bounds[N_ops-1]['b_u']
-    # print(A_l.shape, A_u.shape, d_l.shape, d_u.shape)
-    for i in range(len(bounds)-2, -1, -1):
+    for i in range(len(bounds)-2, -1, -1):  # Perform propagation in the backward direction to update the coefficients
         # print("layer: ", i)
         W_l = bounds[i]['A_l']
         W_u = bounds[i]['A_u']
         b_l = bounds[i]['b_l']
         b_u = bounds[i]['b_u']
-        # print(W_l.shape, W_u.shape, b_l.shape, b_u.shape)
-        if bounds[i]['name'] == 'relu':
+        if bounds[i]['name'] == 'relu':  # Update approximated linear bounds of relu layers. The details of approximation is in relu() in affine_layers.py
             d_l = d_l + torch.where(A_l > 0, A_l, 0.) @ b_l + torch.where(A_l <= 0, A_l, 0.) @ b_u
             d_u = d_u + torch.where(A_u > 0, A_u, 0.) @ b_u + torch.where(A_u <= 0, A_u, 0.) @ b_l
             A_l = torch.where(A_l > 0, A_l, 0.) @ W_l + torch.where(A_l <= 0, A_l, 0.) @ W_u
             A_u = torch.where(A_u > 0, A_u, 0.) @ W_u + torch.where(A_u <= 0, A_u, 0.) @ W_l
-        elif bounds[i]['name'] == 'dense':
-            # print(d_l.shape, A_l.shape, b_l.shape)
+        elif bounds[i]['name'] == 'dense':  #Update linear bounds from linear layers
             d_l = d_l + A_l @ b_l
             d_u = d_u + A_u @ b_u
             A_l = A_l @ W_l
             A_u = A_u @ W_u
-        # print(A_l, A_u, d_l, d_u)
-    # print(A_l.shape, lower.shape, d_l.shape)
-    # print("all layers done")
-    lower_bound = lower @ A_l.T + d_l
-    upper_bound = upper @ A_u.T + d_u
-    # print(lower_bound.shape)
-    return lower_bound.sum(), upper_bound.sum()
+
+    lower_bound = center @ A_l.T - diff @ A_l.abs().T + d_l   # Concretize the linear bound with input bounds
+    upper_bound = center @ A_u.T + diff @ A_u.abs().T + d_u
+
+    return lower_bound.sum(), upper_bound.sum()  # .sum() is used as a replacement for .item(), which is not supported by vmap()
 
 def truncate_affine(ctx, input):
     # do nothing if the input is a constant or we are not in truncate mode

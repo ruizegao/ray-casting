@@ -263,7 +263,7 @@ def main():
     cast_frustum = False
     cast_opt_based = False
     mode = 'affine_fixed'
-    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'affine+backward']
+    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
     affine_opts = {}
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
@@ -272,6 +272,9 @@ def main():
     affine_opts['alpha_crown'] = 1.
     affine_opts['forward+backward'] = 1.
     affine_opts['forward'] = 1.
+    affine_opts['forward-optimized'] = 1.
+    affine_opts['dynamic_forward'] = 1.
+    affine_opts['dynamic_forward+backward'] = 1.
     affine_opts['affine+backward'] = 1.
     truncate_policies = ['absolute', 'relative']
     affine_opts['affine_truncate_policy'] = 'absolute'
@@ -351,6 +354,24 @@ def main():
             if mode == 'forward':
 
                 changed, affine_opts['forward'] = psim.InputFloat("forward", affine_opts['forward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'forward-optimized':
+
+                changed, affine_opts['forward-optimized'] = psim.InputFloat("forward-optimized", affine_opts['forward-optimized'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'dynamic_forward':
+
+                changed, affine_opts['dynamic_forward'] = psim.InputFloat("dynamic_forward", affine_opts['dynamic_forward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'dynamic_forward+backward':
+
+                changed, affine_opts['dynamic_forward+backward'] = psim.InputFloat("dynamic_forward+backward", affine_opts['dynamic_forward+backward'])
                 if changed:
                     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 

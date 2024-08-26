@@ -21,7 +21,7 @@ from crown import CrownImplicitFunction
 from mlp import func_as_torch
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-from kd_tree import construct_uniform_unknown_levelset_tree, construct_uniform_unknown_levelset_tree_new
+from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -68,7 +68,7 @@ def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001):
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
     center = (lower + upper) / 2.
-    node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_uniform_unknown_levelset_tree_new(func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth)
+    node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth)
     t1 = time.time()
     print("tree building time: ", t1 - t0)
     t_out = torch.zeros((dirs.shape[0],))
@@ -83,6 +83,8 @@ def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001):
     primary_dimension = vmap(primary_dim)(dirs).flatten().mode().values
     node_lower_unknown_leaf = node_lower_last_layer[node_valid]
     node_upper_unknown_leaf = node_upper_last_layer[node_valid]
+    # for n_l, n_u in zip(node_lower_unknown_leaf, node_upper_unknown_leaf):
+    #     print(n_l, n_u, func.bound_box(params, n_l, n_u))
 
 
     if roots[0][primary_dimension] > center[primary_dimension]:

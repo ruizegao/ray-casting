@@ -58,7 +58,7 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
     elif mode == 'crown':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown'), params
 
     elif mode == 'alpha_crown':
         crown_func = mlp.func_as_torch(params)
@@ -74,6 +74,21 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
         return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward'), params
+
+    elif mode == 'forward-optimized':
+            crown_func = mlp.func_as_torch(params)
+            implicit_func = mlp.func_from_spec(mode='default')
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward-optimized'), params
+
+    elif mode == 'dynamic_forward':
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward'), params
+
+    elif mode == 'dynamic_forward+backward':
+            crown_func = mlp.func_as_torch(params)
+            implicit_func = mlp.func_from_spec(mode='default')
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward'), params
 
     elif mode == 'affine+backward':
         implicit_func = mlp.func_from_spec(mode='affine')

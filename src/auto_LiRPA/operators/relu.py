@@ -469,6 +469,8 @@ class BoundRelu(BoundTwoPieceLinear):
         w_unstable = w_unstable[:, 1:-1].view(batch_size, num_new_dim_actual, *w_new.shape[2:])
 
         w_new = torch.cat([w_new, w_unstable], dim=1)
+        # print(x.x_L)
+        # print(x_L_unstable)
         x_L_new = torch.cat([x.x_L, x_L_unstable], dim=-1)
         x_U_new = torch.cat([x.x_U, x_U_unstable], dim=-1)
 

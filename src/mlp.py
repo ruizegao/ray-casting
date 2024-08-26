@@ -149,10 +149,6 @@ def bounded_func_from_spec(mode='affine'):
                     else:
                         bound_dict[i_op]['b_l'] = torch.as_tensor(args['b']).unsqueeze(-1)
                         bound_dict[i_op]['b_u'] = torch.as_tensor(args['b']).unsqueeze(-1)
-                    # bound_dict[i_op]['A_l'] = torch.as_tensor(args['A'])
-                    # bound_dict[i_op]['A_u'] = torch.as_tensor(args['A'])
-                    # bound_dict[i_op]['b_l'] = torch.as_tensor(args['b'])
-                    # bound_dict[i_op]['b_u'] = torch.as_tensor(args['b'])
                 elif name == 'relu':
                     x, A, b_l, b_u = apply_func[mode][name](x, **args)
                     bound_dict[i_op] = {}
@@ -164,7 +160,7 @@ def bounded_func_from_spec(mode='affine'):
             else:
                 x = apply_func[mode][name](x, **args)
 
-        return x, bound_dict
+        return bound_dict
 
     return eval_spec
 

@@ -999,6 +999,11 @@ class BoundedModule(nn.Module):
                 optimize the linear relaxation parameters for activations.
                 * `forward-optimized`: use forward bounds with optimized linear
                 relaxation.
+                * `dynamic-forward`: use dynamic forward bound propagation where
+                new input variables may be dynamically introduced for
+                nonlinearities.
+                * `dynamic-forward-optimized`: use dynamic forward bound with
+                optimized linear relaxation.
 
             IBP (bool, optional): If `True`, use IBP to compute the bounds of
             intermediate nodes. It can be automatically set according to
@@ -1090,6 +1095,12 @@ class BoundedModule(nn.Module):
             method = 'backward'
         elif method == 'forward':
             forward = True
+        # elif method == 'dynamic-forward':  # Added
+        #     self.bound_opts['dynamic_forward'] = True
+        #     forward = True
+        # elif method == 'dynamic-forward+backward' or method == 'dynamic-forward+crown':  # Added
+        #     self.bound_opts['dynamic_forward'] = True
+        #     method, forward = 'backward', True
         elif method == 'forward+backward' or method == 'forward+crown':
             method, forward = 'backward', True
         elif method in ['crown-optimized', 'alpha-crown', 'forward-optimized']:
@@ -1319,6 +1330,8 @@ class BoundedModule(nn.Module):
             # the node.
             final.lower, final.upper = ret[0], ret[1]
             return ret
+        # elif method == 'dynamic-forward':  # Added
+        #     return self.forward_general_dynamic(C=C, node=final, concretize=True)
         elif method == 'forward':
             return self.forward_general(C=C, node=final, concretize=True)
         else:

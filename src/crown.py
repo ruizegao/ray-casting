@@ -25,7 +25,14 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
         # self.crown_func = crown_func
-        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+        if crown_mode.lower() == 'dynamic-forward' or crown_mode.lower() == 'dynamic-forward+backward':
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={"dynamic_forward": True})
+            if crown_mode.lower() == 'dynamic-forward':
+                crown_mode = 'forward'
+            else:
+                crown_mode = 'forward+backward'
+        else:
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
         self.crown_mode = crown_mode
         print(self.crown_mode)
 
@@ -45,30 +52,15 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
     def classify_general_box(self, params, box_center, box_vecs, offset=0.):
         # evaluate the function
-        # print("box_vecs:" , box_vecs)
         ptb = PerturbationLpNorm(x_L=box_center-box_vecs, x_U=box_center+box_vecs)
-        # eps = torch.norm(box_vecs, dim=1, keepdim=True) / torch.norm(box_center, dim=1, keepdim=True)
-        # ptb = PerturbationLpNorm(eps=eps, norm=2.)
         bounded_x = BoundedTensor(box_center, ptb)
-        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode)
-        # may_lower = may_lower.flatten()
-        # may_upper = may_upper.flatten()
-        # print(may_lower.shape, may_upper.shape)
+        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode) # dynamic forward
         output_type = torch.full_like(may_lower, SIGN_UNKNOWN)
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
         output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
-        # print("lower: ", may_lower.flatten())
-        # print("upper: ", may_upper.flatten())
-        # print("output: ", output_type.flatten())
 
         return output_type
 
-
-    # def classify_box(self, params, box_lower, box_upper, offset=0.):
-    #     center = 0.5 * (box_lower + box_upper)
-    #     pos_vec = box_upper - center
-    #     # vecs = torch.diag(pos_vec)
-    #     return self.classify_general_box(params, center, pos_vec, offset=offset)
 
     def classify_box(self, params, box_lower, box_upper, offset=0.):
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
@@ -80,5 +72,14 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
         return output_type
 
-    def change_mode(self, new_mode):
+    def bound_box(self, params, box_lower, box_upper):
+        box_lower = box_lower.unsqueeze(0)
+        box_upper = box_upper.unsqueeze(0)
+        ptb = PerturbationLpNorm(x_L=box_lower, x_U=box_upper)
+        bounded_x = BoundedTensor(box_lower, ptb)
+        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,),
+                                                                method=self.crown_mode)  # dynamic forward
+        return may_lower, may_upper
+
+def change_mode(self, new_mode):
         self.crown_mode = new_mode
