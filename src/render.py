@@ -18,20 +18,23 @@ import affine
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
-# theta_x/y should be 
+
+# theta_x/y should be
 def camera_ray(look_dir, up_dir, left_dir, fov_deg_x, fov_deg_y, theta_x, theta_y):
     ray_image_plane_pos = look_dir \
-                          + left_dir * (theta_x * torch.tan(torch.deg2rad(torch.tensor(fov_deg_x, device=look_dir.device))/2)) \
-                          + up_dir * (theta_y * torch.tan(torch.deg2rad(torch.tensor(fov_deg_y, device=look_dir.device))/2))
+                          + left_dir * (theta_x * torch.tan(
+        torch.deg2rad(torch.tensor(fov_deg_x, device=look_dir.device)) / 2)) \
+                          + up_dir * (theta_y * torch.tan(
+        torch.deg2rad(torch.tensor(fov_deg_y, device=look_dir.device)) / 2))
 
     ray_dir = geometry.normalize(ray_image_plane_pos)
 
     return ray_dir
 
-def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
 
-    D = res     # image dimension
-    R = res*res # number of rays
+def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
+    D = res  # image dimension
+    R = res * res  # number of rays
 
     ## Generate rays according to a pinhole camera
 
@@ -39,8 +42,6 @@ def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
     cam_ax_x = torch.linspace(-1., 1., res)
     cam_ax_y = torch.linspace(-1., 1., res)
     cam_y, cam_x = torch.meshgrid(cam_ax_x, cam_ax_y)
-    # cam_x = cam_x.T.flatten()
-    # cam_y = cam_y.T.flatten()
     cam_x = cam_x.flatten()
     cam_y = cam_y.flatten()
 
@@ -95,8 +96,9 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
     return vmap(this_normal_one)(hit_pos, hit_ids)
 
 
-def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts, shading="normal", shading_color_tuple=((0.157,0.613,1.000)), matcaps=None, tonemap=False, shading_color_func=None, tree_based=False):
-
+def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
+                 shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+                 shading_color_func=None, tree_based=False):
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
@@ -117,8 +119,8 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
     if frustum:
         # == Frustum raycasting
-            
-        cam_params = eye_pos, look_dir, up_dir, left_dir, fov_deg, fov_deg, res, res 
+
+        cam_params = eye_pos, look_dir, up_dir, left_dir, fov_deg, fov_deg, res, res
 
         with Timer("frustum raycast"):
             t_raycast, hit_ids, counts, n_eval = queries.cast_rays_frustum(funcs_tuple, params_tuple, cam_params, opts)
@@ -133,7 +135,8 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
     elif tree_based:
         with Timer("opt_based raycast"):
             # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
-            t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots, ray_dirs)
+            t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
+                                                                              ray_dirs)
             # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_parameterized(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
             torch.cuda.synchronize()
     else:
@@ -149,25 +152,26 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
     torch.cuda.empty_cache()
 
     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'])
-    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple, shading_color_func=shading_color_func)
+    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+                            shading_color_func=shading_color_func)
     # print(hit_pos, hit_normals, hit_color)
-    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res*res, 3)))
+    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
 
     if tonemap:
         # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
         img = tonemap_image(img)
 
-    img = img.reshape(res,res,3)
-    depth = t_raycast.reshape(res,res)
-    counts = counts.reshape(res,res)
-    hit_ids = hit_ids.reshape(res,res)
+    img = img.reshape(res, res, 3)
+    depth = t_raycast.reshape(res, res)
+    counts = counts.reshape(res, res)
+    hit_ids = hit_ids.reshape(res, res)
 
     return img, depth, counts, hit_ids, n_eval, -1
 
 
 def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
-                 shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
-                 shading_color_func=None, tree_based=False):
+                       shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+                       shading_color_func=None, tree_based=False):
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
@@ -201,16 +205,12 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
         counts = counts.transpose().flatten()
 
     elif tree_based:
-        # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
         t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
                                                                           ray_dirs)
-        # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_parameterized(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
         torch.cuda.synchronize()
     else:
         # == Standard raycasting
         t_raycast, hit_ids, counts, n_eval = queries.cast_rays(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
-        # t_raycast.block_until_ready()
-        # print("t_raycast", t_raycast)
         torch.cuda.synchronize()
 
     hit_pos = ray_roots + t_raycast[:, None] * ray_dirs
@@ -240,19 +240,20 @@ def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     num = img * (1.0 + (img / (white_level * white_level)))
     den = (1.0 + img)
     img = num / den
-    img = torch.pow(img, 1.0/gamma)
+    img = torch.pow(img, 1.0 / gamma)
     return img
 
-def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple, shading_color_func=None):
 
+def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+                shading_color_func=None):
     # Simple shading
     if shading == "normal":
-        hit_color = (hit_normals + 1.) / 2. # map normals to [0,1]
+        hit_color = (hit_normals + 1.) / 2.  # map normals to [0,1]
 
     elif shading == "matcap_color":
 
         # compute matcap coordinates
-        ray_up = vmap(partial(geometry.orthogonal_dir,up_dir))(ray_dirs)
+        ray_up = vmap(partial(geometry.orthogonal_dir, up_dir))(ray_dirs)
         ray_left = vmap(torch.cross)(ray_dirs, ray_up)
         matcap_u = vmap(torch.dot)(-ray_left, hit_normals)
         matcap_v = vmap(torch.dot)(ray_up, hit_normals)
@@ -310,7 +311,7 @@ def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcap
                 return output
 
             # m = lambda X : scipy.ndimage.map_coordinates(X, coords.cpu(), order=1, mode='nearest')
-            m = lambda X : map_coordinates(X, coords, order=1, mode='nearest')
+            m = lambda X: map_coordinates(X, coords, order=1, mode='nearest')
             return vmap(m, in_dims=-1, out_dims=-1)(matcap)
 
         # fetch values
@@ -334,17 +335,18 @@ def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcap
                 shading_color = shading_color_func(hit_pos)
 
             return shading_color
+
         shading_color = vmap(get_shade_color)(hit_pos, hit_ids)
 
-        c_r, c_g, c_b = shading_color[:,0], shading_color[:,1], shading_color[:,2]
+        c_r, c_g, c_b = shading_color[:, 0], shading_color[:, 1], shading_color[:, 2]
         c_k = 1. - (c_r + c_b + c_g)
 
-        c_r = c_r[:,None]
-        c_g = c_g[:,None]
-        c_b = c_b[:,None]
-        c_k = c_k[:,None]
+        c_r = c_r[:, None]
+        c_g = c_g[:, None]
+        c_b = c_b[:, None]
+        c_k = c_k[:, None]
 
-        hit_color = c_r*mat_r + c_b*mat_b + c_g*mat_g + c_k*mat_k
+        hit_color = c_r * mat_r + c_b * mat_b + c_g * mat_g + c_k * mat_k
 
     else:
         raise RuntimeError("Unrecognized shading parameter")
@@ -352,10 +354,8 @@ def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcap
     return hit_color
 
 
-
 # create camera parameters looking in a direction
 def look_at(eye_pos, target=None, up_dir='y'):
-
     if target == None:
         target = torch.tensor((0., 0., 0.,))
     if up_dir == 'y':
@@ -371,7 +371,6 @@ def look_at(eye_pos, target=None, up_dir='y'):
 
 
 def load_matcap(fname_pattern):
-
     imgs = []
     for c in ['r', 'g', 'b', 'k']:
         im = imageio.imread(fname_pattern.format(c))
