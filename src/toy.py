@@ -80,7 +80,7 @@ print('forward+backward linear (symbolic) bounds: lA x + lbias <= f(x) <= uA x +
 print(A[lirpa_model.output_name[0]][lirpa_model.input_name[0]])
 
 # forward optimized.
-lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method='forward-optimized')
+lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method='forward')
 print(f'forward optimized bounds: lower={lb}, upper={ub}')
 
 # layer = torch.nn.Linear(in_features=1, out_features=2)

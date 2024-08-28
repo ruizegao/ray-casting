@@ -95,7 +95,7 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
     return vmap(this_normal_one)(hit_pos, hit_ids)
 
 
-def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts, shading="normal", shading_color_tuple=((0.157,0.613,1.000)), matcaps=None, tonemap=False, shading_color_func=None, opt_based=False):
+def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts, shading="normal", shading_color_tuple=((0.157,0.613,1.000)), matcaps=None, tonemap=False, shading_color_func=None, tree_based=False):
 
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
@@ -130,7 +130,7 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
         hit_ids = hit_ids.transpose().flatten()
         counts = counts.transpose().flatten()
 
-    elif opt_based:
+    elif tree_based:
         with Timer("opt_based raycast"):
             # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
             t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots, ray_dirs)
@@ -163,6 +163,77 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
     hit_ids = hit_ids.reshape(res,res)
 
     return img, depth, counts, hit_ids, n_eval, -1
+
+
+def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
+                 shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+                 shading_color_func=None, tree_based=False):
+    # make sure inputs are tuples not lists (can't has lists)
+    if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
+    if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
+    if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
+
+    # wrap in tuples if single was passed
+    if not isinstance(funcs_tuple, tuple):
+        funcs_tuple = (funcs_tuple,)
+    if not isinstance(params_tuple, tuple):
+        params_tuple = (params_tuple,)
+    if not isinstance(shading_color_tuple[0], tuple):
+        shading_color_tuple = (shading_color_tuple,)
+
+    L = len(funcs_tuple)
+    if (len(params_tuple) != L) or (len(shading_color_tuple) != L):
+        raise ValueError("render_image tuple arguments should all be same length")
+
+    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
+    if frustum:
+        # == Frustum raycasting
+
+        cam_params = eye_pos, look_dir, up_dir, left_dir, fov_deg, fov_deg, res, res
+
+        t_raycast, hit_ids, counts, n_eval = queries.cast_rays_frustum(funcs_tuple, params_tuple, cam_params, opts)
+        # t_raycast.block_until_ready()
+        torch.cuda.synchronize()
+
+        # TODO transposes here due to image layout conventions. can we get rid of them?
+        t_raycast = t_raycast.transpose().flatten()
+        hit_ids = hit_ids.transpose().flatten()
+        counts = counts.transpose().flatten()
+
+    elif tree_based:
+        # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
+        t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
+                                                                          ray_dirs)
+        # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_parameterized(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
+        torch.cuda.synchronize()
+    else:
+        # == Standard raycasting
+        t_raycast, hit_ids, counts, n_eval = queries.cast_rays(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
+        # t_raycast.block_until_ready()
+        # print("t_raycast", t_raycast)
+        torch.cuda.synchronize()
+
+    hit_pos = ray_roots + t_raycast[:, None] * ray_dirs
+
+    torch.cuda.empty_cache()
+
+    hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'])
+    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+                            shading_color_func=shading_color_func)
+    # print(hit_pos, hit_normals, hit_color)
+    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
+
+    if tonemap:
+        # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
+        img = tonemap_image(img)
+
+    img = img.reshape(res, res, 3)
+    depth = t_raycast.reshape(res, res)
+    counts = counts.reshape(res, res)
+    hit_ids = hit_ids.reshape(res, res)
+
+    return img, depth, counts, hit_ids, n_eval, -1
+
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure

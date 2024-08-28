@@ -132,7 +132,7 @@ def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001):
 
     t4 = time.time()
     print("ray marching time: ", t4 - t3)
-
+    print("total time: ", t4-t0)
     return t_out, hit_id_out, torch.zeros((dirs.shape[0],)), 0
 
 
@@ -257,7 +257,7 @@ def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs,
     funcs_are_affine_all = True
     if not funcs_are_crown:
         for func in funcs_tuple:
-            if not func.ctx.mode is 'affine_all':
+            if func.ctx.mode != 'affine_all':
                 funcs_are_affine_all = False
 
     # substepping

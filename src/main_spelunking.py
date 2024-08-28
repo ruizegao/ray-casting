@@ -51,7 +51,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
 
     surf_color = tuple(surf_color)
 
-    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,), opt_based=cast_opt_based)
+    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,), tree_based=cast_opt_based)
     print(depth, count, _, eval_sum)
 
     # flip Y
