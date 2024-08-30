@@ -1,3 +1,19 @@
+#########################################################################
+##   This file is part of the auto_LiRPA library, a core part of the   ##
+##   α,β-CROWN (alpha-beta-CROWN) neural network verifier developed    ##
+##   by the α,β-CROWN Team                                             ##
+##                                                                     ##
+##   Copyright (C) 2020-2024 The α,β-CROWN Team                        ##
+##   Primary contacts: Huan Zhang <huan@huan-zhang.com>                ##
+##                     Zhouxing Shi <zshi@cs.ucla.edu>                 ##
+##                     Kaidi Xu <kx46@drexel.edu>                      ##
+##                                                                     ##
+##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##                                                                     ##
+##     This program is licensed under the BSD 3-Clause License,        ##
+##        contained in the LICENCE file in this directory.             ##
+##                                                                     ##
+#########################################################################
 """ Cut operators"""
 from .base import *
 from .clampmult import multiply_by_A_signs
@@ -242,7 +258,7 @@ class CutModule():
 
         # assert ((tao + pi - nu_hat_pos).abs()*unstable_or_cut_index).max() <= 1e-5, "pi+tao should always be the same as nu_hat_pos"
 
-        # unstable_or_cut_index = self.I.logical_or(self.arelu_coeffs.sum(0).view(self.I.shape) != 0)
+        # unstable_or_cut_index = self.I.logical_or(self.arelu_coeffs.abs().sum(0).view(self.I.shape) != 0)
         unstable_upper_bound_index = unstable_or_cut_index.unsqueeze(0).logical_and(-last_uA < 0)
         new_upper_d = new_upper_d * unstable_upper_bound_index.float() + \
                       upper_d * (1. - unstable_upper_bound_index.float())
@@ -296,7 +312,10 @@ class CutModule():
         # I is the unstable index in this relu layer: (batch, *layer shape)
         # if there is node in cut constraint that is stable, also need to count its effect
         # self.arelu_coeffs: (num_constrs, flattened current layer)
-        unstable_or_cut_index = I.logical_or(arelu_coeffs.sum(0).view(I[0:1].shape) != 0)
+        # self.arelu_coeffs do not have a batch dimension - only one cut can be applied to all batch elements.
+        # We will handle the neurons which are unstable or those have cut constraints below, thus creating the mask.
+        unstable_or_cut_index = I.logical_or(arelu_coeffs.abs().sum(0).view(I[0:1].shape) != 0)
+        # Shape of unstable_or_cut_index is (batch, num_neurons). It is a binary mask.
 
         if type(A) is Patches:
             # patches mode, conv layer only
@@ -493,7 +512,7 @@ class CutModule():
         # general_beta: (2(0 lower, 1 upper), spec, batch, num_constrs)
         # bias_coeffs: (num_constrs,)
         # beta_bias: (2(0 lower, 1 upper), batch, spec)
-        beta_bias = torch.einsum('sihj,j->shi', general_beta, bias_coeffs)
+        beta_bias = torch.einsum('sihj,j->shi', general_beta.to(lb.dtype), bias_coeffs.to(lb.dtype))
         lb = lb + beta_bias[0] if lb is not None else None
         ub = ub - beta_bias[1] if ub is not None else None
         return lb, ub
