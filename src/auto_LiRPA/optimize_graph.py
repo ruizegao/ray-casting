@@ -1,3 +1,19 @@
+#########################################################################
+##   This file is part of the auto_LiRPA library, a core part of the   ##
+##   α,β-CROWN (alpha-beta-CROWN) neural network verifier developed    ##
+##   by the α,β-CROWN Team                                             ##
+##                                                                     ##
+##   Copyright (C) 2020-2024 The α,β-CROWN Team                        ##
+##   Primary contacts: Huan Zhang <huan@huan-zhang.com>                ##
+##                     Zhouxing Shi <zshi@cs.ucla.edu>                 ##
+##                     Kaidi Xu <kx46@drexel.edu>                      ##
+##                                                                     ##
+##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##                                                                     ##
+##     This program is licensed under the BSD 3-Clause License,        ##
+##        contained in the LICENCE file in this directory.             ##
+##                                                                     ##
+#########################################################################
 """Optimize the graph to merge nodes and remove unnecessary ones.
 
 Initial and experimental code only.
@@ -32,14 +48,29 @@ def _optimize_graph(self: 'BoundedModule'):
             self.delete_node(node)
 
 
+def _copy_node_properties(new, ref):
+    new.output_shape = ref.output_shape
+    new.device = ref.device
+    new.attr['device'] = ref.attr['device']
+    new.batch_dim = ref.batch_dim
+    new.from_complex_node = ref.from_complex_node
+
+
 def merge_sec(model: 'BoundedModule'):
     nodes = list(model.nodes())
     for node in nodes:
         if type(node) == BoundReciprocal and type(node.inputs[0]) == BoundCos:
             node_new = BoundSec(inputs=[node.inputs[0].inputs[0]])
             node_new.name = f'{node.inputs[0].name}/sec'
-            model.add_nodes([node_new])
-            model.replace_node(node, node_new)
+            _copy_node_properties(node_new, node)
+            if node_new.name in model._modules:
+                node_existing = model._modules[node_new.name]
+                assert isinstance(node_existing, BoundSec)
+                assert node_existing.inputs[0] == node.inputs[0].inputs[0]
+                model.replace_node(node, node_existing)
+            else:
+                model.add_nodes([node_new])
+                model.replace_node(node, node_new)
 
 
 def div_to_mul(model: 'BoundedModule'):
@@ -49,10 +80,12 @@ def div_to_mul(model: 'BoundedModule'):
             logger.debug('Replacing BoundDiv node: %s', node)
             node_reciprocal = BoundReciprocal(inputs=[node.inputs[1]])
             node_reciprocal.name = f'{node.name}/reciprocal'
+            _copy_node_properties(node_reciprocal, node)
             model.add_nodes([node_reciprocal])
             node_mul = BoundMul(inputs=[node.inputs[0], node_reciprocal],
                                 options=model.bound_opts)
             node_mul.name = f'{node.name}/mul'
+            _copy_node_properties(node_mul, node)
             model.add_nodes([node_mul])
             model.replace_node(node, node_mul)
 
@@ -75,6 +108,7 @@ def convert_sqr(model: 'BoundedModule'):
         if replace:
             node_new = BoundSqr(inputs=[node.inputs[0]])
             node_new.name = f'{node.name}/sqr'
+            _copy_node_properties(node_new, node)
             model.add_nodes([node_new])
             logger.debug('Replaceing %s with %s', node, node_new)
             model.replace_node(node, node_new)

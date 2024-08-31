@@ -1,3 +1,19 @@
+#########################################################################
+##   This file is part of the auto_LiRPA library, a core part of the   ##
+##   α,β-CROWN (alpha-beta-CROWN) neural network verifier developed    ##
+##   by the α,β-CROWN Team                                             ##
+##                                                                     ##
+##   Copyright (C) 2020-2024 The α,β-CROWN Team                        ##
+##   Primary contacts: Huan Zhang <huan@huan-zhang.com>                ##
+##                     Zhouxing Shi <zshi@cs.ucla.edu>                 ##
+##                     Kaidi Xu <kx46@drexel.edu>                      ##
+##                                                                     ##
+##    See CONTRIBUTORS for all author contacts and affiliations.       ##
+##                                                                     ##
+##     This program is licensed under the BSD 3-Clause License,        ##
+##        contained in the LICENCE file in this directory.             ##
+##                                                                     ##
+#########################################################################
 import torch
 import torch.nn.functional as F
 from torch import Tensor
@@ -395,8 +411,8 @@ def check_patch_biases(lb, ub, lower_b, upper_b):
         ub = ub.expand(ub.size(0), ub.size(1), upper_b.size(0)//ub.size(1))
         ub = ub.reshape(ub.size(0), -1).t()
     elif lower_b.ndim > lb.ndim:
-        lower_b = lower_b.transpose(0,1).reshape(lower_b.size(1), -1).t()
-        upper_b = upper_b.transpose(0,1).reshape(upper_b.size(1), -1).t()
+        lower_b = lower_b.transpose(0, 1).reshape(lower_b.size(1), -1).t()
+        upper_b = upper_b.transpose(0, 1).reshape(upper_b.size(1), -1).t()
     return lb, ub, lower_b, upper_b
 
 
@@ -507,7 +523,7 @@ def maybe_unfold_patches(d_tensor, last_A, alpha_lookup_idx=None):
             # The spec dimension may be sparse and contains unstable neurons for the spec layer only.
             if alpha_lookup_idx is None:
                 # alpha is spec-dense. Possible because the number of unstable neurons may decrease.
-                if last_A.size(0) == d_unfolded_r.size(0):
+                if last_A.output_shape[1] == d_unfolded_r.size(0):
                     # Non spec-sparse, partially shared alpha among output channel dimension.
                     # Shape after unfolding is (out_c, batch, out_h, out_w, in_c, patch_h, patch_w).
                     d_unfolded_r = d_unfolded_r[last_A.unstable_idx[0], :, last_A.unstable_idx[1], last_A.unstable_idx[2]]

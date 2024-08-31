@@ -24,15 +24,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN'):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
-        # self.crown_func = crown_func
-        if crown_mode.lower() == 'dynamic-forward' or crown_mode.lower() == 'dynamic-forward+backward':
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={"dynamic_forward": True})
-            if crown_mode.lower() == 'dynamic-forward':
-                crown_mode = 'forward'
-            else:
-                crown_mode = 'forward+backward'
-        else:
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
         self.crown_mode = crown_mode
         print(self.crown_mode)
 
