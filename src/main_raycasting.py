@@ -120,33 +120,10 @@ def main():
         if changed:
             implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
-    elif mode == 'crown':
+    elif mode in ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
+             'dynamic_forward+backward']:
 
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode == 'alpha_crown':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode == 'forward+backward':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-
-    elif mode == 'forward':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-
-    elif mode == 'forward-optimized':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-
-    elif mode == 'dynamic_forward':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-
-    elif mode == 'dynamic_forward+backward':
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     elif mode == 'affine+backward':
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)

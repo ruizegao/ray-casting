@@ -310,47 +310,49 @@ def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs,
         return t, step_size, is_hit, hit_id, step_count
 
     if funcs_are_crown:
-        total_samples = curr_roots.shape[0]
-        batch_size_per_iteration = 1250
-        is_hit = torch.empty_like(curr_t)
-        hit_id = torch.empty_like(curr_t)
-        num_inner_steps = torch.empty_like(curr_t)
-        for start_idx in range(0, total_samples, batch_size_per_iteration):
-            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-            batch_curr_roots = curr_roots[start_idx:end_idx]
-            batch_curr_dirs = curr_dirs[start_idx:end_idx]
-            batch_curr_t = curr_t[start_idx:end_idx]
-            batch_curr_int_size = curr_int_size[start_idx:end_idx]
-
-            # Perform computation on the current batch
-            curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
-                                                                                                    start_idx:end_idx], num_inner_steps[
-                                                                                                                        start_idx:end_idx] = take_several_steps_batched(
-                batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
+        curr_t, curr_int_size, is_hit, hit_id, num_inner_steps \
+            = take_several_steps_batched(curr_roots, curr_dirs, curr_t, curr_int_size)
+        # total_samples = curr_roots.shape[0]
+        # batch_size_per_iteration = 1250
+        # is_hit = torch.empty_like(curr_t)
+        # hit_id = torch.empty_like(curr_t)
+        # num_inner_steps = torch.empty_like(curr_t)
+        # for start_idx in range(0, total_samples, batch_size_per_iteration):
+        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+        #     batch_curr_roots = curr_roots[start_idx:end_idx]
+        #     batch_curr_dirs = curr_dirs[start_idx:end_idx]
+        #     batch_curr_t = curr_t[start_idx:end_idx]
+        #     batch_curr_int_size = curr_int_size[start_idx:end_idx]
+        #
+        #     # Perform computation on the current batch
+        #     curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
+        #                                                                                             start_idx:end_idx], num_inner_steps[
+        #                                                                                                                 start_idx:end_idx] = take_several_steps_batched(
+        #         batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
     else:
-        # curr_t, curr_int_size, is_hit, hit_id, num_inner_steps \
-        #     = vmap(take_several_steps)(curr_roots, curr_dirs, curr_t, curr_int_size)
+        curr_t, curr_int_size, is_hit, hit_id, num_inner_steps \
+            = vmap(take_several_steps)(curr_roots, curr_dirs, curr_t, curr_int_size)
 
-        total_samples = curr_roots.shape[0]
-        batch_size_per_iteration = 100000
-        if funcs_are_affine_all:
-            batch_size_per_iteration = 30000
-        is_hit = torch.empty_like(curr_t)
-        hit_id = torch.empty_like(curr_t)
-        num_inner_steps = torch.empty_like(curr_t)
-        for start_idx in range(0, total_samples, batch_size_per_iteration):
-            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-            batch_curr_roots = curr_roots[start_idx:end_idx]
-            batch_curr_dirs = curr_dirs[start_idx:end_idx]
-            batch_curr_t = curr_t[start_idx:end_idx]
-            batch_curr_int_size = curr_int_size[start_idx:end_idx]
-
-            # Perform computation on the current batch
-            curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
-                                                                                                    start_idx:end_idx], num_inner_steps[
-                                                                                                                        start_idx:end_idx] = vmap(
-                take_several_steps)(
-                batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
+        # total_samples = curr_roots.shape[0]
+        # batch_size_per_iteration = 100000
+        # if funcs_are_affine_all:
+        #     batch_size_per_iteration = 30000
+        # is_hit = torch.empty_like(curr_t)
+        # hit_id = torch.empty_like(curr_t)
+        # num_inner_steps = torch.empty_like(curr_t)
+        # for start_idx in range(0, total_samples, batch_size_per_iteration):
+        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+        #     batch_curr_roots = curr_roots[start_idx:end_idx]
+        #     batch_curr_dirs = curr_dirs[start_idx:end_idx]
+        #     batch_curr_t = curr_t[start_idx:end_idx]
+        #     batch_curr_int_size = curr_int_size[start_idx:end_idx]
+        #
+        #     # Perform computation on the current batch
+        #     curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
+        #                                                                                             start_idx:end_idx], num_inner_steps[
+        #                                                                                                                 start_idx:end_idx] = vmap(
+        #         take_several_steps)(
+        #         batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
 
     curr_count += curr_valid * num_inner_steps.int()
 
@@ -520,10 +522,10 @@ def cast_rays_frustum_iter(
     def take_several_steps(frust_range, t, step_size):
         # Do all of the frustum geometry calculation here. It doesn't change
         # per-substep, so might as well compute it before we start substepping.
-        x_lower = frust_range[:, 0]
-        x_upper = frust_range[:, 2]
-        y_lower = frust_range[:, 1]
-        y_upper = frust_range[:, 3]
+        x_lower = frust_range[0]
+        x_upper = frust_range[2]
+        y_lower = frust_range[1]
+        y_upper = frust_range[3]
         is_single_pixel = torch.logical_and(torch.eq(x_lower + 1, x_upper), torch.eq(y_lower + 1, y_upper))
 
         # compute bounds as coords on [-1,1]
@@ -577,25 +579,25 @@ def cast_rays_frustum_iter(
         step_count = torch.as_tensor(step_count)
         return t, step_size, is_hit, hit_id, step_demands_subd, step_count
 
-    total_samples = curr_frust_range.shape[0]
-    batch_size_per_iteration = 20000
-    is_hit = torch.empty_like(curr_frust_t)
-    hit_id = torch.empty_like(curr_frust_t)
-    step_demands_subd = torch.zeros_like(curr_frust_t, dtype=torch.bool)
-    num_inner_steps = torch.empty_like(curr_frust_t)
-    for start_idx in range(0, total_samples, batch_size_per_iteration):
-        end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-        out_tup = take_several_steps(curr_frust_range[start_idx:end_idx], curr_frust_t[start_idx:end_idx],
-                                     curr_frust_int_size[start_idx:end_idx])
-        curr_frust_t[start_idx:end_idx] = out_tup[0]
-        curr_frust_int_size[start_idx:end_idx] = out_tup[1]
-        is_hit[start_idx:end_idx] = out_tup[2]
-        hit_id[start_idx:end_idx] = out_tup[3]
-        step_demands_subd[start_idx:end_idx] = out_tup[4]
-        num_inner_steps[start_idx:end_idx] = out_tup[5]
+    # total_samples = curr_frust_range.shape[0]
+    # batch_size_per_iteration = 20000
+    # is_hit = torch.empty_like(curr_frust_t)
+    # hit_id = torch.empty_like(curr_frust_t)
+    # step_demands_subd = torch.zeros_like(curr_frust_t, dtype=torch.bool)
+    # num_inner_steps = torch.empty_like(curr_frust_t)
+    # for start_idx in range(0, total_samples, batch_size_per_iteration):
+    #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+    #     out_tup = take_several_steps(curr_frust_range[start_idx:end_idx], curr_frust_t[start_idx:end_idx],
+    #                                  curr_frust_int_size[start_idx:end_idx])
+    #     curr_frust_t[start_idx:end_idx] = out_tup[0]
+    #     curr_frust_int_size[start_idx:end_idx] = out_tup[1]
+    #     is_hit[start_idx:end_idx] = out_tup[2]
+    #     hit_id[start_idx:end_idx] = out_tup[3]
+    #     step_demands_subd[start_idx:end_idx] = out_tup[4]
+    #     num_inner_steps[start_idx:end_idx] = out_tup[5]
     # evaluate the substeps on a all rays
-    # curr_frust_t, curr_frust_int_size, is_hit, hit_id, step_demands_subd, num_inner_steps \
-    #     = vmap(take_several_steps)(curr_frust_range, curr_frust_t, curr_frust_int_size)
+    curr_frust_t, curr_frust_int_size, is_hit, hit_id, step_demands_subd, num_inner_steps \
+        = vmap(take_several_steps)(curr_frust_range, curr_frust_t, curr_frust_int_size)
 
     # Measure frustum area in pixels, use it to track counts
     x_lower = curr_frust_range[:, 0]

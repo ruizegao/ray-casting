@@ -293,33 +293,37 @@ def construct_full_uniform_unknown_levelset_tree_iter(
     def eval_batch_of_nodes(lower, upper):
         node_type = func.classify_box(params, lower, upper, offset=offset).squeeze(-1)
         worst_dim = torch.argmax(upper - lower, dim=-1)
-        return node_type, worst_dim
+        return node_type.float(), worst_dim.float()
 
     node_types_temp = node_types[internal_node_mask]
     node_split_dim_temp = node_split_dim[internal_node_mask]
     if isinstance(func, CrownImplicitFunction):
-        batch_size_per_iteration = 256
-        total_samples = node_lower[internal_node_mask].shape[0]
-        # print(total_samples)
-        for start_idx in range(0, total_samples, batch_size_per_iteration):
-            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-            node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
-                = eval_batch_of_nodes(node_lower[internal_node_mask][start_idx:end_idx], node_upper[internal_node_mask][start_idx:end_idx])
+        # batch_size_per_iteration = 2 ** 10
+        # total_samples = node_lower[internal_node_mask].shape[0]
+        # # print(total_samples)
+        # for start_idx in range(0, total_samples, batch_size_per_iteration):
+        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+        #     node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
+        #         = eval_batch_of_nodes(node_lower[internal_node_mask][start_idx:end_idx], node_upper[internal_node_mask][start_idx:end_idx])
+        #
+        #
+        # node_types[internal_node_mask] = node_types_temp
+        # node_split_dim[internal_node_mask] = node_split_dim_temp
+        node_types[internal_node_mask], node_split_dim[internal_node_mask] = eval_batch_of_nodes(node_lower[internal_node_mask], node_upper[internal_node_mask])
 
-        node_types[internal_node_mask] = node_types_temp
-        node_split_dim[internal_node_mask] = node_split_dim_temp
     else:
         # evaluate the function inside nodes
-        batch_size_per_iteration = 256
-        total_samples = node_lower[internal_node_mask].shape[0]
-        for start_idx in range(0, total_samples, batch_size_per_iteration):
-            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-            node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
-                = vmap(eval_one_node)(node_lower[internal_node_mask][start_idx:end_idx],
-                                      node_upper[internal_node_mask][start_idx:end_idx])
-
-        node_types[internal_node_mask] = node_types_temp
-        node_split_dim[internal_node_mask] = node_split_dim_temp
+        # batch_size_per_iteration = 256
+        # total_samples = node_lower[internal_node_mask].shape[0]
+        # for start_idx in range(0, total_samples, batch_size_per_iteration):
+        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+        #     node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
+        #         = vmap(eval_one_node)(node_lower[internal_node_mask][start_idx:end_idx],
+        #                               node_upper[internal_node_mask][start_idx:end_idx])
+        #
+        # node_types[internal_node_mask] = node_types_temp
+        # node_split_dim[internal_node_mask] = node_split_dim_temp
+        node_types[internal_node_mask], node_split_dim[internal_node_mask] = vmap(eval_one_node)(node_lower[internal_node_mask], node_upper[internal_node_mask])
 
     # split the unknown nodes to children
     # (if split_children is False this will just not create any children at all)
