@@ -49,7 +49,6 @@ def construct_uniform_unknown_levelset_tree_iter(
         worst_dim = torch.argmax(upper-lower, dim=-1)
         return node_type, worst_dim
 
-    # print(type(func))
     if isinstance(func, CrownImplicitFunction):
         print("using crown func")
         batch_size_per_iteration = 256
@@ -94,9 +93,7 @@ def construct_uniform_unknown_levelset_tree_iter(
 
     # split the unknown nodes to children
     # (if split_children is False this will just not create any children at all)
-    # print("node valid before split_mask: ", node_valid)
     split_mask = utils.logical_and_all([node_valid, node_types == SIGN_UNKNOWN])
-    # print("split_mask: ", split_mask)
     N_new = torch.sum(split_mask) # each split leads to two children (for a total of 2*N_new)
     ## now actually build the child nodes
     if continue_splitting:
@@ -110,8 +107,6 @@ def construct_uniform_unknown_levelset_tree_iter(
         newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
         newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
         newB_upper = new_upper
-        # print(newA_lower[new_coord_mask], newA_upper[new_coord_mask])
-        # print(newB_lower[new_coord_mask], newB_upper[new_coord_mask])
 
         # concatenate the new children to form output arrays
         node_valid = torch.cat((split_mask, split_mask))
@@ -121,7 +116,6 @@ def construct_uniform_unknown_levelset_tree_iter(
         outL = out_valid.shape[1]
 
 
-        # print("new_mid: ", new_mid[num_node_valid], new_mid[first_node_invalid])
     else:
         node_valid = torch.logical_and(node_valid, node_types == SIGN_UNKNOWN)
         new_N_valid = torch.sum(node_valid)
@@ -157,7 +151,6 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
     B = batch_process_size
 
     print(f"\n == CONSTRUCTING LEVELSET TREE")
-    # print(f"  node thresh: {n_node_thresh}")n_node_thresh
 
     # Initialize data
     node_lower = lower[None,:]
@@ -219,14 +212,10 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
                     finished_interior_lower, finished_interior_upper, N_finished_interior, \
                     finished_exterior_lower, finished_exterior_upper, N_finished_exterior, \
                     offset=offset)
-            # print(out_valid.sum())
 
         node_valid = out_valid
         node_lower = out_lower
         node_upper = out_upper
-        # print("N_curr_nodes: ", N_curr_nodes)
-        # print("n_occ: ", n_occ)
-        # print("total_n_valid: ", total_n_valid)
         N_curr_nodes = total_n_valid
 
         # flatten back out
@@ -269,7 +258,7 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         func, params, continue_splitting,
         node_lower, node_upper,
         split_level,
-        offset=0.
+        offset=0., batch_size=None
 ):
     N_in = node_lower.shape[0]
     N_out = 2 * N_in
@@ -297,33 +286,26 @@ def construct_full_uniform_unknown_levelset_tree_iter(
 
     node_types_temp = node_types[internal_node_mask]
     node_split_dim_temp = node_split_dim[internal_node_mask]
-    if isinstance(func, CrownImplicitFunction):
-        # batch_size_per_iteration = 2 ** 10
-        # total_samples = node_lower[internal_node_mask].shape[0]
-        # # print(total_samples)
-        # for start_idx in range(0, total_samples, batch_size_per_iteration):
-        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-        #     node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
-        #         = eval_batch_of_nodes(node_lower[internal_node_mask][start_idx:end_idx], node_upper[internal_node_mask][start_idx:end_idx])
-        #
-        #
-        # node_types[internal_node_mask] = node_types_temp
-        # node_split_dim[internal_node_mask] = node_split_dim_temp
-        node_types[internal_node_mask], node_split_dim[internal_node_mask] = eval_batch_of_nodes(node_lower[internal_node_mask], node_upper[internal_node_mask])
 
+    if isinstance(func, CrownImplicitFunction):
+        eval_func = eval_batch_of_nodes
     else:
-        # evaluate the function inside nodes
-        # batch_size_per_iteration = 256
-        # total_samples = node_lower[internal_node_mask].shape[0]
-        # for start_idx in range(0, total_samples, batch_size_per_iteration):
-        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-        #     node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
-        #         = vmap(eval_one_node)(node_lower[internal_node_mask][start_idx:end_idx],
-        #                               node_upper[internal_node_mask][start_idx:end_idx])
-        #
-        # node_types[internal_node_mask] = node_types_temp
-        # node_split_dim[internal_node_mask] = node_split_dim_temp
-        node_types[internal_node_mask], node_split_dim[internal_node_mask] = vmap(eval_one_node)(node_lower[internal_node_mask], node_upper[internal_node_mask])
+        eval_func = vmap(eval_one_node)
+
+    if batch_size is None:
+        node_types[internal_node_mask], node_split_dim[internal_node_mask] = eval_func(
+            node_lower[internal_node_mask], node_upper[internal_node_mask])
+    else:
+        batch_size_per_iteration = batch_size
+        total_samples = node_lower[internal_node_mask].shape[0]
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
+                = eval_func(node_lower[internal_node_mask][start_idx:end_idx], node_upper[internal_node_mask][start_idx:end_idx])
+
+        node_types[internal_node_mask] = node_types_temp
+        node_split_dim[internal_node_mask] = node_split_dim_temp
+
 
     # split the unknown nodes to children
     # (if split_children is False this will just not create any children at all)
@@ -336,7 +318,6 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         new_mid = 0.5 * (new_lower + new_upper)
         new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
         newA_lower = new_lower
-        # print(new_coord_mask, new_mid, new_upper, split_mask.sum())
         newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
         newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
         newB_upper = new_upper
@@ -344,7 +325,6 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         # concatenate the new children to form output arrays
         node_lower_out[split_mask.repeat_interleave(2)] = torch.hstack((newA_lower[split_mask].unsqueeze(1), newB_lower[split_mask].unsqueeze(1))).view(-1, d)
         node_upper_out[split_mask.repeat_interleave(2)] = torch.hstack((newA_upper[split_mask].unsqueeze(1), newB_upper[split_mask].unsqueeze(1))).view(-1, d)
-        # print("node_split_dim: ", node_split_dim)
         node_split_val[split_mask] = new_mid[torch.arange(split_mask.sum()), node_split_dim[split_mask].long()]
 
 
@@ -352,14 +332,13 @@ def construct_full_uniform_unknown_levelset_tree_iter(
 
 
 def construct_full_uniform_unknown_levelset_tree(func, params, lower, upper, split_depth=None,
-                                                 offset=0.):
+                                                 offset=0., batch_size=None):
 
     d = lower.shape[-1]
 
     print(f"\n == CONSTRUCTING LEVELSET TREE")
-    # print(f"  node thresh: {n_node_thresh}")n_node_thresh
 
-    # Initialize data
+    # Initialize datas
     node_lower = [lower]
     node_upper = [upper]
     node_type = []
@@ -383,7 +362,7 @@ def construct_full_uniform_unknown_levelset_tree(func, params, lower, upper, spl
         total_n_valid = 0
         lower, upper, out_node_type, out_split_dim, out_split_val = (
             construct_full_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
-                                                              lower, upper, i_split, offset=offset))
+                                                              lower, upper, i_split, offset=offset, batch_size=batch_size))
         node_lower.append(lower)
         node_upper.append(upper)
         node_type.append(out_node_type)
@@ -451,11 +430,9 @@ def sample_surface(func, params, lower, upper, n_samples, width, rngkey, n_node_
     - Uniformly rejection sample from the unknown cells 
     '''
 
-    # print(f"Sample surface: building level set tree with at least {n_node_thresh} nodes")
 
     # Build a tree over the valid nodes
     # By definition returned nodes are all SIGN_UNKNOWN, and all the same size
-    # print(f"sample_surface n_node_thresh {n_node_thresh}")
     out_dict = construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_terminate_thresh=n_node_thresh, offset=width)
     node_valid = out_dict['unknown_node_valid']
     node_lower = out_dict['unknown_node_lower']
@@ -468,7 +445,6 @@ def sample_surface(func, params, lower, upper, n_samples, width, rngkey, n_node_
     while True:
         round_count += 1
 
-        # print(f"Have {found_start_ind} / {n_samples} samples. Performing sample round")
 
         rngkey, subkey = split_generator(rngkey)
         found_sample_points, found_start_ind = sample_surface_iter(func, params, n_samples_per_round, width, subkey,
@@ -479,7 +455,6 @@ def sample_surface(func, params, lower, upper, n_samples, width, rngkey, n_node_
         if found_start_ind == n_samples:
             break
 
-    # print(f"Done! Sampling took {round_count} rounds")
     func_with_params = partial(func, params)
     print((vmap(func_with_params)(found_sample_points)**2).sum().sqrt() / n_samples)
     return found_sample_points
@@ -574,7 +549,6 @@ def hierarchical_marching_cubes(func, params, lower, upper, depth, n_subcell_dep
     tri_pos_out = torch.zeros((1, 3, 3))
 
     init_bucket_size = node_lower.shape[0]
-    # print(extract_batch_size, init_bucket_size)
     this_b = min(extract_batch_size, init_bucket_size)
     node_valid = torch.reshape(node_valid, (-1, this_b))
     node_lower = torch.reshape(node_lower, (-1, this_b, 3))
@@ -779,7 +753,6 @@ def find_any_intersection(func_tuple, params_tuple, lower, upper, eps, viz_nodes
     d = lower.shape[-1]
 
     print(f"\n == SEARCHING FOR INTERSECTION")
-    # print(f"  max depth: {max_depth}")
 
     # Initialize data
     node_lower = lower[None,:]
@@ -814,10 +787,8 @@ def find_any_intersection(func_tuple, params_tuple, lower, upper, eps, viz_nodes
             # (back these up so we can use them below)
             node_lower_prev = node_lower
             node_upper_prev = node_upper
-        # print(node_lower, node_upper)
         node_lower, node_upper, N_curr_nodes, found_int, found_int_A, found_int_B, found_int_loc, viz_mask = \
             find_any_intersection_iter(func_tuple, params_tuple, eps, node_lower, node_upper, N_curr_nodes, viz_nodes)
-        # print(node_lower, node_upper)
         if(viz_nodes):
             # if requested, save visualization data
             node_lower_save = node_lower_prev[viz_mask,:]
@@ -930,7 +901,6 @@ def closest_point_iter(func, params,
 
         return needs_subdiv, this_closest_point_dist, node_center, node_split_dim
 
-    # print("all shapes: ", batch_valid.shape, batch_query_id.shape, batch_node_lower.shape, batch_node_upper.shape, batch_query_loc.shape, batch_query_min_dist.shape)
 
     # batch_needs_subdiv, batch_this_closest_point_dist, batch_node_center, batch_node_split_dim = \
     #     vmap(process_one)(batch_valid, batch_query_id, batch_node_lower, batch_node_upper, batch_query_loc, batch_query_min_dist)
@@ -1025,7 +995,6 @@ def closest_point_iter(func, params,
     work_node_upper[pop_ind:pop_ind + new_node_upper.size(0), :] = new_node_upper
     work_stack_top = work_stack_top + 2*N_new
 
-    # print("cpi return shapes: ", query_min_dist.shape, query_min_loc.shape, work_query_id.shape, work_node_lower.shape, work_node_upper.shape, work_stack_top.shape)
     return query_min_dist, query_min_loc, \
             work_query_id, work_node_lower, work_node_upper, work_stack_top,
 

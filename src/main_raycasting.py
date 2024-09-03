@@ -21,7 +21,7 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=False):
+                             cast_tree_based=False, batch_size=None):
     root = torch.tensor([2., 0., 0.])
     look = torch.tensor([-1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
@@ -39,7 +39,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
                                                                              left, res, fov_deg, cast_frustum, opts,
                                                                              shading='matcap_color', matcaps=matcaps,
                                                                              shading_color_tuple=(surf_color,),
-                                                                             tree_based=cast_tree_based)
+                                                                             tree_based=cast_tree_based, batch_size=batch_size)
 
     # flip Y
     img = torch.flip(img, [0])
@@ -62,6 +62,7 @@ def main():
     parser.add_argument("--mode", type=str, default='affine_fixed')
     parser.add_argument("--cast_frustum", action='store_true')
     parser.add_argument("--cast_tree_based", action='store_true')
+    parser.add_argument("--batch_size", type=int, default=None)
 
     parser.add_argument("--res", type=int, default=1024)
 
@@ -83,9 +84,10 @@ def main():
     cast_frustum = args.cast_frustum
     cast_tree_based = args.cast_tree_based
     mode = args.mode
+    batch_size = args.batch_size
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
              'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
-             'dynamic_forward+backward', 'affine+backward']
+             'dynamic_forward+backward', 'affine+backward', 'affine_quad']
     affine_opts = {}
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
@@ -98,6 +100,7 @@ def main():
     affine_opts['dynamic_forward'] = 1.
     affine_opts['dynamic_forward+backward'] = 1.
     affine_opts['affine+backward'] = 1.
+    affine_opts['affine_quad'] = 1.
     truncate_policies = ['absolute', 'relative']
     affine_opts['affine_truncate_policy'] = 'absolute'
     surf_color = (0.157, 0.613, 1.000)
@@ -128,8 +131,11 @@ def main():
     elif mode == 'affine+backward':
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
+    elif mode == 'affine_quad':
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based)
+                             cast_tree_based=cast_tree_based, batch_size=batch_size)
 
 
 if __name__ == '__main__':

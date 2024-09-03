@@ -51,6 +51,11 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         affine_ctx = affine.AffineContext('affine_all')
         return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
 
+    elif mode == 'affine_quad':
+        implicit_func = mlp.func_from_spec(mode='affine')
+        affine_ctx = affine.AffineContext('affine_quad')
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')
         return slope_interval.SlopeIntervalImplicitFunction(implicit_func), params

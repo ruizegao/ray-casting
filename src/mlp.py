@@ -154,7 +154,7 @@ def bounded_func_from_spec(mode='affine'):
                     bound_dict[i_op] = {}
                     bound_dict[i_op]['name'] = 'relu'
                     bound_dict[i_op]['A_l'] = torch.diag(A)
-                    bound_dict[i_op]['A_u'] = torch.diag(A)
+                    bound_dict[i_op]['A_u'] = torch.diag(A).clone()
                     bound_dict[i_op]['b_l'] = b_l.unsqueeze(-1)
                     bound_dict[i_op]['b_u'] = b_u.unsqueeze(-1)
             else:

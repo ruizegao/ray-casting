@@ -64,14 +64,5 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
         return output_type
 
-    def bound_box(self, params, box_lower, box_upper):
-        box_lower = box_lower.unsqueeze(0)
-        box_upper = box_upper.unsqueeze(0)
-        ptb = PerturbationLpNorm(x_L=box_lower, x_U=box_upper)
-        bounded_x = BoundedTensor(box_lower, ptb)
-        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,),
-                                                                method=self.crown_mode)  # dynamic forward
-        return may_lower, may_upper
-
 def change_mode(self, new_mode):
         self.crown_mode = new_mode

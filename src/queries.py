@@ -60,7 +60,7 @@ def find_rays_plane_intersection_with_depth(roots, dirs, plane, plane_dim):
     return vmap(partial(find_ray_plane_intersection_with_depth, plane, plane_dim))(roots, dirs)
 
 
-def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001):
+def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001, batch_size=None):
     t0 = time.time()
     split_depth = 3 * 6
     func = func_tuple[0]
@@ -70,7 +70,7 @@ def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001):
     upper = torch.tensor((data_bound, data_bound, data_bound))
     center = (lower + upper) / 2.
     node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
-        func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth)
+        func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
     t1 = time.time()
     print("tree building time: ", t1 - t0)
     t_out = torch.zeros((dirs.shape[0],))

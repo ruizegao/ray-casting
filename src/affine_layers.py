@@ -44,19 +44,34 @@ def relu(input, ctx):
         return torch.nn.functional.relu(base), aff, err
 
     lower, upper = affine.may_contain_bounds(ctx, input)
+    if ctx.mode == 'affine_quad':
+        kappa_mask = torch.logical_and(lower < 0., upper > 0.)
+        kappa = torch.where(kappa_mask, upper / (upper - lower) ** 2, 0.)
+        # Compute the linearized approximation
+        alpha = - 2 * kappa * lower
+        alpha = torch.where(lower >= 0, 1., alpha)
+        alpha = torch.where(upper < 0, 0., alpha)
+        # handle numerical badness in the denominator above
+        # alpha = torch.nan_to_num(alpha, nan=0.0) # necessary?
+        # alpha = torch.clip(alpha, min=0., max=1.)
 
-    # Compute the linearized approximation
-    alpha = (torch.nn.functional.relu(upper) - torch.nn.functional.relu(lower)) / (upper - lower)
-    alpha = torch.where(lower >= 0, 1., alpha)
-    alpha = torch.where(upper < 0, 0., alpha)
-    # handle numerical badness in the denominator above
-    alpha = torch.nan_to_num(alpha, nan=0.0) # necessary?
-    alpha = torch.clip(alpha, min=0., max=1.)
+        # here, alpha/beta are necessarily positive, which makes this simpler
+        beta = kappa * lower ** 2 / 2
+        delta = beta
+        output = affine.apply_linear_approx(ctx, input, alpha, beta, delta, kappa)
+    else:
+        # Compute the linearized approximation
+        alpha = (torch.nn.functional.relu(upper) - torch.nn.functional.relu(lower)) / (upper - lower)
+        alpha = torch.where(lower >= 0, 1., alpha)
+        alpha = torch.where(upper < 0, 0., alpha)
+        # handle numerical badness in the denominator above
+        alpha = torch.nan_to_num(alpha, nan=0.0)  # necessary?
+        alpha = torch.clip(alpha, min=0., max=1.)
 
-    # here, alpha/beta are necessarily positive, which makes this simpler
-    beta = (torch.nn.functional.relu(lower) - alpha * lower) / 2
-    delta = beta
-    output = affine.apply_linear_approx(ctx, input, alpha, beta, delta)
+        # here, alpha/beta are necessarily positive, which makes this simpler
+        beta = (torch.nn.functional.relu(lower) - alpha * lower) / 2
+        delta = beta
+        output = affine.apply_linear_approx(ctx, input, alpha, beta, delta)
 
     return output
 mlp.apply_func['affine']['relu'] = relu

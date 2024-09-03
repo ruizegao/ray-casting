@@ -263,7 +263,7 @@ def main():
     cast_frustum = False
     cast_opt_based = False
     mode = 'affine_fixed'
-    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
+    modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'affine_quad', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
     affine_opts = {}
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
@@ -276,6 +276,7 @@ def main():
     affine_opts['dynamic_forward'] = 1.
     affine_opts['dynamic_forward+backward'] = 1.
     affine_opts['affine+backward'] = 1.
+    affine_opts['affine_quad'] = 1.
     truncate_policies = ['absolute', 'relative']
     affine_opts['affine_truncate_policy'] = 'absolute'
     n_sample_pts = 100000
@@ -377,6 +378,11 @@ def main():
 
             if mode == 'affine+backward':
                 changed, affine_opts['affine+backward'] = psim.InputFloat("affine+backward", affine_opts['affine+backward'])
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode == 'affine_quad':
+                changed, affine_opts['affine_quad'] = psim.InputFloat("affine_quad", affine_opts['affine_quad'])
                 if changed:
                     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
