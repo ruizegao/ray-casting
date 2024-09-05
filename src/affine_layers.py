@@ -56,7 +56,7 @@ def relu(input, ctx):
         # alpha = torch.clip(alpha, min=0., max=1.)
 
         # here, alpha/beta are necessarily positive, which makes this simpler
-        beta = kappa * lower ** 2 / 2
+        beta = kappa * lower ** 2 / 2 + kappa * (aff ** 2).sum(dim=0) / 2
         delta = beta
         output = affine.apply_linear_approx(ctx, input, alpha, beta, delta, kappa)
     else:
