@@ -300,7 +300,7 @@ def truncate_affine(ctx, input):
 
     return base, aff_keep, err
 
-def apply_linear_approx(ctx, input, alpha, beta, delta, kappa=0):
+def apply_linear_approx(ctx, input, alpha, beta, delta, kappa=None):
     base, aff, err = input
     if ctx.mode != 'affine_quad':
         base = alpha * base + beta
@@ -334,12 +334,13 @@ def apply_linear_approx(ctx, input, alpha, beta, delta, kappa=0):
         aff = torch.cat((aff, new_aff), dim=0)
         return (base, aff, err), alpha, beta - delta, beta + delta
     elif ctx.mode in ['affine_quad']:
-        rad = radius(input)
+        delta = torch.abs(delta)
         c_1 = (2 * kappa * base + alpha)
-        base = kappa * base ** 2 + alpha * base + beta #+ kappa * (aff ** 2).sum(dim=0)
+        quad_mask = kappa != 0.
+        base = kappa * base ** 2 + alpha * base + beta #+ kappa * aff.abs().sum(dim=0) ** 2
         if aff is not None:
             aff = c_1 * aff
-        err = kappa * err ** 2 + c_1 * err
+        err = c_1 * err
         new_aff = torch.diag(delta)
         aff = torch.cat((aff, new_aff), dim=0)
 

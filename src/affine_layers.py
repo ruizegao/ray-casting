@@ -48,15 +48,15 @@ def relu(input, ctx):
         kappa_mask = torch.logical_and(lower < 0., upper > 0.)
         kappa_mask_case1 = torch.logical_and(kappa_mask, lower + upper > 0.)
         kappa_mask_case2 = torch.logical_and(kappa_mask, lower + upper <= 0.)
-        h = torch.where(kappa_mask_case1, - upper, 0.)
+        h = torch.where(kappa_mask_case1, (upper ** 2 + lower ** 2) / lower / 2, 0.)
         h = torch.where(kappa_mask_case2, lower, h)
         kappa = torch.where(kappa_mask, upper / (upper - lower) / (upper + lower - 2 * h), 0.)
         alpha = - 2 * kappa * h
         alpha = torch.where(lower >= 0, 1., alpha)
         alpha = torch.where(upper < 0, 0., alpha)
 
-        beta = kappa * lower * (2 * h - lower) / 2 + kappa * (aff.sum(dim=0) ** 2) / 2
-        delta = beta
+        beta = kappa * lower * (2 * h - lower) / 2 + kappa * (upper - lower) ** 2 / 4
+        delta = kappa * lower * (2 * h - lower) / 2
         output = affine.apply_linear_approx(ctx, input, alpha, beta, delta, kappa)
     else:
         # Compute the linearized approximation
