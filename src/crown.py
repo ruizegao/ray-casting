@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 import numpy as np
-from dask.array import result_type
 
 import utils
 import torch
@@ -18,6 +17,28 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 batch_size_per_iteration = 100000
+
+# === Crown utility methods
+
+def deconstruct_lbias(_x_L, _x_U, _lA, _dm_lb):
+    """
+
+    Given the input region, Crown's lA matrix and domain lower bounds, deconstructing lbias is very trivial.
+
+    :param _x_L:
+    :param _x_U:
+    :param _lA:
+    :param _dm_lb:
+    :return:
+    """
+    _lA = _lA.flatten(2) # (batch, spec_dim, in_dim)
+    xhat_vect = ((_x_U + _x_L) / 2).flatten(1) # (batch, in_dim)
+    xhat_vect = xhat_vect.unsqueeze(2) # (batch, in_dim, 1)
+    eps_vect = ((_x_U - _x_L) / 2).flatten(1) # (batch, in_dim)
+    eps_vect = eps_vect.unsqueeze(2) # (batch, in_dim, 1)
+    dm_lb_vect = _dm_lb.unsqueeze(2) # (batch, spec_dim, 1)
+    _lbias = dm_lb_vect - (_lA.bmm(xhat_vect) - _lA.abs().bmm(eps_vect))
+    return _lbias.squeeze(2) # (batch, spec_dim)
 
 # === Function wrappers
 

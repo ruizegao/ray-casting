@@ -20,7 +20,7 @@ from typing import Union, Tuple
 def clip_domains(
         x_L: torch.Tensor,
         x_U: torch.Tensor,
-        thresholds: torch.Tensor,
+        thresholds: Union[torch.Tensor, float],
         lA: torch.Tensor,
         dm_lb: Union[torch.Tensor, None] = None,
         lbias: Union[torch.Tensor, None] = None,
@@ -29,14 +29,14 @@ def clip_domains(
     """
     Takes subdomains (or original domain) and shrinks along dimensions to remove verified portions of the input domain
     to remove redundancy and allow for more effective splits.
-    @param x_L:                 The lower bound on the inputs of the subdomains
-    @param x_U:                 The upper bound on the inputs of the subdomains
-    @param thresholds:          The specification threshold where dom_lb > thresholds implies the subdomain is verified
-    @param lA:                  CROWN lA for subdomains
-    @param dm_lb:               The lower bound on the outputs of the domains
-    @param lbias:               CROWN lbias for subdomains. Needed to concretize dm_lb if dm_lb is not given/incorrect
-    @param calculate_dm_lb:     If set to true, dm_lb is assumed to be None or incorrect. lbias is then needed
-    @return:                    The new x_L, x_U
+    :param x_L:                 The lower bound on the inputs of the subdomains
+    :param x_U:                 The upper bound on the inputs of the subdomains
+    :param thresholds:          The specification threshold where dom_lb > thresholds implies the subdomain is verified
+    :param lA:                  CROWN lA for subdomains
+    :param dm_lb:               The lower bound on the outputs of the domains
+    :param lbias:               CROWN lbias for subdomains. Needed to concretize dm_lb if dm_lb is not given/incorrect
+    :param calculate_dm_lb:     If set to true, dm_lb is assumed to be None or incorrect. lbias is then needed
+    :return:                    The new x_L, x_U
     """
     if calculate_dm_lb:
         assert isinstance(lbias, torch.Tensor), "lbias is needed to concretize dm_lb"
@@ -52,6 +52,9 @@ def clip_domains(
     batches, num_spec, input_dim = lA.shape
     x_L = x_L.clone().view(batches, input_dim)
     x_U = x_U.clone().view(batches, input_dim)
+    if isinstance(thresholds, float):
+        # transform thresholds into a Tensor if given as a single float
+        thresholds = torch.full((batches, num_spec), thresholds, dtype=x_L.dtype, device=x_L.device)
     # x_L/x_U shape: (batch, input_dim)
     # lA shape: (batch, num_spec, input_dim)
     # dm_lb shape: (batch, num_spec)
