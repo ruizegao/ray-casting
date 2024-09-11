@@ -1,3 +1,5 @@
+from logging import raiseExceptions
+
 import jax
 
 from functools import partial
@@ -12,8 +14,12 @@ from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 import extract_cell
 import geometry
 import torch
+from torch import Tensor
+from typing import Tuple, Union
 
 from crown import CrownImplicitFunction
+from src.heuristics import input_split_branching
+from clip_utils import clip_domains
 
 INVALID_IND = 2**30
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -260,6 +266,20 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         split_level,
         offset=0., batch_size=None
 ):
+    """
+
+    A single iteration which takes batches of nodes, evaluates their status, and splits UNKNOWN nodes uniformly.
+
+    :param func:                The implicit function to evaluate nodes. Should be a CROWN mode
+    :param params:
+    :param continue_splitting:  Denotes whether we should split after bounding the nodes
+    :param node_lower:          Lower input domain for batches
+    :param node_upper:          Upper input domain for batches
+    :param split_level:         The current split depth in the tree
+    :param offset:              Spec to verify against. Typically, 0.
+    :param batch_size:          If not None, nodes are processed in batches
+    :return:
+    """
     N_in = node_lower.shape[0]
     N_out = 2 * N_in
     d = node_lower.shape[-1]
@@ -280,7 +300,8 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         return node_type.float(), worst_dim.float()
 
     def eval_batch_of_nodes(lower, upper):
-        node_type = func.classify_box(params, lower, upper, offset=offset).squeeze(-1)
+        node_type, _ = func.classify_box(params, lower, upper, offset=offset)
+        node_type = node_type.squeeze(-1)
         worst_dim = torch.argmax(upper - lower, dim=-1)
         return node_type.float(), worst_dim.float()
 
@@ -331,8 +352,220 @@ def construct_full_uniform_unknown_levelset_tree_iter(
     return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val
 
 
-def construct_full_uniform_unknown_levelset_tree(func, params, lower, upper, split_depth=None,
-                                                 offset=0., batch_size=None):
+def construct_full_uniform_unknown_levelset_tree(
+        func,
+        params,
+        lower,
+        upper,
+        split_depth=None,
+        offset=0.,
+        batch_size=None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """
+
+    Constructs a tree that is uniform. For now, only uses the naive branching heuristic.
+
+    :param func:                The implicit function to evaluate nodes. Should be a CROWN mode
+    :param params:
+    :param lower:               Lower input domain for batches
+    :param upper:               Upper input domain for batches
+    :param split_depth:         Desired split depth granularity of the kD tree
+    :param offset:              Spec to verify against. Typically, 0.
+    :param batch_size:          If not None, nodes are processed in batches
+    :return:
+    """
+
+    d = lower.shape[-1]
+
+    print(f"\n == CONSTRUCTING LEVELSET TREE")
+
+    # Initialize datas
+    node_lower = [lower]
+    node_upper = [upper]
+    node_type = []
+    split_dim = []
+    split_val = []
+    N_curr_nodes = 1
+    N_func_evals = 0
+    N_total_nodes = 1
+    ## Recursively build the tree
+    i_split = 0
+    n_splits = split_depth + 1  # 1 extra because last round doesn't split
+    for i_split in range(n_splits):
+        # Detect when to quit. On the last iteration we need to not do any more splitting, but still process existing nodes one last time
+        quit_next = i_split + 1 == n_splits
+        do_continue_splitting = not quit_next
+
+        print(
+            f"Uniform levelset tree. iter: {i_split}  N_curr_nodes: {N_curr_nodes}  quit next: {quit_next}  do_continue_splitting: {do_continue_splitting}")
+
+
+        total_n_valid = 0
+        lower, upper, out_node_type, out_split_dim, out_split_val = construct_full_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
+                                                              lower, upper, i_split, offset=offset, batch_size=batch_size)
+        node_lower.append(lower)
+        node_upper.append(upper)
+        node_type.append(out_node_type)
+        split_dim.append(out_split_dim)
+        split_val.append(out_split_val)
+        N_curr_nodes = torch.logical_not(lower[:, 0].isnan()).sum()
+
+        N_total_nodes += N_curr_nodes
+        if quit_next:
+            break
+
+    node_lower = torch.cat(node_lower)
+    node_upper = torch.cat(node_upper)
+    node_type = torch.cat(node_type)
+    split_dim = torch.cat(split_dim)
+    split_val = torch.cat(split_val)
+
+
+    # for key in out_dict:
+    #     print(key, out_dict[key][:10])
+    print("Total number of nodes evaluated: ", N_total_nodes)
+    return node_lower, node_upper, node_type, split_dim, split_val
+
+def construct_full_non_uniform_unknown_levelset_tree_iter(
+        func,
+        params,
+        continue_splitting: bool,
+        node_lower: Tensor,
+        node_upper: Tensor,
+        split_level: int,
+        branching_method: str,
+        offset: float = 0.,
+        batch_size: Union[int, None] = None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """
+
+    A single iteration that progresses the kD tree by one split depth. Clipping is introduced which creates an imbalance in the nodes. The procedure is now:
+
+    * Bound nodes
+    * Decides split dimensions via split heuristic
+    * Split nodes and collect *lA* and *lbias*
+    * Clip new nodes if possible to reduce input volume
+
+    :param func:                The implicit function to evaluate nodes. Should be a CROWN mode
+    :param params:
+    :param continue_splitting:  Denotes whether we should split after bounding the nodes
+    :param node_lower:          Lower input domain for batches
+    :param node_upper:          Upper input domain for batches
+    :param split_level:         The current split depth in the tree
+    :param branching_method:    Specified branching heuristic to decide which dimension to split upon
+    :param offset:              Spec to verify against. Typically, 0.
+    :param batch_size:          If not None, nodes are processed in batches
+    :return:
+    """
+    N_in = node_lower.shape[0]
+    N_out = 2 * N_in
+    d = node_lower.shape[-1]
+    internal_node_mask = torch.logical_not(torch.isnan(node_lower[:, 0]))
+    node_types = torch.full((N_in,), torch.nan)
+    node_split_dim = torch.full((N_in,), torch.nan)
+    node_split_val = torch.full((N_in,), torch.nan)
+    node_lower_out = torch.full((N_out, 3), torch.nan)
+    node_upper_out = torch.full((N_out, 3), torch.nan)
+
+    def eval_batch_of_nodes(lower, upper):
+
+        # bounds the nodes
+        ret = func.classify_box(params, lower, upper, offset=offset)
+        node_type, crown_dict = ret
+        node_type = node_type.squeeze(-1)
+
+        # call a branching heuristic to select dimensions to split upon
+        dm_lb = crown_dict.get('dm_lb')
+        lA = crown_dict.get('lA')
+        lbias = crown_dict.get('lbias')
+        splits = input_split_branching(dm_lb, lower, upper, lA, offset, branching_method=branching_method).squeeze(1)
+        # dm_lb dimension: (batches, 1)
+        # lA dimension: (batches, 1, 3)
+        # lbias dimension: (batches, 1)
+        # splits dimension: (batches, 1)
+        # worst_dim = torch.argmax(upper - lower, dim=-1)
+        # return node_type.float(), worst_dim.float()
+
+        # apply clipping to reduce volume of input domain
+
+
+        return node_type.float(), splits.float()
+
+    node_types_temp = node_types[internal_node_mask]
+    node_split_dim_temp = node_split_dim[internal_node_mask]
+
+    if isinstance(func, CrownImplicitFunction):
+        eval_func = eval_batch_of_nodes
+    else:
+        raise TypeError("Evaluation function must be a CROWN implicit function")
+
+    if batch_size is None:
+        node_types[internal_node_mask], node_split_dim[internal_node_mask] = eval_func(
+            node_lower[internal_node_mask], node_upper[internal_node_mask])
+    else:
+        batch_size_per_iteration = batch_size
+        total_samples = node_lower[internal_node_mask].shape[0]
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx] \
+                = eval_func(node_lower[internal_node_mask][start_idx:end_idx], node_upper[internal_node_mask][start_idx:end_idx])
+
+        node_types[internal_node_mask] = node_types_temp
+        node_split_dim[internal_node_mask] = node_split_dim_temp
+
+
+    # split the unknown nodes to children
+    # (if split_children is False this will just not create any children at all)
+    split_mask = torch.logical_and(internal_node_mask, node_types == SIGN_UNKNOWN)
+    ## now actually build the child nodes
+    if continue_splitting:
+        # extents of the new child nodes along each split dimension
+        new_lower = node_lower
+        new_upper = node_upper
+        new_mid = 0.5 * (new_lower + new_upper)
+        new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
+        newA_lower = new_lower
+        newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
+        newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
+        newB_upper = new_upper
+
+        # concatenate the new children to form output arrays
+        node_lower_out[split_mask.repeat_interleave(2)] = torch.hstack((newA_lower[split_mask].unsqueeze(1), newB_lower[split_mask].unsqueeze(1))).view(-1, d)
+        node_upper_out[split_mask.repeat_interleave(2)] = torch.hstack((newA_upper[split_mask].unsqueeze(1), newB_upper[split_mask].unsqueeze(1))).view(-1, d)
+        node_split_val[split_mask] = new_mid[torch.arange(split_mask.sum()), node_split_dim[split_mask].long()]
+
+
+    return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val
+
+
+def construct_full_non_uniform_unknown_levelset_tree(
+        func,
+        params,
+        lower: Tensor,
+        upper: Tensor,
+        branching_method: str,
+        split_depth: Union[float, None] = None,
+        offset: float = 0.,
+        batch_size: Union[float, None] = None
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+    """
+
+    Constructs a tree that is nonuniform due to the clipping procedure. Clipping is only supported for modes in CROWN. BaB is now conducted in the order:
+
+    * Bound nodes
+    * Split nodes
+    * Apply clipping to reduce volume of input domains
+
+    :param func:                The implicit function to evaluate nodes. Should be a CROWN mode
+    :param params:
+    :param lower:               Lower input domain for batches
+    :param upper:               Upper input domain for batches
+    :param branching_method:    Specified branching heuristic to decide which dimension to split upon
+    :param split_depth:         Desired split depth granularity of the kD tree
+    :param offset:              Spec to verify against. Typically, 0.
+    :param batch_size:          If not None, nodes are processed in batches
+    :return:
+    """
 
     d = lower.shape[-1]
 
@@ -361,8 +594,8 @@ def construct_full_uniform_unknown_levelset_tree(func, params, lower, upper, spl
 
         total_n_valid = 0
         lower, upper, out_node_type, out_split_dim, out_split_val = (
-            construct_full_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
-                                                              lower, upper, i_split, offset=offset, batch_size=batch_size))
+            construct_full_non_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
+                                                              lower, upper, i_split, branching_method, offset=offset, batch_size=batch_size))
         node_lower.append(lower)
         node_upper.append(upper)
         node_type.append(out_node_type)
