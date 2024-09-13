@@ -109,7 +109,7 @@ def clip_domains(
     shrunken_total_area = shrunken_areas.sum(0).item()
     num_shrunken = (new_areas < original_areas).to(dtype=torch.int).sum(0).item()
     print(
-        f"Domain clipping: area new/prev {new_total_area:.4f}/{original_total_area:.4f} ({100 * (shrunken_total_area / original_total_area) if original_total_area > 0 else 0.:.2f}%), domains verified after shrinking {num_shrunken_and_verified}, shrunken {num_shrunken} ({100*(num_shrunken / batches) if batches > 0 else 0.:.2f}%)")
+        f"Domain clipping: area new/prev {new_total_area:.4f}/{original_total_area:.4f} ({100 * (shrunken_total_area / original_total_area) if original_total_area > 0 else 0.:.2f}%), domains verified after shrinking {num_shrunken_and_verified}, shrunken {num_shrunken} of {batches} batches ({100*(num_shrunken / batches) if batches > 0 else 0.:.2f}%)")
 
     # reshape x_L,x_U to originally given shape and discover how many batches were shrunken
     x_L, x_U = x_L.view(x_L_shape), x_U.view(x_U_shape)

@@ -16,6 +16,7 @@ from torch import Tensor
 from typing import Tuple, Union
 
 from crown import CrownImplicitFunction
+from src.crown import deconstruct_lbias
 from src.heuristics import input_split_branching
 from clip_utils import clip_domains
 from src.split import kd_split
@@ -463,7 +464,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
     :param branching_method:    Specified branching heuristic to decide which dimension to split upon
     :param offset:              Spec to verify against. Typically, 0.
     :param batch_size:          If not None, nodes are processed in batches
-    :return:
+    :return:                    Returns the newly split modes along with their status, split dimension, and split value
     """
     N_in = node_lower.shape[0]  # number of original nodes
     N_out = 2 * N_in  # number of nodes after splitting
@@ -476,39 +477,55 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
     node_lower_out = torch.full((N_out, 3), torch.nan)  # Lower input domain for new subdomains
     node_upper_out = torch.full((N_out, 3), torch.nan)  # Upper input domain for new subdomains
 
-    def eval_batch_of_nodes(lower, upper, continue_splitting=False):
+    def eval_batch_of_nodes(
+            lower,
+            upper,
+            continue_splitting=False
+    ):
+        """
+
+        :param lower:               The input lower bounds of the nodes
+        :param upper:               The input upper bounds of the nodes
+        :param continue_splitting:  True if this evaluation should split the nodes after bounding them
+        :return:                    Returns the (verification status, split dimension, split value, new_lb, new_ub)
+        """
 
         # bounds the nodes
         ret = func.classify_box(params, lower, upper, offset)
         node_type, crown_dict = ret
         node_type = node_type.squeeze(-1)
 
-        if not continue_splitting:
-            raise NotImplemented("Need to handle last iteration where splitting is not done")
-            # return node_type.float(), splits.float(), split_values.float(), clipped_total_new_lower.float(), clipped_total_new_upper.float()
+        unverified_mask = node_type == SIGN_UNKNOWN  # only interested in domains that are unverified from this point
+
+        if (not continue_splitting) or (not unverified_mask.any()):
+            # nodes only need to be bounded, not split
+            empty_tf = torch.empty(node_type.shape, dtype=node_type.dtype, device = node_type.device)
+            return node_type, empty_tf, empty_tf, lower, upper
 
         # call a branching heuristic to select dimensions to split upon
-        unverified_mask = node_type == SIGN_UNKNOWN  # only interested in domains that are unverified from this point
         dm_lb = crown_dict.get('dm_lb')[unverified_mask]
         lA = crown_dict.get('lA')[unverified_mask]
         lbias = crown_dict.get('lbias')[unverified_mask]
-        splits = input_split_branching(dm_lb, lower, upper, lA, offset, branching_method=branching_method).squeeze(1)
+        split_idx = input_split_branching(dm_lb, lower[unverified_mask], upper[unverified_mask], lA, torch.full_like(lbias, offset), branching_method=branching_method).squeeze(1)
         # dm_lb dimension: (batches, 1)
         # lA dimension: (batches, 1, 3)
         # lbias dimension: (batches, 1)
-        # splits dimension: (batches, 1)
+        # split_idx dimension: (batches, 1)
+
+        # FIXME: This should be removed but is here for debugging purposes
+        check_lbias = deconstruct_lbias(lower[unverified_mask], upper[unverified_mask], lA, dm_lb)
+        assert torch.allclose(lbias, check_lbias), "Deconstructed lbias does not match CROWN lbias"
 
         # produce the splits on the domains
-        split_result = kd_split(lower[unverified_mask], upper[unverified_mask], splits)
+        split_result = kd_split(lower[unverified_mask], upper[unverified_mask], split_idx)
         newA_lower, newA_upper, newB_lower, newB_upper = split_result
 
         # stack lower and upper bounds to work with clip_domains
         total_new_lower = torch.vstack((newA_lower, newB_lower))
         total_new_upper = torch.vstack((newA_upper, newB_upper))
-        # create expanded view that does not allocate new memory
-        clip_batches = lA.shape[0] * 2
-        lA = lA.expand(clip_batches, *lA.shape[1:])
-        lbias = lbias.expand(clip_batches, *lbias.shape[1:])
+        # repeat along the batch dimension for newly split nodes
+        lA = lA.repeat(2, 1, 1)
+        lbias = lbias.repeat(2, 1)
         # apply clipping to reduce volume of input domain
         clip_results = clip_domains(
             total_new_lower, total_new_upper, offset, lA, None, lbias, True)
@@ -522,9 +539,23 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
         clipped_total_new_upper[clip_verified] = torch.nan
 
         # retrieve the split values
-        split_values = clipped_total_new_lower[newA_lower.shape[0]:, splits].squeeze(1)
+        s_idx = newA_lower.shape[0]
+        e_idx = s_idx * 2
+        indices = torch.arange(s_idx, e_idx)
+        split_values = clipped_total_new_lower[indices, split_idx]
 
-        return node_type.float(), splits.float(), split_values.float(), clipped_total_new_lower.float(), clipped_total_new_upper.float()
+        # put clipped domains back into our new domain list
+        new_split_idx = torch.full_like(node_type, torch.nan)
+        new_split_values = torch.full_like(node_type, torch.nan)
+        new_lower = torch.full((node_type.shape[0]*2, 3), torch.nan)
+        new_upper = torch.full((node_type.shape[0]*2, 3), torch.nan)
+
+        new_split_idx[unverified_mask] = split_idx.float()
+        new_split_values[unverified_mask] = split_values.float()
+        new_lower[unverified_mask.repeat_interleave(2)] = clipped_total_new_lower.float()
+        new_upper[unverified_mask.repeat_interleave(2)] = clipped_total_new_upper.float()
+
+        return node_type.float(), new_split_idx, new_split_values, new_lower, new_upper
 
     node_types_temp = node_types[internal_node_mask]
     node_split_dim_temp = node_split_dim[internal_node_mask]
@@ -542,11 +573,12 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
             node_lower[internal_node_mask], node_upper[internal_node_mask], continue_splitting)
 
         node_types[internal_node_mask], node_split_dim[internal_node_mask], split_values[internal_node_mask] = eval_result[:3]
-        total_new_lower, total_new_upper = eval_result[3:]
-        newA_lower[internal_node_mask] = total_new_lower[:internal_node_mask_len]
-        newB_lower[internal_node_mask] = total_new_lower[internal_node_mask_len:]
-        newA_upper[internal_node_mask] = total_new_upper[:internal_node_mask_len]
-        newB_upper[internal_node_mask] = total_new_upper[internal_node_mask_len:]
+        if continue_splitting:
+            total_new_lower, total_new_upper = eval_result[3:]
+            newA_lower[internal_node_mask] = total_new_lower[:internal_node_mask_len]
+            newB_lower[internal_node_mask] = total_new_lower[internal_node_mask_len:]
+            newA_upper[internal_node_mask] = total_new_upper[:internal_node_mask_len]
+            newB_upper[internal_node_mask] = total_new_upper[internal_node_mask_len:]
 
     else:
         batch_size_per_iteration = batch_size
@@ -558,26 +590,31 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
                                     continue_splitting)
             node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx], split_values[start_idx:end_idx] = eval_result[:3]
             total_new_lower, total_new_upper = eval_result[3:]
-            total_split_idx = end_idx // 2 + 1
-            newA_lower[start_idx:end_idx] = total_new_lower[:total_split_idx]
-            newB_lower[start_idx:end_idx] = total_new_lower[total_split_idx:]
-            newA_upper[start_idx:end_idx] = total_new_upper[:total_split_idx]
-            newB_upper[start_idx:end_idx] = total_new_upper[total_split_idx:]
+            if continue_splitting:
+                diff_idx = end_idx - start_idx
+                newA_lower[start_idx:end_idx] = total_new_lower[:diff_idx]
+                newB_lower[start_idx:end_idx] = total_new_lower[diff_idx:]
+                newA_upper[start_idx:end_idx] = total_new_upper[:diff_idx]
+                newB_upper[start_idx:end_idx] = total_new_upper[diff_idx:]
 
         node_types[internal_node_mask] = node_types_temp
         node_split_dim[internal_node_mask] = node_split_dim_temp
 
     # split the unknown nodes to children
-    # (if split_children is False this will just not create any children at all)
-    split_mask = torch.logical_and(internal_node_mask, node_types == SIGN_UNKNOWN)
     ## now actually build the child nodes
     if continue_splitting:
+        # (if split_children is False this will just not create any children at all)
+        split_mask = torch.logical_and(internal_node_mask, node_types == SIGN_UNKNOWN)
         # concatenate the new children to form output arrays
         node_lower_out[split_mask.repeat_interleave(2)] = torch.hstack(
-            (newA_lower[split_mask].unsqueeze(1), newB_lower[split_mask].unsqueeze(1))).view(-1, d)
+            (newA_lower[split_mask].unsqueeze(1), newB_lower[split_mask].unsqueeze(1))
+        ).view(-1, d)
         node_upper_out[split_mask.repeat_interleave(2)] = torch.hstack(
-            (newA_upper[split_mask].unsqueeze(1), newB_upper[split_mask].unsqueeze(1))).view(-1, d)
-        node_split_val[split_mask] = new_mid[torch.arange(split_mask.sum()), node_split_dim[split_mask].long()]
+            (newA_upper[split_mask].unsqueeze(1), newB_upper[split_mask].unsqueeze(1))
+        ).view(-1, d)
+        node_split_val[split_mask] = split_values[split_mask]
+        # node_split_val[split_mask] = newB_lower[split_mask, node_split_dim[split_mask]]
+        # node_split_val[split_mask] = new_mid[torch.arange(split_mask.sum()), node_split_dim[split_mask].long()]
 
     return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val
 
