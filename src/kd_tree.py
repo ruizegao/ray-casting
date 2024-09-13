@@ -16,7 +16,7 @@ import torch
 from crown import CrownImplicitFunction
 
 INVALID_IND = 2**30
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def split_generator(generator, num_splits=2):
@@ -34,7 +34,6 @@ def construct_uniform_unknown_levelset_tree_iter(
         ):
     N_in = node_lower.shape[0]
     d = node_lower.shape[-1]
-
     def eval_one_node(lower, upper):
 
         # perform an affine evaluation
@@ -69,8 +68,8 @@ def construct_uniform_unknown_levelset_tree_iter(
         out_inds = utils.enumerate_mask(out_mask) + N_finished_interior
         mask = (- 1 < out_inds) & (out_inds < finished_interior_lower.shape[0])
         out_inds = out_inds[mask]
-        node_interior_lower = node_lower[mask].float()
-        node_interior_upper = node_upper[mask].float()
+        node_interior_lower = node_lower[mask].double()
+        node_interior_upper = node_upper[mask].double()
         # finished_interior_lower = finished_interior_lower.at[out_inds,:].set(node_lower, mode='drop')
         # finished_interior_upper = finished_interior_upper.at[out_inds,:].set(node_upper, mode='drop')
         finished_interior_lower[out_inds, :] = node_interior_lower
@@ -83,8 +82,8 @@ def construct_uniform_unknown_levelset_tree_iter(
         out_inds = utils.enumerate_mask(out_mask) + N_finished_exterior
         mask = (- 1 < out_inds) & (out_inds < finished_exterior_lower.shape[0])
         out_inds = out_inds[mask]
-        node_exterior_lower = node_lower[mask].float()
-        node_exterior_upper = node_upper[mask].float()
+        node_exterior_lower = node_lower[mask].double()
+        node_exterior_upper = node_upper[mask].double()
         # finished_exterior_lower = finished_exterior_lower.at[out_inds,:].set(node_lower, mode='drop')
         # finished_exterior_upper = finished_exterior_upper.at[out_inds,:].set(node_upper, mode='drop')
         finished_exterior_lower[out_inds, :] = node_exterior_lower
@@ -168,6 +167,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
     ## Recursively build the tree
     i_split = 0
     n_splits = 99999999 if split_depth is None else split_depth+1 # 1 extra because last round doesn't split
+    print("i and n split: ", i_split, n_splits)
     for i_split in range(n_splits):
         # Reshape in to batches of size <= B
         init_bucket_size = node_lower.shape[0]
@@ -250,7 +250,6 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
         out_dict['exterior_node_lower'] = finished_exterior_lower
         out_dict['exterior_node_upper'] = finished_exterior_upper
 
-
     return out_dict
 
 
@@ -277,12 +276,12 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         node_type = func.classify_box(params, lower, upper, offset=offset)
         # use the largest length along any dimension as the split policy
         worst_dim = torch.argmax(upper - lower, dim=-1)
-        return node_type.float(), worst_dim.float()
+        return node_type.double(), worst_dim.double()
 
     def eval_batch_of_nodes(lower, upper):
         node_type = func.classify_box(params, lower, upper, offset=offset).squeeze(-1)
         worst_dim = torch.argmax(upper - lower, dim=-1)
-        return node_type.float(), worst_dim.float()
+        return node_type.double(), worst_dim.double()
 
     node_types_temp = node_types[internal_node_mask]
     node_split_dim_temp = node_split_dim[internal_node_mask]

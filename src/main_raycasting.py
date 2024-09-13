@@ -17,7 +17,7 @@ import implicit_mlp_utils
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
@@ -44,7 +44,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     # flip Y
     img = torch.flip(img, [0])
     # append an alpha channel
-    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
+    alpha_channel = (torch.min(img, dim=-1).values < 1.).double()
     # print(alpha_channel[:3, :3])
     # alpha_channel = torch.ones_like(img[:,:,0])
     img_alpha = torch.concatenate((img, alpha_channel[:, :, None]), dim=-1)

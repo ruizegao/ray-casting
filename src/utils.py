@@ -8,7 +8,7 @@ import polyscope as ps
 import datetime
 import polyscope.imgui as psim
 
-# torch.set_default_tensor_type(torch.cuda.FloatTensor)
+# torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 class Timer(object):
     def __init__(self, name=None, filename=None):

@@ -7,6 +7,7 @@ import mlp
 import utils
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 def dense(input, A, b, ctx):
     A_tensor = torch.tensor(A, dtype=input[0].dtype, device=input[0].device)
@@ -55,8 +56,8 @@ def relu(input, ctx):
         alpha = torch.where(lower >= 0, 1., alpha)
         alpha = torch.where(upper < 0, 0., alpha)
 
-        beta = kappa * lower * (2 * h - lower) / 2 + kappa * (upper - lower) ** 2 / 4
-        delta = kappa * lower * (2 * h - lower) / 2
+        beta = kappa * lower * (2 * h - lower) / 2 + (aff ** 2).sum(dim=0) / 2 #+ kappa * (upper - lower) ** 2 / 4
+        delta = kappa * lower * (2 * h - lower) / 2 + (aff ** 2).sum(dim=0) / 2 #+ kappa * (upper - lower) ** 2 / 8
         output = affine.apply_linear_approx(ctx, input, alpha, beta, delta, kappa)
     else:
         # Compute the linearized approximation
@@ -66,7 +67,6 @@ def relu(input, ctx):
         # handle numerical badness in the denominator above
         alpha = torch.nan_to_num(alpha, nan=0.0)  # necessary?
         alpha = torch.clip(alpha, min=0., max=1.)
-
         # here, alpha/beta are necessarily positive, which makes this simpler
         beta = (torch.nn.functional.relu(lower) - alpha * lower) / 2
         delta = beta

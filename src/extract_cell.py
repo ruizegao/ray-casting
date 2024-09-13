@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import utils
 
-# torch.set_default_tensor_type(torch.cuda.FloatTensor)
+# torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 # The raw table of all 256 cases (from http://www.paulbourke.net/geometry/polygonise/)
 MC_TRI_TABLE_RAW = [

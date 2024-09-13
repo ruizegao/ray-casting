@@ -16,7 +16,7 @@ from utils import *
 import affine
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
 # theta_x/y should be
@@ -292,10 +292,10 @@ def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcap
                 y0 = torch.floor(y_coords).long()
                 y1 = y0 + 1
 
-                x0 = x0.float()
-                x1 = x1.float()
-                y0 = y0.float()
-                y1 = y1.float()
+                x0 = x0.double()
+                x1 = x1.double()
+                y0 = y0.double()
+                y1 = y1.double()
 
                 Ia = get_pixel_value(input, x0, y0, mode, cval)
                 Ib = get_pixel_value(input, x0, y1, mode, cval)

@@ -27,34 +27,40 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
     elif mode == 'interval':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('interval')
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
     
     elif mode == 'affine_fixed':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_fixed')
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
    
     elif mode == 'affine_truncate':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_truncate', 
                 truncate_count=kwargs['affine_n_truncate'], truncate_policy=kwargs['affine_truncate_policy'])
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
     
     elif mode == 'affine_append':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_append', 
                 n_append=kwargs['affine_n_append'])
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
     
     elif mode == 'affine_all':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_all')
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
 
     elif mode == 'affine_quad':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_quad')
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx), params
+        torch_model = mlp.func_as_torch(params)
+        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
 
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')

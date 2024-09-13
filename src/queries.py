@@ -24,7 +24,7 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
 # =============================================================

@@ -34,7 +34,7 @@ import slope_interval_layers
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, cast_opt_based=False):
@@ -60,7 +60,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     # print(img[:3][:3][:3])
     # append an alpha channel
     # alpha_channel = (torch.min(img,dim=-1) < 1.) * 1.
-    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
+    alpha_channel = (torch.min(img, dim=-1).values < 1.).double()
     # print(alpha_channel[:3, :3])
     # alpha_channel = torch.ones_like(img[:,:,0])
     img_alpha = torch.concatenate((img, alpha_channel[:,:,None]), dim=-1)
@@ -116,12 +116,19 @@ def do_sample_surface(opts, implicit_func, params, n_samples, sample_width, n_no
 def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost):
 
 
-    data_bound = opts['data_bound']
+    data_bound = float(opts['data_bound'])
     # data_bound = 2.
 
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
 
+    # lower = torch.tensor((0.25, -0.65625, 0.46875), dtype=torch.double)
+    # # upper = torch.tensor((0.28125, -0.6875, 0.46875))
+    # upper = torch.tensor((0.28125, -0.6875, 0.5), dtype=torch.double)
+    # torch.set_printoptions(precision=8)
+    # print("lower: ", lower)
+    # lower = torch.tensor((0.25, -0.625, 0.4375), dtype=torch.float64)
+    # upper = torch.tensor((0.3125, -0.6875, 0.5), dtype=torch.float64)
 
     print(f"do_hierarchical_mc {n_mc_depth}")
     
@@ -161,6 +168,7 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
         node_lower = out_dict['exterior_node_lower']
         node_upper = out_dict['exterior_node_upper']
         node_lower = node_lower[node_valid,:]
+        # print("node lower:", node_lower)
         node_upper = node_upper[node_valid,:]
         if node_lower.shape[0] > 0:
             verts, inds = generate_tree_viz_nodes_simple(node_lower, node_upper, shrink_factor=0.05)
