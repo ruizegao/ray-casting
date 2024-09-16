@@ -136,8 +136,9 @@ def input_split_parallel(
 def kd_split(
         node_lower: Tensor,
         node_upper: Tensor,
-        node_split_dim: Tensor
-) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
+        node_split_dim: Tensor,
+        verbose = False
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
     A more efficient manner of producing splits. Extends new child nodes along each split dimension
 
@@ -155,4 +156,13 @@ def kd_split(
     newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
     newB_upper = new_upper
 
-    return newA_lower, newA_upper, newB_lower, newB_upper
+    if verbose:
+        print(f"newA_lower: \n{newA_lower.cpu().numpy()}")
+        print(f"newB_lower: \n{newB_lower.cpu().numpy()}")
+        print(f"newA_upper: \n{newA_upper.cpu().numpy()}")
+        print(f"newB_upper: \n{newB_upper.cpu().numpy()}")
+
+    # retain split values
+    new_mid = new_mid[torch.arange(len(node_split_dim)), node_split_dim]
+
+    return newA_lower, newA_upper, newB_lower, newB_upper, new_mid
