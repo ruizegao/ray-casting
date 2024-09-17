@@ -40,9 +40,10 @@ def construct_uniform_unknown_levelset_tree_iter(
         finished_interior_lower, finished_interior_upper, N_finished_interior,
         finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
         offset=0.
-):
+        ):
     N_in = node_lower.shape[0]
     d = node_lower.shape[-1]
+
     def eval_one_node(lower, upper):
 
         # perform an affine evaluation
@@ -239,6 +240,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
         node_valid = torch.reshape(node_valid, (-1,))
         node_lower = torch.reshape(node_lower, (-1, d))
 
+
         node_upper = torch.reshape(node_upper, (-1, d))
 
         # Compactify and rebucket arrays
@@ -249,6 +251,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
 
         if quit_next:
             break
+
 
     # pack the output in to a dict to support optional outputs
     out_dict = {
@@ -266,6 +269,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
         out_dict['exterior_node_valid'] = torch.arange(finished_exterior_lower.shape[0]) < N_finished_exterior
         out_dict['exterior_node_lower'] = finished_exterior_lower
         out_dict['exterior_node_upper'] = finished_exterior_upper
+
 
     return out_dict
 

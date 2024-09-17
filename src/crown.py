@@ -85,6 +85,10 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
 
     def classify_box(self, params, box_lower, box_upper, offset=0.):
+        ptb = PerturbationLpNorm(x_L=box_lower.double(), x_U=box_upper.double())
+        bounded_x = BoundedTensor(box_lower.double(), ptb)
+        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=False)
+        bound_dict = self.bounded_func.save_intermediate()
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
         return_A = self._enable_clipping
