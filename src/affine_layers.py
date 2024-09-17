@@ -56,8 +56,8 @@ def relu(input, ctx):
         alpha = torch.where(lower >= 0, 1., alpha)
         alpha = torch.where(upper < 0, 0., alpha)
 
-        beta = kappa * lower * (2 * h - lower) / 2 + (aff ** 2).sum(dim=0) / 2 #+ kappa * (upper - lower) ** 2 / 4
-        delta = kappa * lower * (2 * h - lower) / 2 + (aff ** 2).sum(dim=0) / 2 #+ kappa * (upper - lower) ** 2 / 8
+        beta = kappa * lower * (2 * h - lower) / 2
+        delta = beta
         output = affine.apply_linear_approx(ctx, input, alpha, beta, delta, kappa)
     else:
         # Compute the linearized approximation

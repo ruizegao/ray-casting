@@ -14,7 +14,7 @@ torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 class AffineImplicitFunction(implicit_function.ImplicitFunction):
 
-    def __init__(self, affine_func, torch_model, ctx, bounded_func=None):
+    def __init__(self, affine_func, ctx, bounded_func=None, torch_model=None):
         super().__init__("classify-only")
         self.affine_func = affine_func
         self.torch_model = torch_model
@@ -27,6 +27,8 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         f = lambda x : self.affine_func(params, x, self.mode_dict)
         return wrap_scalar(f)(x)
 
+    def torch_forward(self, x):
+        return self.torch_model(x)
     # the parent class automatically delegates to this
     # def classify_box(self, params, box_lower, box_upper):
         # pass
@@ -42,6 +44,7 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         # print("base type in input: ", input[0].dtype)
         if keep_ctx.mode == 'affine+backward':
             bound_dict = self.bounded_func(params, input, {'ctx' : keep_ctx})
+            print(bound_dict)
             box_diff = torch.diag(box_vecs)
             may_lower, may_upper = pseudo_crown(bound_dict, box_center, box_diff)
             # print(may_upper, may_lower)
@@ -126,108 +129,35 @@ def may_contain_bounds(ctx, input):
     rad = radius(input)
     return base-rad, base+rad
 
-def pseudo_crown(bounds, center, diff, optimize=False, num_iter=15, lr=0.0001):
-    def compute_bounds():
-        N_ops = len(bounds)
-        A_l = bounds[N_ops - 1][
-            'A_l']  # Initialize the linear bound coefficient with the parameters of the last linear layer
-        A_u = bounds[N_ops - 1]['A_u']
-        d_l = bounds[N_ops - 1]['b_l']
-        d_u = bounds[N_ops - 1]['b_u']
+def pseudo_crown(bounds, center, diff):
+    N_ops = len(bounds)
+    A_l = bounds[N_ops - 1]['A_l']  # Initialize the linear bound coefficient with the parameters of the last linear layer
+    A_u = bounds[N_ops - 1]['A_u']
+    d_l = bounds[N_ops - 1]['b_l']
+    d_u = bounds[N_ops - 1]['b_u']
 
-        for i in range(len(bounds) - 2, -1,
-                       -1):  # Perform propagation in the backward direction to update the coefficients
-            # print("layer: ", i)
-            W_l = bounds[i]['A_l']
-            W_u = bounds[i]['A_u']
-            b_l = bounds[i]['b_l']
-            b_u = bounds[i]['b_u']
-            if bounds[i][
-                'name'] == 'relu':  # Update approximated linear bounds of relu layers. The details of approximation is in relu() in affine_layers.py
-                d_l = d_l + torch.where(A_l > 0, A_l, 0.) @ b_l + torch.where(A_l <= 0, A_l, 0.) @ b_u
-                d_u = d_u + torch.where(A_u > 0, A_u, 0.) @ b_u + torch.where(A_u <= 0, A_u, 0.) @ b_l
-                A_l = torch.where(A_l > 0, A_l, 0.) @ W_l + torch.where(A_l <= 0, A_l, 0.) @ W_u
-                A_u = torch.where(A_u > 0, A_u, 0.) @ W_u + torch.where(A_u <= 0, A_u, 0.) @ W_l
-            elif bounds[i]['name'] == 'dense':  # Update linear bounds from linear layers
-                d_l = d_l + A_l @ b_l
-                d_u = d_u + A_u @ b_u
-                A_l = A_l @ W_l
-                A_u = A_u @ W_u
+    for i in range(len(bounds) - 2, -1, -1):  # Perform propagation in the backward direction to update the coefficients
+        # print("layer: ", i)
+        W_l = bounds[i]['A_l']
+        W_u = bounds[i]['A_u']
+        b_l = bounds[i]['b_l']
+        b_u = bounds[i]['b_u']
+        if bounds[i][
+            'name'] == 'relu':  # Update approximated linear bounds of relu layers. The details of approximation is in relu() in affine_layers.py
+            d_l = d_l + torch.where(A_l > 0, A_l, 0.) @ b_l + torch.where(A_l <= 0, A_l, 0.) @ b_u
+            d_u = d_u + torch.where(A_u > 0, A_u, 0.) @ b_u + torch.where(A_u <= 0, A_u, 0.) @ b_l
+            A_l = torch.where(A_l > 0, A_l, 0.) @ W_l + torch.where(A_l <= 0, A_l, 0.) @ W_u
+            A_u = torch.where(A_u > 0, A_u, 0.) @ W_u + torch.where(A_u <= 0, A_u, 0.) @ W_l
+        elif bounds[i]['name'] == 'dense':  # Update linear bounds from linear layers
+            d_l = d_l + A_l @ b_l
+            d_u = d_u + A_u @ b_u
+            A_l = A_l @ W_l
+            A_u = A_u @ W_u
 
-        lower_bound = center @ A_l.T - diff @ A_l.abs().T + d_l  # Concretize the linear bound with input bounds
-        upper_bound = center @ A_u.T + diff @ A_u.abs().T + d_u
+    lower_bound = center @ A_l.T - diff @ A_l.abs().T + d_l  # Concretize the linear bound with input bounds
+    upper_bound = center @ A_u.T + diff @ A_u.abs().T + d_u
 
-        return lower_bound.sum(), upper_bound.sum()  # .sum() is used as a replacement for .item(), which is not supported by vmap()
-
-    def compute_loss(optimizable_parameters=None):
-        N_ops = len(bounds)
-        A_l = bounds[N_ops - 1][
-            'A_l']  # Initialize the linear bound coefficient with the parameters of the last linear layer
-        A_u = bounds[N_ops - 1]['A_u']
-        d_l = bounds[N_ops - 1]['b_l']
-        d_u = bounds[N_ops - 1]['b_u']
-        k = 0
-        if optimizable_parameters is not None:
-            k = len(optimizable_parameters) - 1
-        for i in range(len(bounds) - 2, -1,
-                       -1):  # Perform propagation in the backward direction to update the coefficients
-            if bounds[i]['name'] == 'relu' and optimizable_parameters is not None:
-                W_l = optimizable_parameters[k]
-                k = k - 1
-            else:
-                W_l = bounds[i]['A_l']
-            # W_l = bounds[i]['A_l']
-            W_u = bounds[i]['A_u']
-            b_l = bounds[i]['b_l']
-            b_u = bounds[i]['b_u']
-            if bounds[i][
-                'name'] == 'relu':  # Update approximated linear bounds of relu layers. The details of approximation is in relu() in affine_layers.py
-                d_l = d_l + torch.where(A_l > 0, A_l, 0.) @ b_l + torch.where(A_l <= 0, A_l, 0.) @ b_u
-                d_u = d_u + torch.where(A_u > 0, A_u, 0.) @ b_u + torch.where(A_u <= 0, A_u, 0.) @ b_l
-                A_l = torch.where(A_l > 0, A_l, 0.) @ W_l + torch.where(A_l <= 0, A_l, 0.) @ W_u
-                A_u = torch.where(A_u > 0, A_u, 0.) @ W_u + torch.where(A_u <= 0, A_u, 0.) @ W_l
-            elif bounds[i]['name'] == 'dense':  # Update linear bounds from linear layers
-                d_l = d_l + A_l @ b_l
-                d_u = d_u + A_u @ b_u
-                A_l = A_l @ W_l
-                A_u = A_u @ W_u
-
-        lower_bound = center @ A_l.T - diff @ A_l.abs().T + d_l  # Concretize the linear bound with input bounds
-        upper_bound = center @ A_u.T + diff @ A_u.abs().T + d_u
-        # loss = upper_bound.sum() - lower_bound.sum()
-        loss = - lower_bound.sum()
-        return loss  # .sum() is used as a replacement for .item(), which is not supported by vmap()
-
-    if not optimize:
-        return compute_bounds()
-    optim_params = []
-    for n_op in bounds:
-        if bounds[n_op]['name'] == 'relu':
-            # bounds[n_op]['A_l'] = nn.Parameter(bounds[n_op]['A_l'])
-            # optim_params.append(bounds[n_op]['A_l'])
-            optim_params.append(nn.Parameter(bounds[n_op]['A_l']))
-
-    # optim_params = tuple(optim_params)
-    optimizer = torch.optim.SGD(optim_params, lr=lr)
-    old_loss = torch.inf
-    for i in range(num_iter):
-        # loss = compute_loss()
-        # optimizer.zero_grad()
-        for param in optim_params:
-            if param.grad is not None:
-                param.grad.zero_()
-
-        gradients = grad(compute_loss)(optim_params)
-        for optim_param, gradient in zip(optim_params, gradients):
-            fro_norm = torch.norm(gradient, p='fro')
-            optim_param.grad = gradient / fro_norm
-        optimizer.step()
-        for param in optim_params:
-            param = torch.clamp(param, 0., 1.)
-        loss = compute_loss()
-        # print("Loss: ", compute_loss())
-        # print("mean of alpha: ", optim_params[0].mean())
-    return compute_bounds()
+    return lower_bound.sum(), upper_bound.sum()  # .sum() is used as a replacement for .item(), which is not supported by vmap()
 
 def truncate_affine(ctx, input):
     # do nothing if the input is a constant or we are not in truncate mode
@@ -303,15 +233,8 @@ def apply_linear_approx(ctx, input, alpha, beta, delta, kappa=None):
         delta = torch.abs(delta)
         c_1 = (2 * kappa * base + alpha)
         base = kappa * base ** 2 + alpha * base + beta
-        # print("kappa: ", kappa.dtype)
-        # print("alpha: ", alpha)
-        # print("beta: ", beta)
         if aff is not None:
-            aff_tmp = aff.clone()
-            for idx in range(aff.shape[0]-2, -1, -1):
-                aff[idx] = aff[idx] + aff[idx+1]
-
-            aff = torch.where(kappa != 0, (aff - aff_tmp + c_1) * aff_tmp, alpha * aff_tmp)
+            aff = torch.where(kappa != 0, (kappa * aff.abs().sum(dim=0) + c_1) * aff, alpha * aff)
         err = c_1 * err
         new_aff = torch.diag(delta)
         aff = torch.cat((aff, new_aff), dim=0)

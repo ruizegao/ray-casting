@@ -3,7 +3,7 @@ from functools import partial
 
 import utils
 import mlp, sdf, affine, slope_interval, crown
-
+import torch
 
 def generate_implicit_from_file(input_path, mode, **kwargs):
     
@@ -28,39 +28,49 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('interval')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
     
     elif mode == 'affine_fixed':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_fixed')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
    
     elif mode == 'affine_truncate':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_truncate', 
                 truncate_count=kwargs['affine_n_truncate'], truncate_policy=kwargs['affine_truncate_policy'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
     
     elif mode == 'affine_append':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_append', 
                 n_append=kwargs['affine_n_append'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
     
     elif mode == 'affine_all':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_all')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
 
     elif mode == 'affine_quad':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_quad')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, torch_model, affine_ctx), params
+        # data_bound = 100.
+        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
+        # upper = torch.tensor((0.28125, -0.6875, 0.46875))
+        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
+        # samples = (torch.rand((10000, 3))) * 0.03125 + lower
+        # outputs = torch_model(samples)
+        # print("min and max of sampled values: ")
+        # print(outputs.min(), outputs.max())
+        func = affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model)
+        # print(func.classify_box(params, lower, upper))
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
 
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')
@@ -68,6 +78,14 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
 
     elif mode == 'crown':
         crown_func = mlp.func_as_torch(params)
+        # data_bound = 1.
+        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
+        # upper = torch.tensor((0.28125, -0.6875, 0.46875))
+        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
+        # samples = (torch.rand((10000, 3))) * 0.03125 + lower
+        # outputs = crown_func(samples)
+        # print("min and max of sampled values: ")
+        # print(outputs.min(), outputs.max())
         implicit_func = mlp.func_from_spec(mode='default')
         return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown'), params
 
@@ -97,9 +115,9 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward'), params
 
     elif mode == 'dynamic_forward+backward':
-            crown_func = mlp.func_as_torch(params)
-            implicit_func = mlp.func_from_spec(mode='default')
-            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward'), params
+        crown_func = mlp.func_as_torch(params)
+        implicit_func = mlp.func_from_spec(mode='default')
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward'), params
 
     elif mode == 'affine+backward':
         implicit_func = mlp.func_from_spec(mode='affine')

@@ -122,9 +122,8 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
 
-    # lower = torch.tensor((0.25, -0.65625, 0.46875), dtype=torch.double)
-    # # upper = torch.tensor((0.28125, -0.6875, 0.46875))
-    # upper = torch.tensor((0.28125, -0.6875, 0.5), dtype=torch.double)
+    # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
+    # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
     # torch.set_printoptions(precision=8)
     # print("lower: ", lower)
     # lower = torch.tensor((0.25, -0.625, 0.4375), dtype=torch.float64)

@@ -24,7 +24,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN'):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
-        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={"relu": "same-slope"})
         self.crown_mode = crown_mode
         print(self.crown_mode)
 
@@ -57,7 +57,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def classify_box(self, params, box_lower, box_upper, offset=0.):
         ptb = PerturbationLpNorm(x_L=box_lower.double(), x_U=box_upper.double())
         bounded_x = BoundedTensor(box_lower.double(), ptb)
-        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
+        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=False)
+        bound_dict = self.bounded_func.save_intermediate()
         output_type = torch.full_like(may_lower, SIGN_UNKNOWN)
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
         # output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
