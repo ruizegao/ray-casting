@@ -16,10 +16,10 @@ from torch import Tensor
 from typing import Tuple, Union
 
 from crown import CrownImplicitFunction
-from src.crown import deconstruct_lbias
-from src.heuristics import input_split_branching
+from crown import deconstruct_lbias
+from heuristics import input_split_branching
 from clip_utils import clip_domains
-from src.split import kd_split
+from split import kd_split
 
 INVALID_IND = 2**30
 torch.set_default_tensor_type(torch.cuda.DoubleTensor)
