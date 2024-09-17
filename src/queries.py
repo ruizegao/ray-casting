@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
+from torch import Tensor
 import functorch
 from functorch import vmap
 from sympy.geometry import plane
@@ -14,6 +15,7 @@ import time
 import utils
 import render
 import geometry
+from typing import Tuple, Union
 from bucketing import *
 import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
@@ -21,7 +23,7 @@ from crown import CrownImplicitFunction
 from mlp import func_as_torch
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree
+from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree, construct_full_non_uniform_unknown_levelset_tree
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.DoubleTensor)
@@ -60,7 +62,30 @@ def find_rays_plane_intersection_with_depth(roots, dirs, plane, plane_dim):
     return vmap(partial(find_ray_plane_intersection_with_depth, plane, plane_dim))(roots, dirs)
 
 
-def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001, batch_size=None):
+def cast_rays_tree_based(
+        func_tuple,
+        params_tuple,
+        roots,
+        dirs,
+        branching_method: str = "naive",
+        delta=0.001,
+        batch_size=None,
+        enable_clipping=False
+) -> Tuple[Tensor, Tensor, Tensor, float]:
+    """
+
+    kD Tree based method for ray casting.
+
+    :param func_tuple:
+    :param params_tuple:
+    :param roots:
+    :param dirs:
+    :param branching_method:    Specified branching heuristic to decide which dimension to split upon
+    :param delta:
+    :param batch_size:          If not None, nodes are processed in batches
+    :param enable_clipping:     If true, builds a non-uniform kD tree using clipping
+    :return:
+    """
     t0 = time.time()
     split_depth = 3 * 6
     func = func_tuple[0]
@@ -69,8 +94,14 @@ def cast_rays_tree_based(func_tuple, params_tuple, roots, dirs, delta=0.001, bat
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
     center = (lower + upper) / 2.
-    node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
-        func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
+
+    if enable_clipping:
+        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
+            func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
+    else:
+        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
+            func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
+
     t1 = time.time()
     print("tree building time: ", t1 - t0)
     t_out = torch.zeros((dirs.shape[0],))

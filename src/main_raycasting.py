@@ -3,6 +3,8 @@
 import sys, os, time, math
 import time
 import argparse
+import warnings
+
 import torch
 import imageio
 import polyscope.imgui as psim
@@ -16,12 +18,14 @@ import implicit_mlp_utils
 
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
+CROWN_MODES = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
+             'dynamic_forward+backward']
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=False, batch_size=None):
+                             cast_tree_based=False, batch_size=None, enable_clipping=False):
     root = torch.tensor([2., 0., 0.])
     look = torch.tensor([-1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
@@ -39,7 +43,8 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
                                                                              left, res, fov_deg, cast_frustum, opts,
                                                                              shading='matcap_color', matcaps=matcaps,
                                                                              shading_color_tuple=(surf_color,),
-                                                                             tree_based=cast_tree_based, batch_size=batch_size)
+                                                                             tree_based=cast_tree_based, batch_size=batch_size,
+                                                                             enable_clipping=enable_clipping)
 
     # flip Y
     img = torch.flip(img, [0])
@@ -72,6 +77,8 @@ def main():
     parser.add_argument("--disable-jit", action='store_true')
     parser.add_argument("--debug-nans", action='store_true')
     parser.add_argument("--enable-double-precision", action='store_true')
+    parser.add_argument("--enable_clipping", action='store_true')
+    parser.add_argument("--heuristic", type=str, default='naive')
 
     # Parse arguments
     args = parser.parse_args()
@@ -85,6 +92,7 @@ def main():
     cast_tree_based = args.cast_tree_based
     mode = args.mode
     batch_size = args.batch_size
+    enable_clipping = args.enable_clipping
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
              'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
              'dynamic_forward+backward', 'affine+backward', 'affine_quad']
@@ -101,9 +109,13 @@ def main():
     affine_opts['dynamic_forward+backward'] = 1.
     affine_opts['affine+backward'] = 1.
     affine_opts['affine_quad'] = 1.
+    affine_opts['enable_clipping'] = enable_clipping
     truncate_policies = ['absolute', 'relative']
     affine_opts['affine_truncate_policy'] = 'absolute'
     surf_color = (0.157, 0.613, 1.000)
+
+    if mode not in CROWN_MODES and enable_clipping:
+        warnings.warn("'enable_clipping' was set to True but will be ignored since it is currently only supported for CROWN modes")
 
     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
@@ -123,8 +135,7 @@ def main():
         if changed:
             implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
-    elif mode in ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
-             'dynamic_forward+backward']:
+    elif mode in CROWN_MODES:
 
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
@@ -135,7 +146,7 @@ def main():
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based, batch_size=batch_size)
+                             cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping)
 
 
 if __name__ == '__main__':

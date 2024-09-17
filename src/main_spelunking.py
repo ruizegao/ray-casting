@@ -37,7 +37,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.DoubleTensor)
 
 
-def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, cast_opt_based=False):
+def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, branching_method, cast_opt_based=False):
     root = torch.tensor([2., 0., 0.])
     look = torch.tensor([-1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
@@ -51,7 +51,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
 
     surf_color = tuple(surf_color)
 
-    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,), tree_based=cast_opt_based)
+    img, depth, count, _, eval_sum, raycast_time = render.render_image(implicit_func, params, root, look, up, left, res, fov_deg, cast_frustum, branching_method, opts, shading='matcap_color', matcaps=matcaps, shading_color_tuple=(surf_color,), tree_based=cast_opt_based)
     print(depth, count, _, eval_sum)
 
     # flip Y
@@ -402,7 +402,7 @@ def main():
             psim.PushItemWidth(100)
         
             if psim.Button("Save Render"):
-                save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, cast_opt_based=cast_opt_based)
+                save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, branching_method, cast_opt_based=cast_opt_based)
             
 
             _, cast_frustum = psim.Checkbox("cast frustum", cast_frustum)
