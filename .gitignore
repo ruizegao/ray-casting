@@ -49,3 +49,6 @@ pyrightconfig.json
 *.exe
 *.out
 *.app
+
+# Pycharm
+.idea/

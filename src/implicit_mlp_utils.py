@@ -13,6 +13,8 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
     else:
         raise ValueError("unrecognized filetype")
 
+    enable_clipping = kwargs.pop('enable_clipping', False)
+
     # `params` is now populated
 
     # Construct an `ImplicitFunction` object ready to do the appropriate kind of evaluation
@@ -87,37 +89,37 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         # print("min and max of sampled values: ")
         # print(outputs.min(), outputs.max())
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown'), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown', enable_clipping=enable_clipping), params
 
     elif mode == 'alpha_crown':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='alpha-CROWN'), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='alpha-CROWN', enable_clipping=enable_clipping), params
 
     elif mode == 'forward+backward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='Forward+Backward'), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='Forward+Backward', enable_clipping=enable_clipping), params
 
     elif mode == 'forward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward'), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward', enable_clipping=enable_clipping), params
 
     elif mode == 'forward-optimized':
             crown_func = mlp.func_as_torch(params)
             implicit_func = mlp.func_from_spec(mode='default')
-            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward-optimized'), params
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward-optimized', enable_clipping=enable_clipping), params
 
     elif mode == 'dynamic_forward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward'), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward', enable_clipping=enable_clipping), params
 
     elif mode == 'dynamic_forward+backward':
-        crown_func = mlp.func_as_torch(params)
-        implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward'), params
+            crown_func = mlp.func_as_torch(params)
+            implicit_func = mlp.func_from_spec(mode='default')
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward', enable_clipping=enable_clipping), params
 
     elif mode == 'affine+backward':
         implicit_func = mlp.func_from_spec(mode='affine')
