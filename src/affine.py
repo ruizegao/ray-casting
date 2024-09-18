@@ -10,7 +10,7 @@ import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 
 # === Function wrappers
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 class AffineImplicitFunction(implicit_function.ImplicitFunction):
 

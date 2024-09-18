@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<project version="4">
-  <component name="SshConfigs">
-    <configs>
-      <sshConfig authType="OPEN_SSH" host="chicago.huan-zhang" id="db7bd20f-33c1-4bf2-845a-039a1dd8cedb" port="2251" nameFormat="DESCRIPTIVE" username="ruizeg2" useOpenSSHConfig="true" />
-    </configs>
-  </component>
-</project>

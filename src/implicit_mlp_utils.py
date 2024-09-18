@@ -63,9 +63,9 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         affine_ctx = affine.AffineContext('affine_quad')
         torch_model = mlp.func_as_torch(params)
         # data_bound = 100.
-        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
+        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.float32)
         # upper = torch.tensor((0.28125, -0.6875, 0.46875))
-        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
+        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.float32)
         # samples = (torch.rand((10000, 3))) * 0.03125 + lower
         # outputs = torch_model(samples)
         # print("min and max of sampled values: ")
@@ -81,9 +81,9 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
     elif mode == 'crown':
         crown_func = mlp.func_as_torch(params)
         # data_bound = 1.
-        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
+        # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.float32)
         # upper = torch.tensor((0.28125, -0.6875, 0.46875))
-        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
+        # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.float32)
         # samples = (torch.rand((10000, 3))) * 0.03125 + lower
         # outputs = crown_func(samples)
         # print("min and max of sampled values: ")

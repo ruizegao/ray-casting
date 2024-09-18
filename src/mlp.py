@@ -10,7 +10,7 @@ import slope_interval
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 
@@ -173,8 +173,8 @@ def func_as_torch(params):
         # print(name)
         # self.op_list.append((name, args))
         if name == 'dense':
-            A = torch.tensor(args['A'], dtype=torch.double).T#.to(device)
-            b = torch.tensor(args['b'], dtype=torch.double)#.to(device)
+            A = torch.tensor(args['A'], dtype=torch.float32).T#.to(device)
+            b = torch.tensor(args['b'], dtype=torch.float32)#.to(device)
             linear = torch.nn.Linear(A.shape[1], A.shape[0])
             linear.weight = torch.nn.Parameter(A)
             linear.bias = torch.nn.Parameter(b)

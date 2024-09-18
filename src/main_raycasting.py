@@ -21,7 +21,7 @@ ROOT_DIR = os.path.join(SRC_DIR, "..")
 CROWN_MODES = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
              'dynamic_forward+backward']
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
@@ -49,7 +49,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     # flip Y
     img = torch.flip(img, [0])
     # append an alpha channel
-    alpha_channel = (torch.min(img, dim=-1).values < 1.).double()
+    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
     # print(alpha_channel[:3, :3])
     # alpha_channel = torch.ones_like(img[:,:,0])
     img_alpha = torch.concatenate((img, alpha_channel[:, :, None]), dim=-1)

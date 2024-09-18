@@ -7,7 +7,7 @@ import mlp
 import utils
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 def dense(input, A, b, ctx):
     A_tensor = torch.tensor(A, dtype=input[0].dtype, device=input[0].device)

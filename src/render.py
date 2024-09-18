@@ -16,7 +16,7 @@ from utils import *
 import affine
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 # theta_x/y should be
@@ -96,7 +96,7 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
     return vmap(this_normal_one)(hit_pos, hit_ids)
 
 
-def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
+def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, branching_method, opts,
                  shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
                  shading_color_func=None, tree_based=False):
     # make sure inputs are tuples not lists (can't has lists)
@@ -293,10 +293,10 @@ def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcap
                 y0 = torch.floor(y_coords).long()
                 y1 = y0 + 1
 
-                x0 = x0.double()
-                x1 = x1.double()
-                y0 = y0.double()
-                y1 = y1.double()
+                x0 = x0.float()
+                x1 = x1.float()
+                y0 = y0.float()
+                y1 = y1.float()
 
                 Ia = get_pixel_value(input, x0, y0, mode, cval)
                 Ib = get_pixel_value(input, x0, y1, mode, cval)

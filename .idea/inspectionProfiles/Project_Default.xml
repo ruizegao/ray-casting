@@ -4,7 +4,7 @@
     <inspection_tool class="PyPackageRequirementsInspection" enabled="true" level="WARNING" enabled_by_default="true">
       <option name="ignoredPackages">
         <value>
-          <list size="16">
+          <list size="18">
             <item index="0" class="java.lang.String" itemvalue="functional" />
             <item index="1" class="java.lang.String" itemvalue="sklearn" />
             <item index="2" class="java.lang.String" itemvalue="textX" />
@@ -21,6 +21,8 @@
             <item index="13" class="java.lang.String" itemvalue="cudnn" />
             <item index="14" class="java.lang.String" itemvalue="lightgbm" />
             <item index="15" class="java.lang.String" itemvalue="Pillow" />
+            <item index="16" class="java.lang.String" itemvalue="PyMCubes" />
+            <item index="17" class="java.lang.String" itemvalue="opencv_python" />
           </list>
         </value>
       </option>

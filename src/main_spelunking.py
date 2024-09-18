@@ -34,7 +34,7 @@ import slope_interval_layers
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.DoubleTensor)
+torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, branching_method, cast_opt_based=False):
@@ -60,7 +60,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     # print(img[:3][:3][:3])
     # append an alpha channel
     # alpha_channel = (torch.min(img,dim=-1) < 1.) * 1.
-    alpha_channel = (torch.min(img, dim=-1).values < 1.).double()
+    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
     # print(alpha_channel[:3, :3])
     # alpha_channel = torch.ones_like(img[:,:,0])
     img_alpha = torch.concatenate((img, alpha_channel[:,:,None]), dim=-1)
@@ -122,8 +122,8 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
 
-    # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.double)
-    # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.double)
+    # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.float32)
+    # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.float32)
     # torch.set_printoptions(precision=8)
     # print("lower: ", lower)
     # lower = torch.tensor((0.25, -0.625, 0.4375), dtype=torch.float64)
@@ -239,7 +239,7 @@ def main():
     parser.add_argument("--disable-jit", action='store_true')
     parser.add_argument("--debug-nans", action='store_true')
     parser.add_argument("--enable-double-precision", action='store_true')
-
+    parser.add_argument("--enable-clipping", action='store_true')
     # Parse arguments
     args = parser.parse_args()
 
@@ -402,8 +402,9 @@ def main():
             psim.PushItemWidth(100)
         
             if psim.Button("Save Render"):
+                branching_method = None
                 save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, branching_method, cast_opt_based=cast_opt_based)
-            
+
 
             _, cast_frustum = psim.Checkbox("cast frustum", cast_frustum)
             _, cast_opt_based = psim.Checkbox("cast opt based", cast_opt_based)
