@@ -100,13 +100,6 @@ def main():
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
     affine_opts['sdf_lipschitz'] = 1.
-    affine_opts['crown'] = 1.
-    affine_opts['alpha_crown'] = 1.
-    affine_opts['forward+backward'] = 1.
-    affine_opts['forward'] = 1.
-    affine_opts['forward-optimized'] = 1.
-    affine_opts['dynamic_forward'] = 1.
-    affine_opts['dynamic_forward+backward'] = 1.
     affine_opts['affine+backward'] = 1.
     affine_opts['affine_quad'] = 1.
     affine_opts['enable_clipping'] = enable_clipping
