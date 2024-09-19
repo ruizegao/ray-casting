@@ -14,18 +14,20 @@
 #########################################################################
 
 import torch
+from torch import Tensor
 from typing import Union, Tuple
 
 
 def clip_domains(
-        x_L: torch.Tensor,
-        x_U: torch.Tensor,
-        thresholds: Union[torch.Tensor, float],
-        lA: torch.Tensor,
-        dm_lb: Union[torch.Tensor, None] = None,
-        lbias: Union[torch.Tensor, None] = None,
-        calculate_dm_lb: bool = False
-) -> Tuple[torch.Tensor, torch.Tensor]:
+        x_L: Tensor,
+        x_U: Tensor,
+        thresholds: Union[Tensor, float],
+        lA: Tensor,
+        dm_lb: Union[Tensor, None] = None,
+        lbias: Union[Tensor, None] = None,
+        calculate_dm_lb: bool = False,
+        clip_dimensions: Union[Tensor, int, None] = None
+) -> Tuple[Tensor, Tensor]:
     """
     Takes subdomains (or original domain) and shrinks along dimensions to remove verified portions of the input domain
     to remove redundancy and allow for more effective splits.
@@ -39,9 +41,9 @@ def clip_domains(
     :return:                    The new x_L, x_U
     """
     if calculate_dm_lb:
-        assert isinstance(lbias, torch.Tensor), "lbias is needed to concretize dm_lb"
+        assert isinstance(lbias, Tensor), "lbias is needed to concretize dm_lb"
     else:
-        assert isinstance(dm_lb, torch.Tensor), "dm_lb was not given"
+        assert isinstance(dm_lb, Tensor), "dm_lb was not given"
 
     # save original shapes
     x_L_shape = x_L.shape
@@ -95,8 +97,14 @@ def clip_domains(
     x_L_candidates = torch.where(lA < 0, curr_x, -torch.inf)
 
     # Update new_x_U(L)
-    x_U = torch.min(x_U_candidates.min(dim=1)[0], x_U)
-    x_L = torch.max(x_L_candidates.max(dim=1)[0], x_L)
+    # min returns tuple (min, min_indices), so we use [0] to only get min values
+    # we care about min across output dimension assuming at least one specification output must be verified
+    if clip_dimensions is None:
+        x_U = torch.min(x_U_candidates.min(dim=1)[0], x_U)
+        x_L = torch.max(x_L_candidates.max(dim=1)[0], x_L)
+    else:
+        x_U[:, clip_dimensions] = torch.min(x_U_candidates.min(dim=1)[0], x_U)[:, clip_dimensions]
+        x_L[:, clip_dimensions] = torch.max(x_L_candidates.max(dim=1)[0], x_L)[:, clip_dimensions]
 
     # Get the entries where domains were not already verified to perform evaluation metrics
     x_L_nv, x_U_nv = x_L[not_verified], x_U[not_verified]
