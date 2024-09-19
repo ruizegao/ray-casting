@@ -2,6 +2,7 @@
 
 import sys, os, time, math
 from functools import partial
+from gc import enable
 
 import numpy as np
 import argparse
@@ -113,7 +114,7 @@ def do_sample_surface(opts, implicit_func, params, n_samples, sample_width, n_no
 #     return [torch.Generator().manual_seed(generator.initial_seed() + i + 1) for i in range(num_splits)]
 
 
-def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost):
+def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost, enable_clipping=False):
 
 
     data_bound = float(opts['data_bound'])
@@ -128,12 +129,12 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
     # print("lower: ", lower)
     # lower = torch.tensor((0.25, -0.625, 0.4375), dtype=torch.float64)
     # upper = torch.tensor((0.3125, -0.6875, 0.5), dtype=torch.float64)
-
+    print("Clipping enabled: ", enable_clipping)
     print(f"do_hierarchical_mc {n_mc_depth}")
     
 
     with Timer("extract mesh"):
-        tri_pos = hierarchical_marching_cubes(implicit_func, params, lower, upper, n_mc_depth, n_subcell_depth=3)
+        tri_pos = hierarchical_marching_cubes(implicit_func, params, lower, upper, n_mc_depth, enable_clipping=enable_clipping, n_subcell_depth=3)
         # tri_pos.block_until_ready()
         torch.cuda.synchronize()
 
@@ -144,7 +145,12 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
     # Build the tree all over again so we can visualize it
     if do_viz_tree:
         n_mc_subcell=3
-        out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=3*(n_mc_depth-n_mc_subcell), with_interior_nodes=True, with_exterior_nodes=True)
+        if enable_clipping:
+            out_dict = construct_non_uniform_unknown_levelset_tree(implicit_func, params, lower, upper,
+                                                               split_depth=3 * (n_mc_depth - n_mc_subcell),
+                                                               with_interior_nodes=True, with_exterior_nodes=True)
+        else:
+            out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=3*(n_mc_depth-n_mc_subcell), with_interior_nodes=True, with_exterior_nodes=True)
 
         node_valid = out_dict['unknown_node_valid']
         node_lower = out_dict['unknown_node_lower']
@@ -271,6 +277,8 @@ def main():
     cast_opt_based = False
     mode = 'affine_fixed'
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'affine_quad', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
+    crown_modes = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
+                   'dynamic_forward+backward']
     affine_opts = {}
     affine_opts['affine_n_truncate'] = 8
     affine_opts['affine_n_append'] = 4
@@ -284,6 +292,7 @@ def main():
     n_node_thresh = 4096
     do_uniform_sample = False
     do_viz_tree = False
+    enable_clipping = False
     n_mc_depth = 8
     compute_dense_cost = False
     n_closest_point = 16
@@ -297,7 +306,7 @@ def main():
 
     def callback():
 
-        nonlocal implicit_func, params, mode, modes, cast_frustum, cast_opt_based, debug_log_compiles, debug_disable_jit, debug_debug_nans, shade_style, surf_color, n_sample_pts, sample_width, n_node_thresh, do_uniform_sample, do_viz_tree, n_mc_depth, compute_dense_cost, n_closest_point
+        nonlocal implicit_func, params, mode, modes, cast_frustum, cast_opt_based, debug_log_compiles, debug_disable_jit, debug_debug_nans, shade_style, surf_color, n_sample_pts, sample_width, n_node_thresh, do_uniform_sample, do_viz_tree, enable_clipping, n_mc_depth, compute_dense_cost, n_closest_point
             
     
         ## Options for general affine evaluation
@@ -309,6 +318,9 @@ def main():
             changed, mode = utils.combo_string_picker("Method", mode, modes)
             if mode != old_mode:
                 implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+
+            if mode not in crown_modes:
+                enable_clipping = False
 
             if mode == 'affine_truncate':
                 # truncate options
@@ -343,6 +355,11 @@ def main():
                 changed, affine_opts['affine_quad'] = psim.InputFloat("affine_quad", affine_opts['affine_quad'])
                 if changed:
                     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+
+            if mode in crown_modes:
+                changed, enable_clipping = psim.Checkbox("enable_clipping", enable_clipping)
+                if changed:
+                    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **{"enable_clipping": enable_clipping})
 
             psim.PopItemWidth()
             psim.TreePop()
@@ -394,7 +411,7 @@ def main():
             psim.PushItemWidth(100)
 
             if psim.Button("Extract"):
-                do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost)
+                do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, compute_dense_cost, enable_clipping)
 
             psim.SameLine()
             _, n_mc_depth = psim.InputInt("n_mc_depth", n_mc_depth)

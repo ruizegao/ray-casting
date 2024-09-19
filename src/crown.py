@@ -50,7 +50,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={"relu": "same-slope"})
         self.crown_mode = crown_mode
         self._enable_clipping = enable_clipping
-        print(self.crown_mode)
+        print(self.crown_mode, enable_clipping)
 
     def __call__(self, params, x):
         # x_device = x.to(device)
@@ -87,7 +87,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def classify_box(self, params, box_lower, box_upper, offset=0.):
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
-        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=False)
+        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
         bound_dict = self.bounded_func.save_intermediate()
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)

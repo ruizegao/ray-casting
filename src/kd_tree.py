@@ -574,7 +574,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
 
         # put clipped domains back into our new domain list
         new_lower[unverified_mask.repeat(2)] = clipped_total_new_lower.float()
-        new_upper[unverified_mask.repeat(2)] = clipped_total_new_upper.float()
+        new_upper[unverified_mask.repeat(2)] = clipped_total_new_upper.float() # Not interleave
 
         return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float()
 
@@ -617,6 +617,9 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
             node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx], node_split_val_temp[
                                                                                         start_idx:end_idx] = eval_result[:3]
             total_new_lower, total_new_upper = eval_result[3:]
+            if total_new_upper.shape[0] < 5:
+                print(total_new_lower)
+                print(total_new_upper)
             if continue_splitting:
                 diff_idx = end_idx - start_idx
                 newA_lower_temp[start_idx:end_idx] = total_new_lower[:diff_idx]
@@ -773,7 +776,7 @@ def construct_non_uniform_unknown_levelset_tree_iter(
         ib, out_valid, out_lower, out_upper, out_n_valid,
         finished_interior_lower, finished_interior_upper, N_finished_interior,
         finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
-        offset=0.
+        branching_method='naive', offset=0.
         ):
     N_in = node_lower.shape[0]
     d = node_lower.shape[-1]
@@ -807,7 +810,7 @@ def construct_non_uniform_unknown_levelset_tree_iter(
         lA = crown_dict.get('lA')
         lbias = crown_dict.get('lbias')
         new_split_idx = input_split_branching(dm_lb, lower, upper, lA, torch.full_like(lbias, offset),
-                                              branching_method='bs').squeeze(1)
+                                              branching_method=branching_method).squeeze(1)
         # dm_lb dimension: (batches, 1)
         # lA dimension: (batches, 1, 3)
         # lbias dimension: (batches, 1)
@@ -835,8 +838,8 @@ def construct_non_uniform_unknown_levelset_tree_iter(
         _newA_lower, _newA_upper, _newB_lower, _newB_upper, split_values = split_result
 
         # stack lower and upper bounds to work with clip_domains
-        total_new_lower = torch.vstack((_newA_lower, _newB_lower)).float()
-        total_new_upper = torch.vstack((_newA_upper, _newB_upper)).float()
+        total_new_lower = torch.cat((_newA_lower, _newB_lower)).float()
+        total_new_upper = torch.cat((_newA_upper, _newB_upper)).float()
 
         new_split_values[unverified_mask] = split_values
 
@@ -863,8 +866,13 @@ def construct_non_uniform_unknown_levelset_tree_iter(
         # put clipped domains back into our new domain list
         new_lower[unverified_mask.repeat(2)] = clipped_total_new_lower.float()
         new_upper[unverified_mask.repeat(2)] = clipped_total_new_upper.float()
-
         return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float()
+
+    total_samples = node_lower.shape[0]
+    newA_lower = []
+    newB_lower = []
+    newA_upper = []
+    newB_upper = []
 
     if isinstance(func, CrownImplicitFunction):
         batch_size_per_iteration = 256
@@ -873,8 +881,19 @@ def construct_non_uniform_unknown_levelset_tree_iter(
         node_split_dim = torch.empty((total_samples,))
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-            node_types[start_idx:end_idx], node_split_dim[start_idx:end_idx] \
-                = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx])
+            node_types[start_idx:end_idx], node_split_dim[start_idx:end_idx], _, new_node_lower_batch, new_node_upper_batch \
+                = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx], continue_splitting=continue_splitting)
+            if continue_splitting:
+                diff_idx = end_idx - start_idx
+                newA_lower.append(new_node_lower_batch[:diff_idx])
+                newB_lower.append(new_node_lower_batch[diff_idx:])
+                newA_upper.append(new_node_upper_batch[:diff_idx])
+                newB_upper.append(new_node_upper_batch[diff_idx:])
+        if continue_splitting:
+            newA_lower = torch.cat(newA_lower)
+            newB_lower = torch.cat(newB_lower)
+            newA_upper = torch.cat(newA_upper)
+            newB_upper = torch.cat(newB_upper)
     else:
         # evaluate the function inside nodes
         raise NotImplementedError
@@ -915,19 +934,22 @@ def construct_non_uniform_unknown_levelset_tree_iter(
     if continue_splitting:
 
         # extents of the new child nodes along each split dimension
-        new_lower = node_lower
-        new_upper = node_upper
-        new_mid = 0.5 * (new_lower + new_upper)
-        new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
-        newA_lower = new_lower
-        newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
-        newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
-        newB_upper = new_upper
-
-        # concatenate the new children to form output arrays
+        # new_lower = node_lower
+        # new_upper = node_upper
+        # new_mid = 0.5 * (new_lower + new_upper)
+        # new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
+        # newA_lower = new_lower
+        # newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
+        # newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
+        # newB_upper = new_upper
+        #
+        # # concatenate the new children to form output arrays
         node_valid = torch.cat((split_mask, split_mask))
         node_lower = torch.cat((newA_lower, newB_lower))
         node_upper = torch.cat((newA_upper, newB_upper))
+        # node_valid = torch.cat((split_mask, split_mask))
+        # node_lower = new_node_lower
+        # node_upper = new_node_upper
         new_N_valid = 2 * N_new
         outL = out_valid.shape[1]
 
@@ -1028,7 +1050,7 @@ def construct_non_uniform_unknown_levelset_tree(func, params, lower, upper, node
                 finished_interior_lower, finished_interior_upper, N_finished_interior, \
                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior, \
                 = \
-                construct_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting, \
+                construct_non_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting, \
                                                              node_valid[ib, ...], node_lower[ib, ...],
                                                              node_upper[ib, ...], \
                                                              ib, out_valid, out_lower, out_upper, total_n_valid, \
@@ -1225,12 +1247,17 @@ def hierarchical_marching_cubes_extract_iter(func, params, mc_data, n_subcell_de
     return tri_pos_out, n_out_written
 
 
-def hierarchical_marching_cubes(func, params, lower, upper, depth, n_subcell_depth=3,
+def hierarchical_marching_cubes(func, params, lower, upper, depth, enable_clipping, n_subcell_depth=3,
                                 extract_batch_max_tri_out=1000000):
     # Build a tree over the isosurface
     # By definition returned nodes are all SIGN_UNKNOWN, and all the same size
-    out_dict = construct_non_uniform_unknown_levelset_tree(func, params, lower, upper,
-                                                       split_depth=3 * (depth - n_subcell_depth))
+    if enable_clipping:
+        out_dict = construct_non_uniform_unknown_levelset_tree(func, params, lower, upper,
+                                                     split_depth=3 * (depth - n_subcell_depth))
+    else:
+        out_dict = construct_uniform_unknown_levelset_tree(func, params, lower, upper,
+                                                               split_depth=3 * (depth - n_subcell_depth))
+
     node_valid = out_dict['unknown_node_valid']
     node_lower = out_dict['unknown_node_lower']
     node_upper = out_dict['unknown_node_upper']

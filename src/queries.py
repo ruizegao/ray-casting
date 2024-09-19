@@ -94,7 +94,7 @@ def cast_rays_tree_based(
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
     center = (lower + upper) / 2.
-
+    print("branching method: ", branching_method)
     if enable_clipping:
         node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
             func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
