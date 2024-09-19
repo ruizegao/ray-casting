@@ -484,7 +484,8 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
     def eval_batch_of_nodes(
             lower,
             upper,
-            continue_splitting=False
+            continue_splitting=False,
+            clip_dimension=None
     ):
         """
 
@@ -549,7 +550,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
 
         # apply clipping to reduce volume of input domain
         clip_results = clip_domains(
-            total_new_lower, total_new_upper, offset, lA, None, lbias, True)
+            total_new_lower, total_new_upper, offset, lA, None, lbias, True, clip_dimension)
         clipped_total_new_lower, clipped_total_new_upper = clip_results
         # clipped_total_new_lower/upper dimension: (N_out, n)
 
@@ -586,7 +587,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
 
     if batch_size is None:
         eval_result = eval_func(
-            node_lower[internal_node_mask], node_upper[internal_node_mask], continue_splitting)
+            node_lower[internal_node_mask], node_upper[internal_node_mask], continue_splitting, clip_dimension=1)
 
         node_types[internal_node_mask], node_split_dim[internal_node_mask], node_split_val[
             internal_node_mask] = eval_result[:3]
@@ -604,7 +605,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             eval_result = eval_func(node_lower[internal_node_mask][start_idx:end_idx],
                                     node_upper[internal_node_mask][start_idx:end_idx],
-                                    continue_splitting)
+                                    continue_splitting, clip_dimension=[1, 2])
             node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx], node_split_val_temp[
                                                                                         start_idx:end_idx] = eval_result[:3]
             total_new_lower, total_new_upper = eval_result[3:]
