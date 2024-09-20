@@ -47,7 +47,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
-        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={"relu": "same-slope"})
+        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
         self.crown_mode = crown_mode
         self._enable_clipping = enable_clipping
         print(self.crown_mode, enable_clipping)

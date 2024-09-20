@@ -481,8 +481,8 @@ def cast_rays_frustum_iter(
         t_upper_adj = t_upper * expand_fac
 
         # Construct the rectangular (but not-axis-aligned) box enclosing the frustum
-        right_front = (ray_xu_yu - ray_xl_yu) * t_upper_adj.view(-1, 1) / 2
-        up_front = (ray_xu_yu - ray_xu_yl) * t_upper_adj.view(-1, 1) / 2
+        right_front = (ray_xu_yu - ray_xl_yu) * t_upper_adj / 2
+        up_front = (ray_xu_yu - ray_xu_yl) * t_upper_adj / 2
         source_range = torch.stack((right_front, up_front), dim=1)
 
         can_step = torch.logical_not(is_hit)  # this ensure that if we hit on a previous substep, we don't keep stepping
@@ -511,17 +511,16 @@ def cast_rays_frustum_iter(
 
             # For convergence testing, sample the function value at the start the interval and start + eps
             # (this is only relevant/useful once the frustum is a single ray and we start testing hits)
-            pos_start = root_pos + t.unsqueeze(1) * mid_ray
-            pos_eps = root_pos + (t + opts['hit_eps']).unsqueeze(1) * mid_ray
+            pos_start = root_pos + t * mid_ray
+            pos_eps = root_pos + (t + opts['hit_eps']) * mid_ray
             val_start = func(params, pos_start)
             val_eps = func(params, pos_eps)
 
             # Check if we converged for this func
             # (this is only relevant/useful once the frustum is a single ray and we start testing hits)
             this_is_hit = torch.sign(val_start) != torch.sign(val_eps)
-            this_is_hit = this_is_hit.squeeze(-1)
-            # hit_id = torch.where(this_is_hit, func_id, hit_id)
-            hit_id = torch.full_like(this_is_hit, func_id).where(this_is_hit, hit_id)
+            hit_id = torch.where(this_is_hit, func_id, hit_id)
+            # hit_id = torch.full_like(this_is_hit, func_id).where(this_is_hit, hit_id)
             is_hit = torch.logical_or(is_hit, this_is_hit)
 
             func_id += 1
@@ -530,19 +529,19 @@ def cast_rays_frustum_iter(
         # the is_single_pixel ensures that we only inch forward for single-pixel rays, we can't
         # be sure it's safe to do so for larger frusta.
         # (this matches our convergence/progress guarantee)
-        # this_step_size = torch.where(can_step, step_size, opts['hit_eps'] * is_single_pixel)
+        this_step_size = torch.where(can_step, step_size, opts['hit_eps'] * is_single_pixel)
         # this_step_size = torch.full_like(can_step, step_size).where(can_step, opts['hit_eps'] * is_single_pixel)
-        this_step_size = step_size.where(can_step, torch.full_like(step_size, opts['hit_eps']))
+        # this_step_size = step_size.where(can_step, torch.full_like(step_size, opts['hit_eps']))
 
         # take the actual step (unless a previous substep hit, in which case we do nothing)
         # t = torch.where(is_hit, t, t + this_step_size * opts['safety_factor'])
         t = t.where(is_hit, t + this_step_size * opts['safety_factor'])
 
         # update the step size
-        # step_size = torch.where(can_step,
-        #                           step_size * opts['interval_grow_fac'],
-        #                           step_size * opts['interval_shrink_fac'])
-        step_size = (step_size * opts['interval_grow_fac']).where(can_step, step_size * opts['interval_shrink_fac'])
+        step_size = torch.where(can_step,
+                                  step_size * opts['interval_grow_fac'],
+                                  step_size * opts['interval_shrink_fac'])
+        # step_size = (step_size * opts['interval_grow_fac']).where(can_step, step_size * opts['interval_shrink_fac'])
 
         step_demands_subd = utils.logical_or_all((step_demands_subd, step_size < opts['hit_eps'], is_hit))
 
@@ -572,27 +571,27 @@ def cast_rays_frustum_iter(
         yc_upper = 2. * (y_upper - 1) / (res_y + 1.) - 1.
 
         # generate rays corresponding to the four corners of the frustum
-        ray_xu_yu = vmap(gen_cam_ray)(xc_upper, yc_upper)
-        ray_xl_yu = vmap(gen_cam_ray)(xc_lower, yc_upper)
-        ray_xu_yl = vmap(gen_cam_ray)(xc_upper, yc_lower)
-        ray_xl_yl = vmap(gen_cam_ray)(xc_lower, yc_lower)
+        ray_xu_yu = vmap(gen_cam_ray)(xc_upper.unsqueeze(0), yc_upper.unsqueeze(0))
+        ray_xl_yu = vmap(gen_cam_ray)(xc_lower.unsqueeze(0), yc_upper.unsqueeze(0))
+        ray_xu_yl = vmap(gen_cam_ray)(xc_upper.unsqueeze(0), yc_lower.unsqueeze(0))
+        ray_xl_yl = vmap(gen_cam_ray)(xc_lower.unsqueeze(0), yc_lower.unsqueeze(0))
         # a ray down the center of the frustum
         mid_ray = 0.5 * (ray_xu_yu + ray_xl_yl)
         mid_ray_len = geometry.norm(mid_ray)
-        mid_ray = mid_ray / mid_ray_len.view(-1, 1)
+        mid_ray = mid_ray / mid_ray_len
 
         # Expand the box by a factor of 1/(cos(theta/2) to account for the fact that the spherical frustum extends a little beyond the naive linearly interpolated box.
         expand_fac = 1. / mid_ray_len
         # Perform some substeps
-        N = frust_range.shape[0]
-        is_hit = torch.full((N,), False)
-        hit_id = torch.zeros((N,))
-        step_count = torch.zeros((N,))
-        step_demands_subd = torch.full((N,), False)
-        # is_hit = False
-        # hit_id = 0
-        # step_count = 0
-        # step_demands_subd = False
+        # N = frust_range.shape[0]
+        # is_hit = torch.full((N,), False)
+        # hit_id = torch.zeros((N,))
+        # step_count = torch.zeros((N,))
+        # step_demands_subd = torch.full((N,), False)
+        is_hit = torch.tensor([False])
+        hit_id = torch.tensor([0])
+        step_count = torch.tensor([0])
+        step_demands_subd = torch.tensor([False])
         in_tup = (t, step_size, is_hit, hit_id, step_demands_subd, step_count)
 
         take_step_this = partial(take_step, ray_xu_yu, ray_xu_yl, ray_xl_yu, ray_xl_yl, mid_ray, expand_fac,
@@ -607,7 +606,7 @@ def cast_rays_frustum_iter(
         out_tup = fori_loop(0, n_substeps, take_step_this, in_tup)
 
         t, step_size, is_hit, hit_id, step_demands_subd, step_count = out_tup
-        step_count = torch.as_tensor(step_count)
+        # step_count = torch.as_tensor(step_count)
         return t, step_size, is_hit, hit_id, step_demands_subd, step_count
 
     # total_samples = curr_frust_range.shape[0]
@@ -629,6 +628,13 @@ def cast_rays_frustum_iter(
     # evaluate the substeps on a all rays
     curr_frust_t, curr_frust_int_size, is_hit, hit_id, step_demands_subd, num_inner_steps \
         = vmap(take_several_steps)(curr_frust_range, curr_frust_t, curr_frust_int_size)
+    # print(curr_frust_t.shape, curr_frust_int_size.shape, is_hit.shape, hit_id.shape, step_demands_subd.shape, num_inner_steps.shape)
+    curr_frust_t = curr_frust_t.squeeze(-1)
+    curr_frust_int_size = curr_frust_int_size.squeeze(-1)
+    is_hit = is_hit.squeeze(-1)
+    hit_id = hit_id.squeeze(-1)
+    step_demands_subd = step_demands_subd.squeeze(-1)
+    num_inner_steps = num_inner_steps.squeeze(-1)
 
     # Measure frustum area in pixels, use it to track counts
     x_lower = curr_frust_range[:, 0]
@@ -636,6 +642,7 @@ def cast_rays_frustum_iter(
     y_lower = curr_frust_range[:, 1]
     y_upper = curr_frust_range[:, 3]
     frust_area = (x_upper - x_lower) * (y_upper - y_lower)
+    # print(num_inner_steps.shape, frust_area.shape)
     curr_frust_count += curr_valid * num_inner_steps * (1. / frust_area)
 
     # only size-1 frusta actually get to hit
