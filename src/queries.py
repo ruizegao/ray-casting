@@ -132,15 +132,35 @@ def cast_rays_tree_based(
     def traverse_tree(points):
         # print("*******")
         node_idx = torch.zeros((points.shape[0],), dtype=torch.int64)
+        # iter = 0
         while True:
+            # iter += 1
             terminate = torch.logical_and(leaf_mask[node_idx * 2 + 1], leaf_mask[node_idx * 2 + 2])
             if terminate.all():
                 return node_type_tree[node_idx]
             split_mask = (points < node_upper_tree[node_idx * 2 + 1]).all(dim=1)
+            not_split_mask = torch.logical_not(split_mask)
+
+            # FIXME: Not checking bounds correctly
+            # l_in = torch.logical_and(split_mask, torch.logical_and((points >= node_lower_tree[node_idx * 2 + 1]).all(1),
+            #                                                        (points <= node_upper_tree[node_idx * 2 + 1]).all(1)))
+            # r_in = torch.logical_and(not_split_mask, torch.logical_and((points >= node_lower_tree[node_idx * 2 + 2]).all(1),
+            #                                                        (points <= node_upper_tree[node_idx * 2 + 2]).all(1)))
+            # in_box = torch.logical_or(l_in, r_in)
+            # terminate = torch.logical_or(terminate, torch.logical_not(in_box))
+
+            # l_oob = torch.logical_and(split_mask, (points < node_lower_tree[node_idx * 2 + 1]).any(1) )
+            # r_oob = torch.logical_and(not_split_mask, (points > node_upper_tree[node_idx * 2 + 2]).any(1) )
+            # out_box = torch.logical_or(l_oob, r_oob)
+            # terminate = torch.logical_or(terminate, out_box)
+
             left_child_mask = torch.logical_and(torch.logical_not(terminate), split_mask)
-            right_child_mask = torch.logical_and(torch.logical_not(terminate), torch.logical_not(split_mask))
+            right_child_mask = torch.logical_and(torch.logical_not(terminate), not_split_mask)
             node_idx = torch.where(left_child_mask, node_idx * 2 + 1, node_idx)
             node_idx = torch.where(right_child_mask, node_idx * 2 + 2, node_idx)
+
+            # if iter % 20 == 0:
+            # print(f"tt iter: {iter}")
 
     for plane, next_plane in zip(all_interaction_planes, all_interaction_planes[1:]):
         rays_plane_intersection, t = find_rays_plane_intersection_with_depth(roots, dirs, (plane + next_plane) / 2,
@@ -152,6 +172,7 @@ def cast_rays_tree_based(
         miss_node = torch.logical_not(hit_node)
     t3 = time.time()
     print("tree traversal time: ", t3 - t2)
+    print(f"number of tree traversal iterations: {len(all_interaction_planes)}")
 
     for step in range(1000):
         bad_node = torch.logical_and(hit_node, not_hit)
