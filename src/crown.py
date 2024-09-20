@@ -47,7 +47,13 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
-        self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+        if crown_mode.lower() == 'alpha-crown':
+            self.reuse_alpha = True
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 3}})
+        else:
+            self.reuse_alpha = False
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+
         self.crown_mode = crown_mode
         self._enable_clipping = enable_clipping
         print(self.crown_mode, enable_clipping)
@@ -72,7 +78,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         bounded_x = BoundedTensor(box_center, ptb)
         return_A = self._enable_clipping
         result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
-                                                                    return_A=return_A) # dynamic forward
+                                                                    return_A=return_A, reuse_alpha=self.reuse_alpha) # dynamic forward
         if return_A:
             may_lower, may_upper, A_dict = result
         else:
