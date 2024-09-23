@@ -61,6 +61,9 @@ def find_ray_plane_intersection_with_depth(plane, plane_dim, root, dir):
 def find_rays_plane_intersection_with_depth(roots, dirs, plane, plane_dim):
     return vmap(partial(find_ray_plane_intersection_with_depth, plane, plane_dim))(roots, dirs)
 
+def intersect_rays(roots, dirs, planes, plane_dim):
+    t = (planes - roots[:, plane_dim]) / dirs[:, plane_dim]
+    return roots + t.unsqueeze(1) * dirs, t
 
 def cast_rays_tree_based(
         func_tuple,
@@ -94,9 +97,10 @@ def cast_rays_tree_based(
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
     center = (lower + upper) / 2.
+    clipped_lower, clipped_upper = None, None
 
     if enable_clipping:
-        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
+        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree, clipped_lower, clipped_upper = construct_full_non_uniform_unknown_levelset_tree(
             func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
     else:
         node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
@@ -118,18 +122,23 @@ def cast_rays_tree_based(
     node_upper_unknown_leaf = node_upper_last_layer[node_valid]
     # for n_l, n_u in zip(node_lower_unknown_leaf, node_upper_unknown_leaf):
     #     print(n_l, n_u, func.bound_box(params, n_l, n_u))
+    not_primary_dimension = torch.arange(3)
+    not_primary_dimension = not_primary_dimension[not_primary_dimension != 0]
 
+    all_clipped_planes = None
     if roots[0][primary_dimension] > center[primary_dimension]:
         all_interaction_planes = node_upper_unknown_leaf[:, primary_dimension].flatten().unique().flip(0)
+        clipped_planes = clipped_upper if enable_clipping else None
     else:
         all_interaction_planes = node_lower_unknown_leaf[:, primary_dimension].flatten().unique()
+        clipped_planes = clipped_lower if enable_clipping else None
 
     leaf_mask = torch.isnan(node_lower_tree[:, 0])
 
     t2 = time.time()
     print("vectors initialization time: ", t2 - t1)
 
-    def traverse_tree(points):
+    def traverse_tree(points, return_indices=False):
         # print("*******")
         node_idx = torch.zeros((points.shape[0],), dtype=torch.int64)
         # iter = 0
@@ -137,36 +146,48 @@ def cast_rays_tree_based(
             # iter += 1
             terminate = torch.logical_and(leaf_mask[node_idx * 2 + 1], leaf_mask[node_idx * 2 + 2])
             if terminate.all():
-                return node_type_tree[node_idx]
+                if return_indices:
+                    tree_len = len(node_type_tree)
+                    offset = int(tree_len / 2)
+                    return node_type_tree[node_idx], node_idx - offset
+                else:
+                    return node_type_tree[node_idx], None
             split_mask = (points < node_upper_tree[node_idx * 2 + 1]).all(dim=1)
             not_split_mask = torch.logical_not(split_mask)
-
-            # FIXME: Not checking bounds correctly
-            # l_in = torch.logical_and(split_mask, torch.logical_and((points >= node_lower_tree[node_idx * 2 + 1]).all(1),
-            #                                                        (points <= node_upper_tree[node_idx * 2 + 1]).all(1)))
-            # r_in = torch.logical_and(not_split_mask, torch.logical_and((points >= node_lower_tree[node_idx * 2 + 2]).all(1),
-            #                                                        (points <= node_upper_tree[node_idx * 2 + 2]).all(1)))
-            # in_box = torch.logical_or(l_in, r_in)
-            # terminate = torch.logical_or(terminate, torch.logical_not(in_box))
-
-            # l_oob = torch.logical_and(split_mask, (points < node_lower_tree[node_idx * 2 + 1]).any(1) )
-            # r_oob = torch.logical_and(not_split_mask, (points > node_upper_tree[node_idx * 2 + 2]).any(1) )
-            # out_box = torch.logical_or(l_oob, r_oob)
-            # terminate = torch.logical_or(terminate, out_box)
 
             left_child_mask = torch.logical_and(torch.logical_not(terminate), split_mask)
             right_child_mask = torch.logical_and(torch.logical_not(terminate), not_split_mask)
             node_idx = torch.where(left_child_mask, node_idx * 2 + 1, node_idx)
             node_idx = torch.where(right_child_mask, node_idx * 2 + 2, node_idx)
 
-            # if iter % 20 == 0:
-            # print(f"tt iter: {iter}")
+
 
     for plane, next_plane in zip(all_interaction_planes, all_interaction_planes[1:]):
+
+        # if enable_clipping:
+        #     rays_plane_intersection, t = find_rays_plane_intersection_with_depth(roots, dirs, plane,
+        #                                                                          primary_dimension)
+        # else:
         rays_plane_intersection, t = find_rays_plane_intersection_with_depth(roots, dirs, (plane + next_plane) / 2,
                                                                              primary_dimension)
-        point_types = traverse_tree(rays_plane_intersection)
+
+
+
+        point_types, leaf_indices = traverse_tree(rays_plane_intersection, True)
         new_hit_node = point_types.int() == SIGN_UNKNOWN
+        leaf_indices = leaf_indices[new_hit_node]
+
+        ray_clipped_plane_intersection, clip_t = intersect_rays(roots[new_hit_node], dirs[new_hit_node], clipped_planes[leaf_indices, primary_dimension], primary_dimension)
+
+        ray_lbs = clipped_lower[leaf_indices.unsqueeze(1).repeat(1,2), not_primary_dimension]
+        ray_ubs = clipped_upper[leaf_indices.unsqueeze(1).repeat(1, 2), not_primary_dimension]
+        not_primary_ray_clipped_plane_intersection = ray_clipped_plane_intersection[:, not_primary_dimension]
+        outside_clipped_domain = torch.logical_or(not_primary_ray_clipped_plane_intersection < ray_lbs, not_primary_ray_clipped_plane_intersection > ray_ubs).any(1)
+
+        # new_hit_node = torch.where(new_hit_node, outside_clipped_domain, new_hit_ndod)
+        t[new_hit_node] = clip_t
+        new_hit_node[new_hit_node.clone()] = outside_clipped_domain
+
         t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
         hit_node = torch.logical_or(hit_node, new_hit_node)
         miss_node = torch.logical_not(hit_node)

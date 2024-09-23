@@ -416,11 +416,12 @@ def construct_full_uniform_unknown_levelset_tree(
         lower, upper, out_node_type, out_split_dim, out_split_val = construct_full_uniform_unknown_levelset_tree_iter(
             func, params, do_continue_splitting,
             lower, upper, i_split, offset=offset, batch_size=batch_size)
+        # if do_continue_splitting:
         node_lower.append(lower)
         node_upper.append(upper)
-        node_type.append(out_node_type)
         split_dim.append(out_split_dim)
         split_val.append(out_split_val)
+        node_type.append(out_node_type)
         N_curr_nodes = torch.logical_not(lower[:, 0].isnan()).sum()
 
         N_total_nodes += N_curr_nodes
@@ -451,7 +452,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
         offset: float = 0.,
         batch_size: Union[int, None] = None,
         clip_dimension = None
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
 
     A single iteration that progresses the kD tree by one split depth. Clipping is introduced which creates an imbalance in the nodes. The procedure is now:
@@ -482,6 +483,8 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
     node_split_val = torch.full((N_in,), torch.nan)  # midpoint split value
     node_lower_out = torch.full((N_out, 3), torch.nan)  # Lower input domain for new subdomains
     node_upper_out = torch.full((N_out, 3), torch.nan)  # Upper input domain for new subdomains
+
+    clipped_lower, clipped_upper = None, None
 
     def eval_batch_of_nodes(
             lower,
@@ -519,12 +522,24 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
         # lbias dimension: (batches, 1)
         # split_idx dimension: (batches, 1)
 
+
         if not continue_splitting:
+            lA = lA[unverified_mask]
+            lbias = lbias[unverified_mask]
+            dm_lb = dm_lb[unverified_mask]
+            unverified_lower = lower[unverified_mask]
+            unverified_upper = upper[unverified_mask]
+            clipped_lower, clipped_upper = lower.clone(), upper.clone()
+            clip_results = clip_domains(
+                unverified_lower, unverified_upper, offset, lA, dm_lb, lbias, True, clip_dimension)
+            ret_lower, ret_upper = clip_results
+            clipped_lower[unverified_mask] = ret_lower
+            clipped_upper[unverified_mask] = ret_upper
             # nodes only need to be bounded, not split
-            return node_type, new_split_idx.float(), new_split_values.float(), lower, upper
+            return node_type, new_split_idx.float(), new_split_values.float(), lower, upper, clipped_lower, clipped_upper
 
         if not unverified_mask.any():
-            return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float()
+            return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float(), torch.empty(lower.shape), torch.empty(lower.shape)
 
         # filter out domains that are already verified
         dm_lb = dm_lb[unverified_mask]
@@ -552,17 +567,13 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
 
         # apply clipping to reduce volume of input domain
         clip_results = clip_domains(
-            total_new_lower, total_new_upper, offset, lA, None, lbias, True, clip_dimension, split_depth_meta={
-                "split_depth": total_split_depth,
-                "og_x_L": lower,
-                "og_x_U": upper
-            })
+            total_new_lower, total_new_upper, offset, lA, None, lbias, True, clip_dimension)
         clipped_total_new_lower, clipped_total_new_upper = clip_results
         # clipped_total_new_lower/upper dimension: (N_out, n)
 
-        if DEBUG_NONUNIFORM_KDTREE:
-            clipped_total_new_lower = total_new_lower
-            clipped_total_new_upper = total_new_upper
+        # if DEBUG_NONUNIFORM_KDTREE or not do_clip:
+        clipped_total_new_lower = total_new_lower
+        clipped_total_new_upper = total_new_upper
 
         # Clipping may cause x_L > x_U which means that the domain is verified,
         # and domains that are verified have NaN bounds
@@ -576,7 +587,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
         new_lower[unverified_mask.repeat(2)] = clipped_total_new_lower.float()
         new_upper[unverified_mask.repeat(2)] = clipped_total_new_upper.float()
 
-        return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float()
+        return node_type.float(), new_split_idx.float(), new_split_values.float(), new_lower.float(), new_upper.float(), torch.empty(lower.shape), torch.empty(lower.shape)
 
 
     newA_lower, newB_lower, newA_upper, newB_upper = [torch.full_like(node_lower, torch.nan) for _ in range(4)]
@@ -587,6 +598,9 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
     newB_lower_temp = newB_lower[internal_node_mask]
     newA_upper_temp = newA_upper[internal_node_mask]
     newB_upper_temp = newB_upper[internal_node_mask]
+
+    clipped_lower = node_lower.clone()
+    clipped_upper = node_upper.clone()
 
     if isinstance(func, CrownImplicitFunction):
         eval_func = eval_batch_of_nodes
@@ -599,8 +613,11 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
 
         node_types[internal_node_mask], node_split_dim[internal_node_mask], node_split_val[
             internal_node_mask] = eval_result[:3]
+
+        clipped_lower = eval_result[5]
+        clipped_upper = eval_result[6]
         if continue_splitting:
-            total_new_lower, total_new_upper = eval_result[3:]
+            total_new_lower, total_new_upper = eval_result[3: 5]
             newA_lower[internal_node_mask] = total_new_lower[:internal_node_mask_len]
             newB_lower[internal_node_mask] = total_new_lower[internal_node_mask_len:]
             newA_upper[internal_node_mask] = total_new_upper[:internal_node_mask_len]
@@ -616,7 +633,10 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
                                     continue_splitting,  clip_dimension=clip_dimension)
             node_types_temp[start_idx:end_idx], node_split_dim_temp[start_idx:end_idx], node_split_val_temp[
                                                                                         start_idx:end_idx] = eval_result[:3]
-            total_new_lower, total_new_upper = eval_result[3:]
+            total_new_lower, total_new_upper = eval_result[3: 5]
+            clipped_lower_temp, clipped_upper_temp = eval_result[5:]
+            clipped_lower[start_idx:end_idx] = clipped_lower_temp
+            clipped_upper[start_idx:end_idx] = clipped_upper_temp
             if continue_splitting:
                 diff_idx = end_idx - start_idx
                 newA_lower_temp[start_idx:end_idx] = total_new_lower[:diff_idx]
@@ -644,7 +664,7 @@ def construct_full_non_uniform_unknown_levelset_tree_iter(
         node_upper_out[inter_split_mask] = torch.hstack(
             (newA_upper[split_mask], newB_upper[split_mask])).view(inter_split_mask.sum(), d)
 
-    return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val
+    return node_lower_out, node_upper_out, node_types, node_split_dim, node_split_val, clipped_lower, clipped_upper
 
 
 def construct_full_non_uniform_unknown_levelset_tree(
@@ -656,7 +676,7 @@ def construct_full_non_uniform_unknown_levelset_tree(
         split_depth: Union[float, None] = None,
         offset: float = 0.,
         batch_size: Union[float, None] = None
-) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
+) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
 
     Constructs a tree that is nonuniform due to the clipping procedure. Clipping is only supported for modes in CROWN. BaB is now conducted in the order:
@@ -692,6 +712,7 @@ def construct_full_non_uniform_unknown_levelset_tree(
     ## Recursively build the tree
     i_split = 0
     n_splits = split_depth + 1  # 1 extra because last round doesn't split
+    clipped_lower, clipped_upper = None, None
     for i_split in range(n_splits):
         # Detect when to quit. On the last iteration we need to not do any more splitting, but still process existing nodes one last time
         quit_next = i_split + 1 == n_splits
@@ -703,7 +724,7 @@ def construct_full_non_uniform_unknown_levelset_tree(
         total_n_valid = 0
         og_lower = lower.clone()
         og_upper = upper.clone()
-        lower, upper, out_node_type, out_split_dim, out_split_val = (
+        lower, upper, out_node_type, out_split_dim, out_split_val, clipped_lower, clipped_upper = (
             construct_full_non_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
                                                                   og_lower, og_upper, i_split, branching_method, split_depth,
                                                                   offset=offset, batch_size=batch_size))
@@ -745,11 +766,12 @@ def construct_full_non_uniform_unknown_levelset_tree(
             assert _allclose_ignore_nan(out_node_type, uni_node_types), "Node type out does not match"
             assert _allclose_ignore_nan(out_split_val, uni_node_split_val), "Node split value does not match"
 
+        # if do_continue_splitting:
         node_lower.append(lower)
         node_upper.append(upper)
-        node_type.append(out_node_type)
         split_dim.append(out_split_dim)
         split_val.append(out_split_val)
+        node_type.append(out_node_type)
         N_curr_nodes = torch.logical_not(lower[:, 0].isnan()).sum()
 
         N_total_nodes += N_curr_nodes
@@ -765,7 +787,7 @@ def construct_full_non_uniform_unknown_levelset_tree(
     # for key in out_dict:
     #     print(key, out_dict[key][:10])
     print("Total number of nodes evaluated: ", N_total_nodes)
-    return node_lower, node_upper, node_type, split_dim, split_val
+    return node_lower, node_upper, node_type, split_dim, split_val, clipped_lower, clipped_upper
 
 
 def sample_surface_iter(func, params, n_samples_per_round, width, rngkey,

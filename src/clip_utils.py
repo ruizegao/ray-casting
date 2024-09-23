@@ -17,9 +17,6 @@ import torch
 from torch import Tensor
 from typing import Union, Tuple
 
-uniform_grid = False
-all_dims = None
-
 
 def clip_domains(
         x_L: Tensor,
@@ -29,8 +26,7 @@ def clip_domains(
         dm_lb: Union[Tensor, None] = None,
         lbias: Union[Tensor, None] = None,
         calculate_dm_lb: bool = False,
-        clip_dimensions: Union[Tensor, int, None] = None,
-        split_depth_meta = None
+        clip_dimensions: Union[Tensor, int, None] = None
 ) -> Tuple[Tensor, Tensor]:
     """
     Takes subdomains (or original domain) and shrinks along dimensions to remove verified portions of the input domain
@@ -48,19 +44,6 @@ def clip_domains(
         assert isinstance(lbias, Tensor), "lbias is needed to concretize dm_lb"
     else:
         assert isinstance(dm_lb, Tensor), "dm_lb was not given"
-
-    global uniform_grid, all_dims
-    if uniform_grid is False and split_depth_meta is not None:
-        split_depth = split_depth_meta.get("split_depth")
-        og_x_L = split_depth_meta.get("og_x_L")
-        og_x_U = split_depth_meta.get("og_x_U")
-        points = 2 ** split_depth
-
-        dim1 = torch.linspace(og_x_L[0, 0], og_x_U[0, 0], points).unsqueeze(0)
-        dim2 = torch.linspace(og_x_L[0, 1], og_x_U[0, 1], points).unsqueeze(0)
-        dim3 = torch.linspace(og_x_L[0, 2], og_x_U[0, 2], points).unsqueeze(0)
-        all_dims = [dim1, dim2, dim3]
-        uniform_grid = True
 
     # save original shapes
     x_L_shape = x_L.shape
@@ -116,31 +99,12 @@ def clip_domains(
     # Update new_x_U(L)
     # min returns tuple (min, min_indices), so we use [0] to only get min values
     # we care about min across output dimension assuming at least one specification output must be verified
-    x_L_temp, x_U_temp = x_L.clone(), x_U.clone()
     if clip_dimensions is None:
-        x_U_temp = torch.min(x_U_candidates.min(dim=1)[0], x_U)
-        x_L_temp = torch.max(x_L_candidates.max(dim=1)[0], x_L)
+        x_U = torch.min(x_U_candidates.min(dim=1)[0], x_U)
+        x_L = torch.max(x_L_candidates.max(dim=1)[0], x_L)
     else:
-        x_U_temp[:, clip_dimensions] = torch.min(x_U_candidates.min(dim=1)[0], x_U)[:, clip_dimensions]
-        x_L_temp[:, clip_dimensions] = torch.max(x_L_candidates.max(dim=1)[0], x_L)[:, clip_dimensions]
-
-    if uniform_grid is False:
-        x_L = x_L_temp
-        x_U = x_U_temp
-    else:
-        curr_all_dims = [dim.repeat(batches, 1) for dim in all_dims]
-        for i in range(3):
-            # batches x 1
-            # all_dims[i] is 1 x 2 ** split_depth
-            # curr_all_dims[i] is batches x 2 ** split_depth
-            upper_choices = torch.where(curr_all_dims[i] >= x_U_temp[:, i].unsqueeze(1), curr_all_dims[i], torch.inf)
-            lower_choices = torch.where(curr_all_dims[i] <= x_L_temp[:, i].unsqueeze(1), curr_all_dims[i], -torch.inf)
-            x_U[:, i] = upper_choices.min(dim=1)[0]
-            x_L[:, i] = lower_choices.max(dim=1)[0]
-
-        assert not torch.isinf(x_U).any(), "x_U has inf element"
-        assert not torch.isinf(x_L).any(), "x_L has inf element"
-
+        x_U[:, clip_dimensions] = torch.min(x_U_candidates.min(dim=1)[0], x_U)[:, clip_dimensions]
+        x_L[:, clip_dimensions] = torch.max(x_L_candidates.max(dim=1)[0], x_L)[:, clip_dimensions]
 
     # Get the entries where domains were not already verified to perform evaluation metrics
     x_L_nv, x_U_nv = x_L[not_verified], x_U[not_verified]
