@@ -46,20 +46,20 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
         affine_ctx = affine.AffineContext('affine_truncate', 
                 truncate_count=kwargs['affine_n_truncate'], truncate_policy=kwargs['affine_truncate_policy'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model=torch_model, obj_name=obj_name), params
     
     elif mode == 'affine_append':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_append', 
                 n_append=kwargs['affine_n_append'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model=torch_model, obj_name=obj_name), params
     
     elif mode == 'affine_all':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_all')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model=torch_model, obj_name=obj_name), params
 
     elif mode == 'affine_quad':
         implicit_func = mlp.func_from_spec(mode='affine')
@@ -75,7 +75,7 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
         # print(outputs.min(), outputs.max())
         func = affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model)
         # print(func.classify_box(params, lower, upper))
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model=torch_model, obj_name=obj_name), params
 
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')

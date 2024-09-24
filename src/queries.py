@@ -158,7 +158,7 @@ def cast_rays_tree_based(
         bad_node = torch.logical_and(hit_node, not_hit)
         curr_ray_end = roots + (t_out.view(-1, 1) + delta) * dirs
         curr_output = torch.zeros((dirs.shape[0],))
-        curr_output[bad_node] = func.torch_forward(curr_ray_end[bad_node]).flatten()
+        curr_output[bad_node] = func(params, curr_ray_end[bad_node]).flatten()
         t_out[bad_node] += delta * torch.sign(curr_output[bad_node])
         new_hit = torch.logical_and(curr_output < 0., not_hit)
         is_hit = torch.logical_or(new_hit, is_hit)

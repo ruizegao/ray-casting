@@ -113,29 +113,29 @@ def main():
 
     # load the matcaps
     matcaps = render.load_matcap(os.path.join(ROOT_DIR, "assets", "matcaps", "wax_{}.png"))
-    if mode == 'affine_truncate':
-        # truncate options
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode == 'affine_append':
-        # truncate options
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode == 'sdf':
-
-        changed, affine_opts['sdf_lipschitz'] = psim.InputFloat("SDF Lipschitz", affine_opts['sdf_lipschitz'])
-        if changed:
-            implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode in CROWN_MODES:
-
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
-    elif mode == 'affine+backward':
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-
-    elif mode == 'affine_quad':
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+    # if mode == 'affine_truncate':
+    #     # truncate options
+    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+    #
+    # elif mode == 'affine_append':
+    #     # truncate options
+    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+    #
+    # elif mode == 'sdf':
+    #
+    #     changed, affine_opts['sdf_lipschitz'] = psim.InputFloat("SDF Lipschitz", affine_opts['sdf_lipschitz'])
+    #     if changed:
+    #         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+    #
+    # elif mode in CROWN_MODES:
+    #
+    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+    #
+    # elif mode == 'affine+backward':
+    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
+    #
+    # elif mode == 'affine_quad':
+    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
                              cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping)
