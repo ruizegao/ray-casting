@@ -177,7 +177,7 @@ def cast_rays_tree_based(
         new_hit_node = point_types.int() == SIGN_UNKNOWN
         leaf_indices = leaf_indices[new_hit_node]
 
-        ray_clipped_plane_intersection, clip_t = intersect_rays(roots[new_hit_node], dirs[new_hit_node], clipped_planes[leaf_indices, primary_dimension], primary_dimension)
+        ray_clipped_plane_intersection, clip_t = intersect_rays(roots[new_hit_node], dirs[new_hit_node], (clipped_planes[leaf_indices, primary_dimension]+next_plane)/2, primary_dimension)
 
         ray_lbs = clipped_lower[leaf_indices.unsqueeze(1).repeat(1,2), not_primary_dimension]
         ray_ubs = clipped_upper[leaf_indices.unsqueeze(1).repeat(1, 2), not_primary_dimension]
@@ -186,7 +186,7 @@ def cast_rays_tree_based(
 
         # new_hit_node = torch.where(new_hit_node, outside_clipped_domain, new_hit_ndod)
         t[new_hit_node] = clip_t
-        new_hit_node[new_hit_node.clone()] = outside_clipped_domain
+        new_hit_node[new_hit_node.clone()] = torch.logical_not(outside_clipped_domain)
 
         t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
         hit_node = torch.logical_or(hit_node, new_hit_node)
