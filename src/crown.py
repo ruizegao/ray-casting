@@ -47,6 +47,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name=''):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
+        self.torch_model = crown_func
         if crown_mode.lower() == 'alpha-crown':
             self.reuse_alpha = True
             self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 3}})#, 'relu': 'same-slope'})
@@ -69,6 +70,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         # return self.crown_func(x)
         return self.implicit_func(params, x)
 
+    def torch_forward(self, x):
+        return self.torch_model(x)
 
     def call_implicit_func(self, params, x):
         return self.implicit_func(params, x)

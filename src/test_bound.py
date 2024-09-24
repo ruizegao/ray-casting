@@ -139,9 +139,21 @@ def main():
          [-0.0312, 0.2500, 0.0000]]
     )
 
-    for l, u in zip(lower, upper):
-        # ub, lb = implicit_func.classify_box(params, l.unsqueeze(0), u.unsqueeze(0))
-        # _ = vmap(partial(implicit_func.classify_box, params))(l.unsqueeze(0), u.unsqueeze(0))
-        _ = partial(implicit_func.classify_box, params)(l, u)
+    start = torch.cuda.Event(enable_timing=True)
+    end = torch.cuda.Event(enable_timing=True)
+
+    start.record()
+    # for l, u in zip(lower, upper):
+    #     _ = implicit_func.classify_box(params, l.unsqueeze(0), u.unsqueeze(0))
+    #     # _ = vmap(partial(implicit_func.classify_box, params))(l.unsqueeze(0), u.unsqueeze(0))
+    #     _ = partial(implicit_func.classify_box, params)(l, u)
+
+    _ = implicit_func.classify_box(params, lower, upper)
+    # _ = vmap(partial(implicit_func.classify_box, params))(lower, upper)
+
+    end.record()
+    torch.cuda.synchronize()
+    print(start.elapsed_time(end))
+
 if __name__ == '__main__':
     main()
