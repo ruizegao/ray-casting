@@ -89,10 +89,11 @@ def cast_rays_tree_based(
     t0 = time.time()
     split_depth = 3 * 6
     func = func_tuple[0]
+    tree_file = f'./tree/{func.obj_name}_{func.bounding_method}.npz'
     params = params_tuple[0]
     data_bound = 1.
-    lower = torch.tensor((-data_bound, -data_bound, -data_bound))
-    upper = torch.tensor((data_bound, data_bound, data_bound))
+    lower = torch.tensor((-data_bound, -data_bound, -data_bound)) #+ torch.ones(3)
+    upper = torch.tensor((data_bound, data_bound, data_bound)) #+ torch.ones(3)
     center = (lower + upper) / 2.
     print("branching method: ", branching_method)
     if enable_clipping:

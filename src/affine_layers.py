@@ -5,6 +5,7 @@ from functorch import vmap
 import affine
 import mlp
 import utils
+from affine import radius, may_contain_bounds
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -40,7 +41,7 @@ mlp.apply_func['affine']['dense'] = dense
 def relu(input, ctx):
     # Chebyshev bound
     base, aff, err = input
-
+    # print(torch.logical_and(may_contain_bounds(None, input)[0] < 0, may_contain_bounds(None, input)[1] > 0).sum().item())
     if affine.is_const(input):
         return torch.nn.functional.relu(base), aff, err
 

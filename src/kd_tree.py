@@ -1,7 +1,9 @@
-import jax
+import os.path
+
 
 from functools import partial
 import math
+import random
 
 import numpy as np
 from functorch import vmap
@@ -24,7 +26,7 @@ from split import kd_split
 INVALID_IND = 2**30
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-
+torch.set_printoptions(threshold=6)
 DEBUG_NONUNIFORM_KDTREE = False
 
 
@@ -77,6 +79,7 @@ def construct_uniform_unknown_levelset_tree_iter(
         # evaluate the function inside nodes
         node_types, node_split_dim = vmap(eval_one_node)(node_lower, node_upper)
 
+
     # if requested, write out interior nodes
     if finished_interior_lower is not None:
         out_mask = torch.logical_and(node_valid, node_types == SIGN_NEGATIVE)
@@ -85,6 +88,8 @@ def construct_uniform_unknown_levelset_tree_iter(
         out_inds = out_inds[mask]
         node_interior_lower = node_lower[mask].float()
         node_interior_upper = node_upper[mask].float()
+        # rand_ind = random.randint(0, len(node_interior_lower) - 1)
+        # print("interior: ", node_interior_lower[rand_ind], node_interior_lower[rand_ind])
         # finished_interior_lower = finished_interior_lower.at[out_inds,:].set(node_lower, mode='drop')
         # finished_interior_upper = finished_interior_upper.at[out_inds,:].set(node_upper, mode='drop')
         finished_interior_lower[out_inds, :] = node_interior_lower
@@ -99,6 +104,8 @@ def construct_uniform_unknown_levelset_tree_iter(
         out_inds = out_inds[mask]
         node_exterior_lower = node_lower[mask].float()
         node_exterior_upper = node_upper[mask].float()
+        # rand_ind = random.randint(0, len(node_exterior_lower)-1)
+        # print("exterior: ", node_exterior_lower[rand_ind], node_exterior_upper[rand_ind])
         # finished_exterior_lower = finished_exterior_lower.at[out_inds,:].set(node_lower, mode='drop')
         # finished_exterior_upper = finished_exterior_upper.at[out_inds,:].set(node_upper, mode='drop')
         finished_exterior_lower[out_inds, :] = node_exterior_lower
@@ -109,6 +116,8 @@ def construct_uniform_unknown_levelset_tree_iter(
     # (if split_children is False this will just not create any children at all)
     split_mask = utils.logical_and_all([node_valid, node_types == SIGN_UNKNOWN])
     N_new = torch.sum(split_mask)  # each split leads to two children (for a total of 2*N_new)
+    # rand_ind = random.randint(0, N_new - 1)
+    # print("unknown: ", node_lower[split_mask][rand_ind], node_upper[split_mask][rand_ind])
     ## now actually build the child nodes
     if continue_splitting:
 
@@ -381,7 +390,9 @@ def construct_full_uniform_unknown_levelset_tree(
         upper,
         split_depth=None,
         offset=0.,
-        batch_size=None
+        batch_size=None,
+        load_from=None,
+        save_to=None
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
 
@@ -396,6 +407,11 @@ def construct_full_uniform_unknown_levelset_tree(
     :param batch_size:          If not None, nodes are processed in batches
     :return:
     """
+    if load_from and os.path.exists(load_from):
+        tree = np.load(load_from).values()
+        for _ in tree:
+            _ = torch.from_numpy(_)
+        return tree
 
     d = lower.shape[-1]
 
@@ -445,6 +461,14 @@ def construct_full_uniform_unknown_levelset_tree(
     # for key in out_dict:
     #     print(key, out_dict[key][:10])
     print("Total number of nodes evaluated: ", N_total_nodes)
+    if save_to:
+        tree = {}
+        tree['node_lower'] = node_lower.detach().cpu().numpy()
+        tree['node_upper'] = node_upper.detach().cpu().numpy()
+        tree['node_type'] = node_type.detach().cpu().numpy()
+        tree['split_dim'] = split_dim.detach().cpu().numpy()
+        tree['split_val'] = split_val.detach().cpu().numpy()
+        np.savez(save_to, **tree)
     return node_lower, node_upper, node_type, split_dim, split_val
 
 
@@ -656,7 +680,7 @@ def construct_full_non_uniform_unknown_levelset_tree(
         branching_method: str,
         split_depth: Union[float, None] = None,
         offset: float = 0.,
-        batch_size: Union[float, None] = None
+        batch_size: Union[float, None] = None,
 ) -> Tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     """
 

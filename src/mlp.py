@@ -244,8 +244,11 @@ def check_rng_key(key):
     if key is None:
         raise ValueError("to initialize model weights, must pass an RNG key")
 
-def load(filename):
+def load(filename, shift=None):
     out_params = {}
+    if shift:
+        out_params['0000.dense.A'] = np.eye(3)
+        out_params['0000.dense.b'] = - np.array(shift)
     param_count = 0
     with np.load(filename) as data:
         for key,val in data.items():
@@ -254,6 +257,8 @@ def load(filename):
             if isinstance(val, np.ndarray):
                 param_count += val.size
                 val = np.array(val)
+            if shift:
+                key = f"{(int(key[:4])+1):04d}" + key[4:]
             out_params[key] = val
     print(f"Loaded MLP with {param_count} params")
     return out_params

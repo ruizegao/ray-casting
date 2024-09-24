@@ -14,13 +14,15 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 class AffineImplicitFunction(implicit_function.ImplicitFunction):
 
-    def __init__(self, affine_func, ctx, bounded_func=None, torch_model=None):
+    def __init__(self, affine_func, ctx, bounded_func=None, torch_model=None, obj_name=''):
         super().__init__("classify-only")
         self.affine_func = affine_func
         self.torch_model = torch_model
         self.ctx = ctx
         self.bounded_func = bounded_func
         self.mode_dict = {'ctx' : self.ctx}
+        self.obj_name = obj_name
+        self.bounding_method = ctx.mode
 
 
     def __call__(self, params, x):
@@ -44,7 +46,7 @@ class AffineImplicitFunction(implicit_function.ImplicitFunction):
         # print("base type in input: ", input[0].dtype)
         if keep_ctx.mode == 'affine+backward':
             bound_dict = self.bounded_func(params, input, {'ctx' : keep_ctx})
-            print(bound_dict)
+            # print(bound_dict)
             box_diff = torch.diag(box_vecs)
             may_lower, may_upper = pseudo_crown(bound_dict, box_center, box_diff)
             # print(may_upper, may_lower)

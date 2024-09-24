@@ -79,10 +79,6 @@ print(f'forward+backward bounds: lower={lb}, upper={ub}')
 print('forward+backward linear (symbolic) bounds: lA x + lbias <= f(x) <= uA x + ubias, where')
 print(A[lirpa_model.output_name[0]][lirpa_model.input_name[0]])
 
-# forward optimized.
-lb, ub = lirpa_model.compute_bounds(x=(bounded_x,), method='forward')
-print(f'forward optimized bounds: lower={lb}, upper={ub}')
-
 # layer = torch.nn.Linear(in_features=1, out_features=2)
 # layer.weight = torch.nn.Parameter(torch.tensor([[1.], [1.]]))
 # layer.bias = torch.nn.Parameter(torch.tensor([-1., -2.]))
@@ -145,9 +141,11 @@ def pseudo_crown(bounds, x_l, x_u):
     # print(lower_bound.shape)
     return lower_bound, upper_bound
 
-results = pseudo_crown(bound_dict, x_l=lower, x_u=upper)
-print(results)
-
+# results = pseudo_crown(bound_dict, x_l=lower, x_u=upper)
+# print(results)
+# input_path = 'sample_inputs/fox.npz'
+# obj_name = input_path[input_path.rindex('/')+1:-4]
+# print(obj_name)
 # print(bound_dict[0]['A_l'] @ lower)
 # print(lower.flatten() @ bound_dict[0]['A_u'].T)
 #

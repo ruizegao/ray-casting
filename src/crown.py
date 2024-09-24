@@ -44,18 +44,23 @@ def deconstruct_lbias(_x_L, _x_U, _lA, _dm_lb):
 
 class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
-    def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False):
+    def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name=''):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
         if crown_mode.lower() == 'alpha-crown':
             self.reuse_alpha = True
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 3}})
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 3}})#, 'relu': 'same-slope'})
         else:
             self.reuse_alpha = False
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
 
         self.crown_mode = crown_mode
         self._enable_clipping = enable_clipping
+        if enable_clipping:
+            self.bounding_method = crown_mode+'_clipping'
+        else:
+            self.bounding_method = crown_mode
+        self.obj_name = obj_name
         print(self.crown_mode, enable_clipping)
 
     def __call__(self, params, x):
@@ -95,6 +100,10 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         bounded_x = BoundedTensor(box_lower.float(), ptb)
         may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
         bound_dict = self.bounded_func.save_intermediate()
+        # unstable_counts = []
+        # for k, v in bound_dict.items():
+        #     if 'input' in k:
+        #         unstable_counts.append(torch.logical_and(v[0] < 0, v[1] > 0).sum().item())
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
         return_A = self._enable_clipping
@@ -106,7 +115,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             needed_A_dict = None
 
-        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=False,
+        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True,
                                                                 return_A=return_A, needed_A_dict=needed_A_dict)
 
         if return_A:
@@ -118,6 +127,9 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             lA = None
             lbias = None
 
+        torch.set_printoptions(threshold=float('inf'), precision=4)
+        # output_bounds = [may_lower.item(), may_upper.item()]
+        # print(*(output_bounds + unstable_counts))
         output_type = torch.full_like(may_lower, SIGN_UNKNOWN)
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
         # output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))

@@ -24,40 +24,6 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
-def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=False, batch_size=None, enable_clipping=False):
-    root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
-    look = torch.tensor([-1., 0., 0.])
-    up = torch.tensor([0., 1., 0.])
-    left = torch.tensor([0., 0., 1.])
-    # root = torch.tensor([0., -2., 0.])
-    # left = torch.tensor([1., 0., 0.])
-    # look = torch.tensor([0., 1., 0.])
-    # up = torch.tensor([0., 0., 1.])
-    fov_deg = 30
-    res = args.res // opts['res_scale']
-
-    surf_color = tuple(surf_color)
-
-    img, depth, count, _, eval_sum, raycast_time = render.render_image_naive(implicit_func, params, root, look, up,
-                                                                             left, res, fov_deg, cast_frustum, opts,
-                                                                             shading='matcap_color', matcaps=matcaps,
-                                                                             shading_color_tuple=(surf_color,),
-                                                                             tree_based=cast_tree_based, batch_size=batch_size,
-                                                                             enable_clipping=enable_clipping)
-
-    # flip Y
-    img = torch.flip(img, [0])
-    # append an alpha channel
-    alpha_channel = (torch.min(img, dim=-1).values < 1.).float()
-    # print(alpha_channel[:3, :3])
-    # alpha_channel = torch.ones_like(img[:,:,0])
-    img_alpha = torch.concatenate((img, alpha_channel[:, :, None]), dim=-1)
-    img_alpha = torch.clip(img_alpha, min=0., max=1.)
-    print(f"Saving image to {args.image_write_path}")
-    imageio.imwrite(args.image_write_path, img_alpha.cpu().detach().numpy())
-
-
 def main():
     parser = argparse.ArgumentParser()
 
@@ -137,9 +103,45 @@ def main():
     elif mode == 'affine_quad':
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
-    save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping)
+    lower = torch.tensor(
+        [[-1., -1., -1.],
+         [0., -1., 0.],
+         [ 0.5000, -1.0000, -1.0000],
+         [-0.2500,  0.7500,  0.2500],
+         [ 0.5000, -0.7500, -0.2500],
+         [ 0.5000,  0.7500, -0.2500],
+         [-0.5000, -0.1250,  0.0000],
+         [-0.5000, -0.7500,  0.3125],
+         [ 0.1250, -0.4375, -0.1875],
+         [-0.0625, -0.8125,  0.1875],
+         [-0.1875, -0.3750, -0.1875],
+         [-0.0625, 0.2812, -0.3438],
+         [-0.1250, -0.1875, 0.0938],
+         [-0.1875, -0.7812, 0.3125],
+         [-0.0625, 0.2188, -0.0312]]
+    )
 
+    upper = torch.tensor(
+        [[1., 1., 1.],
+         [1., 0., 1.],
+         [1., 0., 0.],
+         [-0.2500,  0.7500,  0.2500],
+         [ 0.7500, -0.5000,  0.0000],
+         [0.7500, 1.0000, 0.0000],
+         [-0.3750,  0.0000,  0.1250],
+         [-0.4375, -0.6875,  0.3750],
+         [ 0.1875, -0.3750, -0.1250],
+         [ 0.0000, -0.7500,  0.2500],
+         [-0.1562, -0.3438, -0.1562],
+         [-0.0312, 0.3125, -0.3125],
+         [-0.0938, -0.1562, 0.1250],
+         [-0.1562, -0.7500, 0.3438],
+         [-0.0312, 0.2500, 0.0000]]
+    )
 
+    for l, u in zip(lower, upper):
+        # ub, lb = implicit_func.classify_box(params, l.unsqueeze(0), u.unsqueeze(0))
+        # _ = vmap(partial(implicit_func.classify_box, params))(l.unsqueeze(0), u.unsqueeze(0))
+        _ = partial(implicit_func.classify_box, params)(l, u)
 if __name__ == '__main__':
     main()

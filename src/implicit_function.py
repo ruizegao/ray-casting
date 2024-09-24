@@ -1,7 +1,6 @@
 from functools import partial
 
 
-import jax
 import torch
 
 # "enums" integer codes denoting the sign of the implicit function with a region
@@ -12,12 +11,14 @@ SIGN_NEGATIVE = 2   # definitely negative throughout
 class ImplicitFunction:
 
     # `eval` and `affine_eval` are functions that can be called
-    def __init__(self, style):
+    def __init__(self, style, obj_name=''):
     
         if style not in ['classify-only', 'classify-and-distance']:
             raise ValueError("unrecognized style")
 
         self.style = style
+        self.obj_name = obj_name
+        self.bounding_method = None
 
     def __call__(self, params, x):
         raise RuntimeError("ImplicitFunction does not implement a __call__() operator. Subclasses must provide an implementation if is to be used.")

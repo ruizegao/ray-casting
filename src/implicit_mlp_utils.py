@@ -1,15 +1,18 @@
 from functools import partial
 
+from numpy.core.defchararray import rindex
 
 import utils
 import mlp, sdf, affine, slope_interval, crown
 import torch
 
-def generate_implicit_from_file(input_path, mode, **kwargs):
-    
+def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
+
+    obj_name = ''
     ## Load the file
     if input_path.endswith(".npz"):
-        params = mlp.load(input_path)
+        params = mlp.load(input_path, shift=shift)
+        obj_name = input_path[input_path.rindex('/')+1:-4]
     else:
         raise ValueError("unrecognized filetype")
 
@@ -36,27 +39,27 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_fixed')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
    
     elif mode == 'affine_truncate':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_truncate', 
                 truncate_count=kwargs['affine_n_truncate'], truncate_policy=kwargs['affine_truncate_policy'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
     
     elif mode == 'affine_append':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_append', 
                 n_append=kwargs['affine_n_append'])
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
     
     elif mode == 'affine_all':
         implicit_func = mlp.func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine_all')
         torch_model = mlp.func_as_torch(params)
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
 
     elif mode == 'affine_quad':
         implicit_func = mlp.func_from_spec(mode='affine')
@@ -72,7 +75,7 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         # print(outputs.min(), outputs.max())
         func = affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model)
         # print(func.classify_box(params, lower, upper))
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, torch_model, obj_name=obj_name), params
 
     elif mode == 'slope_interval':
         implicit_func = mlp.func_from_spec(mode='slope_interval')
@@ -89,43 +92,43 @@ def generate_implicit_from_file(input_path, mode, **kwargs):
         # print("min and max of sampled values: ")
         # print(outputs.min(), outputs.max())
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown', enable_clipping=enable_clipping), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='crown', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'alpha_crown':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='alpha-CROWN', enable_clipping=enable_clipping), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='alpha-CROWN', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'forward+backward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='Forward+Backward', enable_clipping=enable_clipping), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='Forward+Backward', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'forward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward', enable_clipping=enable_clipping), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'forward-optimized':
             crown_func = mlp.func_as_torch(params)
             implicit_func = mlp.func_from_spec(mode='default')
-            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward-optimized', enable_clipping=enable_clipping), params
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='forward-optimized', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'dynamic_forward':
         crown_func = mlp.func_as_torch(params)
         implicit_func = mlp.func_from_spec(mode='default')
-        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward', enable_clipping=enable_clipping), params
+        return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'dynamic_forward+backward':
             crown_func = mlp.func_as_torch(params)
             implicit_func = mlp.func_from_spec(mode='default')
-            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward', enable_clipping=enable_clipping), params
+            return crown.CrownImplicitFunction(implicit_func, crown_func, crown_mode='dynamic-forward+backward', enable_clipping=enable_clipping, obj_name=obj_name), params
 
     elif mode == 'affine+backward':
         implicit_func = mlp.func_from_spec(mode='affine')
         bounded_func = mlp.bounded_func_from_spec(mode='affine')
         affine_ctx = affine.AffineContext('affine+backward')
-        return affine.AffineImplicitFunction(implicit_func, affine_ctx, bounded_func), params
+        return affine.AffineImplicitFunction(implicit_func, affine_ctx, bounded_func, obj_name=obj_name), params
 
     else:
         raise RuntimeError("unrecognized mode")
