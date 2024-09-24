@@ -17,6 +17,8 @@ tags
 *.blend1
 pyrightconfig.json
 
+render_out.png
+
 # Prerequisites
 *.d
 
