@@ -269,7 +269,7 @@ def main():
 
     # GUI Parameters
     opts = queries.get_default_cast_opts()
-    opts['data_bound'] = 1
+    opts['data_bound'] = 2
     opts['res_scale'] = 1
     opts['tree_max_depth'] = 12
     opts['tree_split_aff'] = False

@@ -407,11 +407,11 @@ def construct_full_uniform_unknown_levelset_tree(
     :param batch_size:          If not None, nodes are processed in batches
     :return:
     """
-    if load_from and os.path.exists(load_from):
-        tree = np.load(load_from).values()
-        for _ in tree:
-            _ = torch.from_numpy(_)
-        return tree
+    # if load_from and os.path.exists(load_from):
+    #     tree = np.load(load_from).values()
+    #     for _ in tree:
+    #         _ = torch.from_numpy(_)
+    #     return tree
 
     d = lower.shape[-1]
 
@@ -461,14 +461,14 @@ def construct_full_uniform_unknown_levelset_tree(
     # for key in out_dict:
     #     print(key, out_dict[key][:10])
     print("Total number of nodes evaluated: ", N_total_nodes)
-    if save_to:
-        tree = {}
-        tree['node_lower'] = node_lower.detach().cpu().numpy()
-        tree['node_upper'] = node_upper.detach().cpu().numpy()
-        tree['node_type'] = node_type.detach().cpu().numpy()
-        tree['split_dim'] = split_dim.detach().cpu().numpy()
-        tree['split_val'] = split_val.detach().cpu().numpy()
-        np.savez(save_to, **tree)
+    # if save_to:
+    #     tree = {}
+    #     tree['node_lower'] = node_lower.detach().cpu().numpy()
+    #     tree['node_upper'] = node_upper.detach().cpu().numpy()
+    #     tree['node_type'] = node_type.detach().cpu().numpy()
+    #     tree['split_dim'] = split_dim.detach().cpu().numpy()
+    #     tree['split_val'] = split_val.detach().cpu().numpy()
+    #     np.savez(save_to, **tree)
     return node_lower, node_upper, node_type, split_dim, split_val
 
 

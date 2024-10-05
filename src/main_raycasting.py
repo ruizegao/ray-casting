@@ -25,7 +25,7 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=False, batch_size=None, enable_clipping=False):
+                             cast_tree_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
     root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
     look = torch.tensor([-1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
@@ -44,7 +44,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
                                                                              shading='matcap_color', matcaps=matcaps,
                                                                              shading_color_tuple=(surf_color,),
                                                                              tree_based=cast_tree_based, batch_size=batch_size,
-                                                                             enable_clipping=enable_clipping)
+                                                                             enable_clipping=enable_clipping, load_from=load_from, save_to=save_to)
 
     # flip Y
     img = torch.flip(img, [0])
@@ -78,7 +78,8 @@ def main():
     parser.add_argument("--enable-double-precision", action='store_true')
     parser.add_argument("--enable_clipping", action='store_true')
     parser.add_argument("--heuristic", type=str, default='naive')
-
+    parser.add_argument("--load-from", type=str, default=None)
+    parser.add_argument("--save-to", type=str, default=None)
     # Parse arguments
     args = parser.parse_args()
 
@@ -138,7 +139,7 @@ def main():
     #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping)
+                             cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args.load_from, save_to=args.save_to)
 
 
 if __name__ == '__main__':

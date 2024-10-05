@@ -50,7 +50,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         self.torch_model = crown_func
         if crown_mode.lower() == 'alpha-crown':
             self.reuse_alpha = True
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 3}})#, 'relu': 'same-slope'})
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 20}})#, 'relu': 'same-slope'})
         else:
             self.reuse_alpha = False
             self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
@@ -109,8 +109,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         #         unstable_counts.append(torch.logical_and(v[0] < 0, v[1] > 0).sum().item())
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
-        return_A = self._enable_clipping
-
+        # return_A = self._enable_clipping
+        return_A = True
         # prepare A_dict to retrieve final lA
         if return_A:
             needed_A_dict = defaultdict(set)
@@ -125,10 +125,14 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             may_lower, may_upper, A_dict = result
             lA = A_dict[self.bounded_func.output_name[0]][self.bounded_func.input_name[0]]['lA']
             lbias = A_dict[self.bounded_func.output_name[0]][self.bounded_func.input_name[0]]['lbias']
+            uA = A_dict[self.bounded_func.output_name[0]][self.bounded_func.input_name[0]]['uA']
+            ubias = A_dict[self.bounded_func.output_name[0]][self.bounded_func.input_name[0]]['ubias']
         else:
             may_lower, may_upper = result
             lA = None
             lbias = None
+            uA = None
+            ubias = None
 
         torch.set_printoptions(threshold=float('inf'), precision=4)
         # output_bounds = [may_lower.item(), may_upper.item()]
@@ -141,7 +145,9 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             crown_ret = {
                 "dm_lb": may_lower.detach(),
                 "lA": lA,
-                "lbias": lbias
+                "lbias": lbias,
+                "uA": uA,
+                "ubias": ubias
             }
             return output_type, crown_ret
         else:

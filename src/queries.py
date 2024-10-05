@@ -70,7 +70,9 @@ def cast_rays_tree_based(
         branching_method: str = "naive",
         delta=0.001,
         batch_size=None,
-        enable_clipping=False
+        enable_clipping=False,
+        load_from=None,
+        save_to=None
 ) -> Tuple[Tensor, Tensor, Tensor, float]:
     """
 
@@ -96,13 +98,24 @@ def cast_rays_tree_based(
     upper = torch.tensor((data_bound, data_bound, data_bound)) #+ torch.ones(3)
     center = (lower + upper) / 2.
     print("branching method: ", branching_method)
-    if enable_clipping:
-        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
-            func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
+    if load_from:
+        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = [torch.from_numpy(val).to(device) for val in np.load(load_from).values()]
     else:
-        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
-            func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
+        if enable_clipping:
+            node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
+                func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
+        else:
+            node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
+                func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
 
+        if save_to:
+            tree = {}
+            tree['node_lower'] = node_lower_tree.detach().cpu().numpy()
+            tree['node_upper'] = node_upper_tree.detach().cpu().numpy()
+            tree['node_type'] = node_type_tree.detach().cpu().numpy()
+            tree['split_dim'] = split_dim_tree.detach().cpu().numpy()
+            tree['split_val'] = split_val_tree.detach().cpu().numpy()
+            np.savez(save_to, **tree)
     t1 = time.time()
     print("tree building time: ", t1 - t0)
     t_out = torch.zeros((dirs.shape[0],))

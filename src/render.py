@@ -98,7 +98,7 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
 
 def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, branching_method, opts,
                  shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
-                 shading_color_func=None, tree_based=False):
+                 shading_color_func=None, tree_based=False, load_from=None, save_to=None):
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
@@ -136,7 +136,7 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
         with Timer("opt_based raycast"):
             # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
             t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
-                                                                              ray_dirs)
+                                                                              ray_dirs, load_from=load_from, save_to=save_to)
             # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_parameterized(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
             torch.cuda.synchronize()
     else:
@@ -171,7 +171,7 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
 
 def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
                        shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
-                       shading_color_func=None, tree_based=False, batch_size=None, enable_clipping=False):
+                       shading_color_func=None, tree_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
@@ -207,7 +207,7 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
     elif tree_based:
         t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
                                                                           ray_dirs, batch_size=batch_size,
-                                                                          enable_clipping=enable_clipping)
+                                                                          enable_clipping=enable_clipping, load_from=load_from, save_to=save_to)
         torch.cuda.synchronize()
     else:
         # == Standard raycasting
