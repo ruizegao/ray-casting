@@ -103,7 +103,9 @@ def cast_rays_tree_based(
     center = (lower + upper) / 2.
     print("branching method: ", branching_method)
     if load_from:
-        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = [torch.from_numpy(val).to(device) for val in np.load(load_from).values()]
+        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree, lAs, lbs, uAs, ubs, node_guaranteed = [
+            torch.from_numpy(val).to(device) for val in np.load(load_from).values()]
+        split_depth = int(math.log2(len(node_guaranteed)))
     else:
         if enable_clipping:
             node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
@@ -292,11 +294,11 @@ def cast_rays_shell_based(
         # hit_node = torch.logical_or(hit_node, new_hit_node)
         t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
         hit_node = torch.logical_or(hit_node, new_hit_node)
-        # is_hit = torch.logical_or(is_hit, test_mask)
         miss_node = torch.logical_not(hit_node)
+        is_hit = torch.logical_or(is_hit, test_mask)
 
-    # not_hit = torch.logical_not(is_hit)
-    # hit_id_out[hit_node] = 1.
+    not_hit = torch.logical_not(is_hit)
+    hit_id_out[is_hit] = 1.
     t3 = time.time()
     print("tree traversal time: ", t3 - t2)
 

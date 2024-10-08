@@ -354,7 +354,7 @@ def main():
         mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs_valid, ubs_valid, lower, upper)])
 
         # mask = torch.full_like(mask_l, True)
-        mask = mask_l & mask_u
+        mask = mask_l | mask_u
 
         node_guaranteed = node_valid.clone()
         node_guaranteed[node_valid] = mask
