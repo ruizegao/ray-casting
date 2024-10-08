@@ -50,6 +50,7 @@ def main():
     parser.add_argument("--enable-double-precision", action='store_true')
     parser.add_argument("--enable_clipping", action='store_true')
     parser.add_argument("--heuristic", type=str, default='naive')
+    parser.add_argument("--disable_ps", action='store_true')
 
     # Parse arguments
     args = parser.parse_args()
@@ -65,6 +66,7 @@ def main():
     split_depth = args.split_depth
     batch_size = args.batch_size
     enable_clipping = args.enable_clipping
+    disable_ps = args.disable_ps
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
              'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
              'dynamic_forward+backward', 'affine+backward', 'affine_quad']
@@ -143,8 +145,8 @@ def main():
     #      [-0.1562, -0.7500, 0.3438],
     #      [-0.0312, 0.2500, 0.0000]]
     # )
-
-    ps.init()
+    if not disable_ps:
+        ps.init()
 
     def generate_vertex_planes(normal_vector: torch.Tensor,
                                offset: torch.Tensor,
@@ -250,20 +252,21 @@ def main():
         # Create faces for the plane mesh (triangulation)
         faces_plane_l = np.arange(len(vertices_plane_l)).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
-        ps.register_surface_mesh('planes_l', vertices_plane_l.cpu().numpy(), faces_plane_l)
 
         vertices_plane_u = torch.cat(vp_list_u, dim=0)#[np.repeat(mask, 4)]
         # Create faces for the plane mesh (triangulation)
         faces_plane_u = np.arange(len(vertices_plane_u)).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
-        ps.register_surface_mesh('planes_u', vertices_plane_u.cpu().numpy(), faces_plane_u)
 
         # ---------------- Visualize Cube ---------------- #
         # Register the cube mesh with Polyscope
         # ps.register_surface_mesh('cube_'+name, vertices_cube, faces_cube)
         # verts, inds = generate_tree_viz_nodes_simple(torch.from_numpy(lower[mask_l]), torch.from_numpy(upper[mask_l]))
         verts, inds = generate_tree_viz_nodes_simple(lower, upper)
-        ps.register_volume_mesh("unknown tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
+        if not disable_ps:
+            ps.register_surface_mesh('planes_l', vertices_plane_l.cpu().numpy(), faces_plane_l)
+            ps.register_surface_mesh('planes_u', vertices_plane_u.cpu().numpy(), faces_plane_u)
+            ps.register_volume_mesh("unknown tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
     def plane_intersects_cube(normal, offset, lower, upper):
         # normal = normal
@@ -305,7 +308,8 @@ def main():
     verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
     verts = torch.from_numpy(verts).to(device)
     verts = verts + bbox_min[None,:]
-    ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)
+    if not disable_ps:
+        ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)
     if args.load_from:
         node_lower, node_upper, node_type, split_dim, split_val, lAs, lbs, uAs, ubs, node_guaranteed = [torch.from_numpy(val).to(device) for val in np.load(args.load_from).values()]
         node_lower_last_layer = node_lower[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
@@ -380,7 +384,8 @@ def main():
             np.savez(args.save_to, **tree)
 
     register_plane_and_cube_with_polyscope(lAs[node_guaranteed], lbs[node_guaranteed], uAs[node_guaranteed], ubs[node_guaranteed], node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
-    ps.show()
+    if not disable_ps:
+        ps.show()
 
 
 if __name__ == '__main__':
