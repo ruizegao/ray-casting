@@ -39,8 +39,8 @@ def main():
     parser.add_argument("--cast_frustum", action='store_true')
     parser.add_argument("--cast_tree_based", action='store_true')
     parser.add_argument("--batch_size", type=int, default=None)
-
     parser.add_argument("--res", type=int, default=1024)
+    parser.add_argument("--split_depth", type=int, default=18)
 
     parser.add_argument("--image_write_path", type=str, default="render_out.png")
 
@@ -62,6 +62,7 @@ def main():
     cast_frustum = args.cast_frustum
     cast_tree_based = args.cast_tree_based
     mode = args.mode
+    split_depth = args.split_depth
     batch_size = args.batch_size
     enable_clipping = args.enable_clipping
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
@@ -109,82 +110,55 @@ def main():
     elif mode == 'affine_quad':
         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
-    lower = torch.tensor(
-        [[-1., -1., -1.],
-         [0., -1., 0.],
-         [ 0.5000, -1.0000, -1.0000],
-         [ 0.5000, -0.7500, -0.2500],
-         [ 0.5000,  0.7500, -0.2500],
-         [-0.5000, -0.1250,  0.0000],
-         [-0.5000, -0.7500,  0.3125],
-         [ 0.1250, -0.4375, -0.1875],
-         [-0.0625, -0.8125,  0.1875],
-         [-0.1875, -0.3750, -0.1875],
-         [-0.0625, 0.2812, -0.3438],
-         [-0.1250, -0.1875, 0.0938],
-         [-0.1875, -0.7812, 0.3125],
-         [-0.0625, 0.2188, -0.0312]]
-    )
-
-    upper = torch.tensor(
-        [[1., 1., 1.],
-         [1., 0., 1.],
-         [1., 0., 0.],
-         [ 0.7500, -0.5000,  0.0000],
-         [0.7500, 1.0000, 0.0000],
-         [-0.3750,  0.0000,  0.1250],
-         [-0.4375, -0.6875,  0.3750],
-         [ 0.1875, -0.3750, -0.1250],
-         [ 0.0000, -0.7500,  0.2500],
-         [-0.1562, -0.3438, -0.1562],
-         [-0.0312, 0.3125, -0.3125],
-         [-0.0938, -0.1562, 0.1250],
-         [-0.1562, -0.7500, 0.3438],
-         [-0.0312, 0.2500, 0.0000]]
-    )
+    # lower = torch.tensor(
+    #     [[-1., -1., -1.],
+    #      [0., -1., 0.],
+    #      [ 0.5000, -1.0000, -1.0000],
+    #      [ 0.5000, -0.7500, -0.2500],
+    #      [ 0.5000,  0.7500, -0.2500],
+    #      [-0.5000, -0.1250,  0.0000],
+    #      [-0.5000, -0.7500,  0.3125],
+    #      [ 0.1250, -0.4375, -0.1875],
+    #      [-0.0625, -0.8125,  0.1875],
+    #      [-0.1875, -0.3750, -0.1875],
+    #      [-0.0625, 0.2812, -0.3438],
+    #      [-0.1250, -0.1875, 0.0938],
+    #      [-0.1875, -0.7812, 0.3125],
+    #      [-0.0625, 0.2188, -0.0312]]
+    # )
+    #
+    # upper = torch.tensor(
+    #     [[1., 1., 1.],
+    #      [1., 0., 1.],
+    #      [1., 0., 0.],
+    #      [ 0.7500, -0.5000,  0.0000],
+    #      [0.7500, 1.0000, 0.0000],
+    #      [-0.3750,  0.0000,  0.1250],
+    #      [-0.4375, -0.6875,  0.3750],
+    #      [ 0.1875, -0.3750, -0.1250],
+    #      [ 0.0000, -0.7500,  0.2500],
+    #      [-0.1562, -0.3438, -0.1562],
+    #      [-0.0312, 0.3125, -0.3125],
+    #      [-0.0938, -0.1562, 0.1250],
+    #      [-0.1562, -0.7500, 0.3438],
+    #      [-0.0312, 0.2500, 0.0000]]
+    # )
 
     ps.init()
-    grid_res = 128
-    ax_coords = torch.linspace(-1., 1., grid_res)
-    grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
-    grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
-    delta = (grid[1,2] - grid[0,2]).item()
-    sdf_vals = vmap(partial(implicit_func, params))(grid)
-    sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
-    bbox_min = grid[0,:]
-    verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
-    verts = torch.from_numpy(verts).to(device)
-    verts = verts + bbox_min[None,:]
-    ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)
-    if args.load_from:
-        node_valid, node_lower, node_upper = [torch.from_numpy(val).to(device) for val in np.load(args.load_from).values()]
-    else:
-        out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, -torch.ones(3), torch.ones(3), split_depth=24)
-        node_valid = out_dict['unknown_node_valid']
-        node_lower = out_dict['unknown_node_lower']
-        node_upper = out_dict['unknown_node_upper']
-        if args.save_to:
-            out_dict['unknown_node_valid'] = node_valid.cpu().numpy()
-            out_dict['unknown_node_lower'] = node_lower.cpu().numpy()
-            out_dict['unknown_node_upper'] = node_upper.cpu().numpy()
-            np.savez(args.save_to, **out_dict)
-    lower = node_lower[node_valid,:]
-    upper = node_upper[node_valid,:]
-    print(node_lower.shape[0])
-    print(sum(node_valid.tolist()))
+
     def generate_vertex_planes(normal_vector: torch.Tensor,
-            offset: torch.Tensor,
-            lower: torch.Tensor,
-            upper: torch.Tensor,):
+                               offset: torch.Tensor,
+                               lower: torch.Tensor,
+                               upper: torch.Tensor, ):
         # print(normal_vector)
-        if np.argmax(np.abs(normal_vector)) == 2:
+        if torch.argmax(torch.abs(normal_vector)) == 2:
             z1 = -(normal_vector[0] * lower[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
             z2 = -(normal_vector[0] * lower[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
             z3 = -(normal_vector[0] * upper[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
             z4 = -(normal_vector[0] * upper[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
             # Flatten arrays for vertices
             # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = np.array([
+            vertices_plane = torch.tensor([
                 [lower[0], lower[1], z1],
                 [lower[0], upper[1], z2],
                 [upper[0], upper[1], z3],
@@ -193,14 +167,14 @@ def main():
             maximum = max([z1, z2, z3, z4])
             minimum = min([z1, z2, z3, z4])
             # print("z diff: ", maximum - minimum)
-        elif np.argmax(np.abs(normal_vector)) == 1:
+        elif torch.argmax(torch.abs(normal_vector)) == 1:
             y1 = -(normal_vector[0] * lower[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
             y2 = -(normal_vector[0] * lower[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
             y3 = -(normal_vector[0] * upper[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
             y4 = -(normal_vector[0] * upper[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
             # Flatten arrays for vertices
             # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = np.array([
+            vertices_plane = torch.tensor([
                 [lower[0], y1, lower[2]],
                 [lower[0], y2, upper[2]],
                 [upper[0], y3, upper[2]],
@@ -216,7 +190,7 @@ def main():
             x4 = -(normal_vector[1] * upper[1] + normal_vector[2] * lower[2] + offset) / normal_vector[0]  # Solve for z
             # Flatten arrays for vertices
             # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = np.array([
+            vertices_plane = torch.tensor([
                 [x1, lower[1], lower[2]],
                 [x2, lower[1], upper[2]],
                 [x3, upper[1], upper[2]],
@@ -246,84 +220,72 @@ def main():
         - grid_density: The number of points per axis to sample in the grid.
         """
         # Convert torch tensors to numpy arrays
-        lAs = lAs.cpu().numpy()
-        lbs = lbs.cpu().numpy()
-        uAs = uAs.cpu().numpy()
-        ubs = ubs.cpu().numpy()
-        lower = lower.cpu().numpy()
-        upper = upper.cpu().numpy()
+        lAs = lAs
+        lbs = lbs
+        uAs = uAs
+        ubs = ubs
+        lower = lower
+        upper = upper
 
         # Initialize Polyscope
         # ps.init()
 
         # ---------------- Visualize Plane ---------------- #
         vp_list_l = [generate_vertex_planes(nv, os, l, u) for nv, os, l, u in zip(lAs, lbs, lower, upper)]
-        mask_l = np.array([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs, lbs, lower, upper)])
-        vertices_plane_l = np.concatenate(vp_list_l, axis=0)[np.repeat(mask_l, 4)]
+        # mask_l = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs, lbs, lower, upper)])
+        # mask_l = torch.tensor([True for nv, os, l, u in zip(lAs, lbs, lower, upper)])
+
+
+        vp_list_u = [generate_vertex_planes(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)]
+        # mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)])
+        # mask_u = torch.tensor([True for nv, os, l, u in zip(uAs, ubs, lower, upper)])
+        # mask_u = mask_l
+
+        # mask = mask_l | mask_u
+        # mask = mask_l
+        # print(torch.sum(mask), len(mask), torch.sum(mask) / len(mask))
+
+        # vertices_plane_l = torch.cat(vp_list_l, dim=0)#[np.repeat(mask, 4)]
+        vertices_plane_l = torch.cat(vp_list_l, dim=0)#[np.repeat(mask, 4)]
         # Create faces for the plane mesh (triangulation)
         faces_plane_l = np.arange(len(vertices_plane_l)).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
-        ps.register_surface_mesh('planes_l', vertices_plane_l, faces_plane_l)
+        ps.register_surface_mesh('planes_l', vertices_plane_l.cpu().numpy(), faces_plane_l)
 
-        vp_list_u = [generate_vertex_planes(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)]
-        mask_u = np.array([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)])
-        # mask_u = mask_l
-        vertices_plane_u = np.concatenate(vp_list_u, axis=0)[np.repeat(mask_u, 4)]
+        vertices_plane_u = torch.cat(vp_list_u, dim=0)#[np.repeat(mask, 4)]
         # Create faces for the plane mesh (triangulation)
         faces_plane_u = np.arange(len(vertices_plane_u)).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
-        ps.register_surface_mesh('planes_u', vertices_plane_u, faces_plane_u)
-        mask = mask_l | mask_u
-        print(np.sum(mask), mask.shape, np.sum(mask)/mask.shape)
+        ps.register_surface_mesh('planes_u', vertices_plane_u.cpu().numpy(), faces_plane_u)
+
         # ---------------- Visualize Cube ---------------- #
-        # Vertices of the cube (8 corners)
-        # vertices_cube = np.array([
-        #     [lower[0], lower[1], lower[2]],
-        #     [lower[0], lower[1], upper[2]],
-        #     [lower[0], upper[1], lower[2]],
-        #     [lower[0], upper[1], upper[2]],
-        #     [upper[0], lower[1], lower[2]],
-        #     [upper[0], lower[1], upper[2]],
-        #     [upper[0], upper[1], lower[2]],
-        #     [upper[0], upper[1], upper[2]]
-        # ])
-
-        # Faces of the cube (12 triangles)
-        # faces_cube = np.array([
-        #     [0, 1, 2], [1, 3, 2],  # Front face
-        #     [4, 6, 5], [5, 6, 7],  # Back face
-        #     [0, 4, 1], [1, 4, 5],  # Bottom face
-        #     [2, 3, 6], [3, 7, 6],  # Top face
-        #     [0, 2, 4], [2, 6, 4],  # Left face
-        #     [1, 5, 3], [3, 5, 7]  # Right face
-        # ])
-
         # Register the cube mesh with Polyscope
         # ps.register_surface_mesh('cube_'+name, vertices_cube, faces_cube)
-        verts, inds = generate_tree_viz_nodes_simple(torch.from_numpy(lower[mask_l]), torch.from_numpy(upper[mask_l]))
+        # verts, inds = generate_tree_viz_nodes_simple(torch.from_numpy(lower[mask_l]), torch.from_numpy(upper[mask_l]))
+        verts, inds = generate_tree_viz_nodes_simple(lower, upper)
         ps.register_volume_mesh("unknown tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
-
-
     def plane_intersects_cube(normal, offset, lower, upper):
+        # normal = normal
+        # offset = offset
         x_min, y_min, z_min = lower
         x_max, y_max, z_max = upper
 
         vertices = [
-            np.array((x_min, y_min, z_min)),
-            np.array((x_min, y_min, z_max)),
-            np.array((x_min, y_max, z_min)),
-            np.array((x_min, y_max, z_max)),
-            np.array((x_max, y_min, z_min)),
-            np.array((x_max, y_min, z_max)),
-            np.array((x_max, y_max, z_min)),
-            np.array((x_max, y_max, z_max))
+            torch.tensor((x_min, y_min, z_min)),
+            torch.tensor((x_min, y_min, z_max)),
+            torch.tensor((x_min, y_max, z_min)),
+            torch.tensor((x_min, y_max, z_max)),
+            torch.tensor((x_max, y_min, z_min)),
+            torch.tensor((x_max, y_min, z_max)),
+            torch.tensor((x_max, y_max, z_min)),
+            torch.tensor((x_max, y_max, z_max))
         ]
 
         signs = set()
 
         for vertex in vertices:
-            d = np.dot(vertex, normal) + offset
+            d = torch.dot(vertex, normal) + offset
             # print(d)
             signs.add(int(d > 0))  # True for positive, False for negative
 
@@ -332,58 +294,92 @@ def main():
         else:
             return False  # Cube is entirely on one side of the plane
 
-    # def surface_intersects_cube(func, lower, upper):
-    #     x_min, y_min, z_min = lower
-    #     x_max, y_max, z_max = upper
-    #
-    #     vertices = [
-    #         torch.tensor((x_min, y_min, z_min)),
-    #         torch.tensor((x_min, y_min, z_max)),
-    #         torch.tensor((x_min, y_max, z_min)),
-    #         torch.tensor((x_min, y_max, z_max)),
-    #         torch.tensor((x_max, y_min, z_min)),
-    #         torch.tensor((x_max, y_min, z_max)),
-    #         torch.tensor((x_max, y_max, z_min)),
-    #         torch.tensor((x_max, y_max, z_max))
-    #     ]
-    #
-    #     signs = set()
-    #
-    #     for vertex in vertices:
-    #         d = func(params, vertex)
-    #         # print(d)
-    #         signs.add(int(d > 0))  # True for positive, False for negative
-    #
-    #     if len(signs) > 1:
-    #         return True  # Cube intersects the plane
-    #     else:
-    #         return False  # Cube is entirely on one side of the plane
-
-    total_samples = len(lower)
-
-    lAs = torch.empty((total_samples, 3))
-    lbs = torch.empty((total_samples,))
-    uAs = torch.empty((total_samples, 3))
-    ubs = torch.empty((total_samples,))
-
-    batch_size_per_iteration = args.batch_size
-    for start_idx in range(0, total_samples, batch_size_per_iteration):
-        end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-        out_type, crown_ret = implicit_func.classify_box(params, lower[start_idx:end_idx], upper[start_idx:end_idx])
-        lAs[start_idx:end_idx] = crown_ret['lA'].squeeze(1)
-        lbs[start_idx:end_idx] = crown_ret['lbias'].squeeze(1)
-        uAs[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
-        ubs[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
+    grid_res = 128
+    ax_coords = torch.linspace(-1., 1., grid_res)
+    grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
+    grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
+    delta = (grid[1,2] - grid[0,2]).item()
+    sdf_vals = vmap(partial(implicit_func, params))(grid)
+    sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
+    bbox_min = grid[0,:]
+    verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
+    verts = torch.from_numpy(verts).to(device)
+    verts = verts + bbox_min[None,:]
+    ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)
+    if args.load_from:
+        node_lower, node_upper, node_type, split_dim, split_val, lAs, lbs, uAs, ubs, node_guaranteed = [torch.from_numpy(val).to(device) for val in np.load(args.load_from).values()]
+        node_lower_last_layer = node_lower[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
+        node_upper_last_layer = node_upper[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
 
 
-    # register_plane_and_cube_with_polyscope(lAs[:25], lbs[:25], lower[:25], upper[:25], name='l')
-    # register_plane_and_cube_with_polyscope(uAs[:25], ubs[:25], lower[:25], upper[:25], name='u')
-    register_plane_and_cube_with_polyscope(lAs, lbs, uAs, ubs, lower, upper)
-    # register_plane_and_cube_with_polyscope(uAs, ubs, lower, upper, name='u')
-    # _, crown_ret = implicit_func.classify_box(params, lower, upper)
-    # print(len(crown_ret))
-    # _ = vmap(partial(implicit_func.classify_box, params))(lower, upper)
+    else:
+        node_lower, node_upper, node_type, split_dim, split_val = construct_full_uniform_unknown_levelset_tree(implicit_func, params, -torch.ones((1,3)), torch.ones((1,3)), split_depth=split_depth, batch_size=args.batch_size)
 
+        node_lower_last_layer = node_lower[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
+        node_upper_last_layer = node_upper[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
+        node_valid = torch.logical_not(torch.isnan(node_lower_last_layer[:, 0]))
+
+        lower = node_lower_last_layer[node_valid,:]
+        upper = node_upper_last_layer[node_valid,:]
+        # print(sum(node_valid.tolist()))
+
+        total_samples = len(lower)
+
+        lAs_valid = torch.empty((total_samples, 3))
+        lbs_valid = torch.empty((total_samples,))
+        uAs_valid = torch.empty((total_samples, 3))
+        ubs_valid = torch.empty((total_samples,))
+
+        lAs = torch.empty((2 ** split_depth, 3))
+        lbs = torch.empty((2 ** split_depth,))
+        uAs = torch.empty((2 ** split_depth, 3))
+        ubs = torch.empty((2 ** split_depth,))
+
+        batch_size_per_iteration = args.batch_size
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            out_type, crown_ret = implicit_func.classify_box(params, lower[start_idx:end_idx], upper[start_idx:end_idx])
+            lAs_valid[start_idx:end_idx] = crown_ret['lA'].squeeze(1)
+            lbs_valid[start_idx:end_idx] = crown_ret['lbias'].squeeze(1)
+            uAs_valid[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
+            ubs_valid[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
+
+        lAs[node_valid] = lAs_valid
+        lbs[node_valid] = lbs_valid
+        uAs[node_valid] = uAs_valid
+        ubs[node_valid] = ubs_valid
+
+        mask_l = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs_valid, lbs_valid, lower, upper)])
+
+        mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs_valid, ubs_valid, lower, upper)])
+
+        # mask = torch.full_like(mask_l, True)
+        mask = mask_l & mask_u
+
+        node_guaranteed = node_valid.clone()
+        node_guaranteed[node_valid] = mask
+        node_guaranteed = torch.cat((torch.full((2 ** split_depth - 1,), False), node_guaranteed))
+        lAs = torch.cat((torch.full((2 ** split_depth - 1, 3), torch.nan), lAs), dim=0)
+        lbs = torch.cat((torch.full((2 ** split_depth - 1,), torch.nan), lbs))
+        uAs = torch.cat((torch.full((2 ** split_depth - 1, 3), torch.nan), uAs), dim=0)
+        ubs = torch.cat((torch.full((2 ** split_depth - 1,), torch.nan), ubs))
+
+        if args.save_to:
+            tree = {}
+            tree['node_lower'] = node_lower.cpu().numpy()
+            tree['node_upper'] = node_upper.cpu().numpy()
+            tree['node_type'] = node_type.cpu().numpy()
+            tree['split_dim'] = split_dim.cpu().numpy()
+            tree['split_val'] = split_val.cpu().numpy()
+            tree['lAs'] = lAs.cpu().numpy()
+            tree['lbs'] = lbs.cpu().numpy()
+            tree['uAs'] = uAs.cpu().numpy()
+            tree['ubs'] = ubs.cpu().numpy()
+            tree['node_guaranteed'] = node_guaranteed.cpu().numpy()
+
+            np.savez(args.save_to, **tree)
+
+    register_plane_and_cube_with_polyscope(lAs[node_guaranteed], lbs[node_guaranteed], uAs[node_guaranteed], ubs[node_guaranteed], node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
     ps.show()
 
 

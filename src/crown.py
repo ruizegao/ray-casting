@@ -139,7 +139,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         # print(*(output_bounds + unstable_counts))
         output_type = torch.full_like(may_lower, SIGN_UNKNOWN)
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
-        # output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
+        output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
 
         if return_A:
             crown_ret = {

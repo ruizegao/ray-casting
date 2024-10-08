@@ -25,7 +25,7 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
+                             cast_tree_based=False, shell_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
     root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
     look = torch.tensor([-1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
@@ -43,7 +43,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
                                                                              left, res, fov_deg, cast_frustum, opts,
                                                                              shading='matcap_color', matcaps=matcaps,
                                                                              shading_color_tuple=(surf_color,),
-                                                                             tree_based=cast_tree_based, batch_size=batch_size,
+                                                                             tree_based=cast_tree_based, shell_based=shell_based, batch_size=batch_size,
                                                                              enable_clipping=enable_clipping, load_from=load_from, save_to=save_to)
 
     # flip Y
@@ -66,6 +66,7 @@ def main():
     parser.add_argument("--mode", type=str, default='affine_fixed')
     parser.add_argument("--cast_frustum", action='store_true')
     parser.add_argument("--cast_tree_based", action='store_true')
+    parser.add_argument("--cast_shell_based", action='store_true')
     parser.add_argument("--batch_size", type=int, default=None)
 
     parser.add_argument("--res", type=int, default=1024)
@@ -78,8 +79,8 @@ def main():
     parser.add_argument("--enable-double-precision", action='store_true')
     parser.add_argument("--enable_clipping", action='store_true')
     parser.add_argument("--heuristic", type=str, default='naive')
-    parser.add_argument("--load-from", type=str, default=None)
-    parser.add_argument("--save-to", type=str, default=None)
+    parser.add_argument("--load_from", type=str, default=None)
+    parser.add_argument("--save_to", type=str, default=None)
     # Parse arguments
     args = parser.parse_args()
 
@@ -90,6 +91,7 @@ def main():
     opts['tree_split_aff'] = False
     cast_frustum = args.cast_frustum
     cast_tree_based = args.cast_tree_based
+    cast_shell_based = args.cast_shell_based
     mode = args.mode
     batch_size = args.batch_size
     enable_clipping = args.enable_clipping
@@ -139,7 +141,7 @@ def main():
     #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args.load_from, save_to=args.save_to)
+                             cast_tree_based=cast_tree_based, shell_based=cast_shell_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args.load_from, save_to=args.save_to)
 
 
 if __name__ == '__main__':
