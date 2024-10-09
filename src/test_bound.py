@@ -25,7 +25,7 @@ CROWN_MODES = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-o
              'dynamic_forward+backward']
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
-
+print(device)
 
 
 def main():
@@ -148,59 +148,134 @@ def main():
     if not disable_ps:
         ps.init()
 
-    def generate_vertex_planes(normal_vector: torch.Tensor,
-                               offset: torch.Tensor,
-                               lower: torch.Tensor,
-                               upper: torch.Tensor, ):
-        # print(normal_vector)
-        if torch.argmax(torch.abs(normal_vector)) == 2:
-            z1 = -(normal_vector[0] * lower[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
-            z2 = -(normal_vector[0] * lower[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
-            z3 = -(normal_vector[0] * upper[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
-            z4 = -(normal_vector[0] * upper[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
-            # Flatten arrays for vertices
-            # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = torch.tensor([
-                [lower[0], lower[1], z1],
-                [lower[0], upper[1], z2],
-                [upper[0], upper[1], z3],
-                [upper[0], lower[1], z4],
-            ])
-            maximum = max([z1, z2, z3, z4])
-            minimum = min([z1, z2, z3, z4])
-            # print("z diff: ", maximum - minimum)
-        elif torch.argmax(torch.abs(normal_vector)) == 1:
-            y1 = -(normal_vector[0] * lower[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
-            y2 = -(normal_vector[0] * lower[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
-            y3 = -(normal_vector[0] * upper[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
-            y4 = -(normal_vector[0] * upper[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
-            # Flatten arrays for vertices
-            # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = torch.tensor([
-                [lower[0], y1, lower[2]],
-                [lower[0], y2, upper[2]],
-                [upper[0], y3, upper[2]],
-                [upper[0], y4, lower[2]],
-            ])
-            maximum = max([y1, y2, y3, y4])
-            minimum = min([y1, y2, y3, y4])
-            # print("y diff: ", maximum - minimum)
-        else:
-            x1 = -(normal_vector[1] * lower[1] + normal_vector[2] * lower[2] + offset) / normal_vector[0]  # Solve for z
-            x2 = -(normal_vector[1] * lower[1] + normal_vector[2] * upper[2] + offset) / normal_vector[0]  # Solve for z
-            x3 = -(normal_vector[1] * upper[1] + normal_vector[2] * upper[2] + offset) / normal_vector[0]  # Solve for z
-            x4 = -(normal_vector[1] * upper[1] + normal_vector[2] * lower[2] + offset) / normal_vector[0]  # Solve for z
-            # Flatten arrays for vertices
-            # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
-            vertices_plane = torch.tensor([
-                [x1, lower[1], lower[2]],
-                [x2, lower[1], upper[2]],
-                [x3, upper[1], upper[2]],
-                [x4, upper[1], lower[2]],
-            ])
-            maximum = max([x1, x2, x3, x4])
-            minimum = min([x1, x2, x3, x4])
-            # print("x diff: ", maximum - minimum)
+    # def generate_vertex_planes(normal_vector: torch.Tensor,
+    #                            offset: torch.Tensor,
+    #                            lower: torch.Tensor,
+    #                            upper: torch.Tensor, ):
+    #     if torch.argmax(torch.abs(normal_vector)) == 2:
+    #         z1 = -(normal_vector[0] * lower[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
+    #         z2 = -(normal_vector[0] * lower[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
+    #         z3 = -(normal_vector[0] * upper[0] + normal_vector[1] * upper[1] + offset) / normal_vector[2]  # Solve for z
+    #         z4 = -(normal_vector[0] * upper[0] + normal_vector[1] * lower[1] + offset) / normal_vector[2]  # Solve for z
+    #         # Flatten arrays for vertices
+    #         # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
+    #         vertices_plane = torch.tensor([
+    #             [lower[0], lower[1], z1],
+    #             [lower[0], upper[1], z2],
+    #             [upper[0], upper[1], z3],
+    #             [upper[0], lower[1], z4],
+    #         ])
+    #     elif torch.argmax(torch.abs(normal_vector)) == 1:
+    #         y1 = -(normal_vector[0] * lower[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
+    #         y2 = -(normal_vector[0] * lower[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
+    #         y3 = -(normal_vector[0] * upper[0] + normal_vector[2] * upper[2] + offset) / normal_vector[1]  # Solve for z
+    #         y4 = -(normal_vector[0] * upper[0] + normal_vector[2] * lower[2] + offset) / normal_vector[1]  # Solve for z
+    #         # Flatten arrays for vertices
+    #         # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
+    #         vertices_plane = torch.tensor([
+    #             [lower[0], y1, lower[2]],
+    #             [lower[0], y2, upper[2]],
+    #             [upper[0], y3, upper[2]],
+    #             [upper[0], y4, lower[2]],
+    #         ])
+    #     else:
+    #         x1 = -(normal_vector[1] * lower[1] + normal_vector[2] * lower[2] + offset) / normal_vector[0]  # Solve for z
+    #         x2 = -(normal_vector[1] * lower[1] + normal_vector[2] * upper[2] + offset) / normal_vector[0]  # Solve for z
+    #         x3 = -(normal_vector[1] * upper[1] + normal_vector[2] * upper[2] + offset) / normal_vector[0]  # Solve for z
+    #         x4 = -(normal_vector[1] * upper[1] + normal_vector[2] * lower[2] + offset) / normal_vector[0]  # Solve for z
+    #         # Flatten arrays for vertices
+    #         # vertices_plane = np.vstack([X.flatten(), Y.flatten(), Z.flatten()]).T
+    #         vertices_plane = torch.tensor([
+    #             [x1, lower[1], lower[2]],
+    #             [x2, lower[1], upper[2]],
+    #             [x3, upper[1], upper[2]],
+    #             [x4, upper[1], lower[2]],
+    #         ])
+    #     return vertices_plane
+
+    import torch
+
+    def generate_vertex_planes(normal_vectors: torch.Tensor,
+                               offsets: torch.Tensor,
+                               lowers: torch.Tensor,
+                               uppers: torch.Tensor):
+        # normal_vectors: Tensor of shape (n, 3)
+        # offsets: Tensor of shape (n,)
+        # lowers: Tensor of shape (n, 3)
+        # uppers: Tensor of shape (n, 3)
+
+        n = normal_vectors.shape[0]  # Number of planes/cubes
+
+        # Determine which component (x, y, or z) has the largest magnitude for each normal vector
+        abs_normals = torch.abs(normal_vectors)
+        max_indices = torch.argmax(abs_normals, dim=1)  # Shape: (n,)
+
+        # Prepare a tensor to store the vertices of each plane, shape: (n, 4, 3)
+        vertices_plane = torch.zeros((n, 4, 3), dtype=normal_vectors.dtype, device=normal_vectors.device)
+
+        # Process planes where z-component has the largest magnitude
+        mask_z = max_indices == 2
+        if mask_z.any():
+            # Extract the relevant data for these planes
+            normals_z = normal_vectors[mask_z]
+            offsets_z = offsets[mask_z]
+            lowers_z = lowers[mask_z]
+            uppers_z = uppers[mask_z]
+
+            # Compute the z values for the vertices
+            z1 = -(normals_z[:, 0] * lowers_z[:, 0] + normals_z[:, 1] * lowers_z[:, 1] + offsets_z) / normals_z[:, 2]
+            z2 = -(normals_z[:, 0] * lowers_z[:, 0] + normals_z[:, 1] * uppers_z[:, 1] + offsets_z) / normals_z[:, 2]
+            z3 = -(normals_z[:, 0] * uppers_z[:, 0] + normals_z[:, 1] * uppers_z[:, 1] + offsets_z) / normals_z[:, 2]
+            z4 = -(normals_z[:, 0] * uppers_z[:, 0] + normals_z[:, 1] * lowers_z[:, 1] + offsets_z) / normals_z[:, 2]
+
+            # Store the vertices for these planes
+            vertices_plane[mask_z] = torch.stack([
+                torch.stack((lowers_z[:, 0], lowers_z[:, 1], z1), dim=-1),
+                torch.stack((lowers_z[:, 0], uppers_z[:, 1], z2), dim=-1),
+                torch.stack((uppers_z[:, 0], uppers_z[:, 1], z3), dim=-1),
+                torch.stack((uppers_z[:, 0], lowers_z[:, 1], z4), dim=-1)
+            ], dim=1)
+
+        # Process planes where y-component has the largest magnitude
+        mask_y = max_indices == 1
+        if mask_y.any():
+            normals_y = normal_vectors[mask_y]
+            offsets_y = offsets[mask_y]
+            lowers_y = lowers[mask_y]
+            uppers_y = uppers[mask_y]
+
+            y1 = -(normals_y[:, 0] * lowers_y[:, 0] + normals_y[:, 2] * lowers_y[:, 2] + offsets_y) / normals_y[:, 1]
+            y2 = -(normals_y[:, 0] * lowers_y[:, 0] + normals_y[:, 2] * uppers_y[:, 2] + offsets_y) / normals_y[:, 1]
+            y3 = -(normals_y[:, 0] * uppers_y[:, 0] + normals_y[:, 2] * uppers_y[:, 2] + offsets_y) / normals_y[:, 1]
+            y4 = -(normals_y[:, 0] * uppers_y[:, 0] + normals_y[:, 2] * lowers_y[:, 2] + offsets_y) / normals_y[:, 1]
+
+            vertices_plane[mask_y] = torch.stack([
+                torch.stack((lowers_y[:, 0], y1, lowers_y[:, 2]), dim=-1),
+                torch.stack((lowers_y[:, 0], y2, uppers_y[:, 2]), dim=-1),
+                torch.stack((uppers_y[:, 0], y3, uppers_y[:, 2]), dim=-1),
+                torch.stack((uppers_y[:, 0], y4, lowers_y[:, 2]), dim=-1)
+            ], dim=1)
+
+        # Process planes where x-component has the largest magnitude
+        mask_x = max_indices == 0
+        if mask_x.any():
+            normals_x = normal_vectors[mask_x]
+            offsets_x = offsets[mask_x]
+            lowers_x = lowers[mask_x]
+            uppers_x = uppers[mask_x]
+
+            x1 = -(normals_x[:, 1] * lowers_x[:, 1] + normals_x[:, 2] * lowers_x[:, 2] + offsets_x) / normals_x[:, 0]
+            x2 = -(normals_x[:, 1] * lowers_x[:, 1] + normals_x[:, 2] * uppers_x[:, 2] + offsets_x) / normals_x[:, 0]
+            x3 = -(normals_x[:, 1] * uppers_x[:, 1] + normals_x[:, 2] * uppers_x[:, 2] + offsets_x) / normals_x[:, 0]
+            x4 = -(normals_x[:, 1] * uppers_x[:, 1] + normals_x[:, 2] * lowers_x[:, 2] + offsets_x) / normals_x[:, 0]
+
+            vertices_plane[mask_x] = torch.stack([
+                torch.stack((x1, lowers_x[:, 1], lowers_x[:, 2]), dim=-1),
+                torch.stack((x2, lowers_x[:, 1], uppers_x[:, 2]), dim=-1),
+                torch.stack((x3, uppers_x[:, 1], uppers_x[:, 2]), dim=-1),
+                torch.stack((x4, uppers_x[:, 1], lowers_x[:, 2]), dim=-1)
+            ], dim=1)
+
         return vertices_plane
 
     def register_plane_and_cube_with_polyscope(
@@ -233,29 +308,18 @@ def main():
         # ps.init()
 
         # ---------------- Visualize Plane ---------------- #
-        vp_list_l = [generate_vertex_planes(nv, os, l, u) for nv, os, l, u in zip(lAs, lbs, lower, upper)]
-        # mask_l = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs, lbs, lower, upper)])
-        # mask_l = torch.tensor([True for nv, os, l, u in zip(lAs, lbs, lower, upper)])
-
-
-        vp_list_u = [generate_vertex_planes(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)]
-        # mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs, ubs, lower, upper)])
-        # mask_u = torch.tensor([True for nv, os, l, u in zip(uAs, ubs, lower, upper)])
-        # mask_u = mask_l
-
-        # mask = mask_l | mask_u
-        # mask = mask_l
-        # print(torch.sum(mask), len(mask), torch.sum(mask) / len(mask))
-
         # vertices_plane_l = torch.cat(vp_list_l, dim=0)#[np.repeat(mask, 4)]
-        vertices_plane_l = torch.cat(vp_list_l, dim=0)#[np.repeat(mask, 4)]
+        vertices_plane_l = generate_vertex_planes(lAs, lbs, lower, upper)
+
         # Create faces for the plane mesh (triangulation)
-        faces_plane_l = np.arange(len(vertices_plane_l)).reshape(-1, 4)
+        faces_plane_l = np.arange(len(vertices_plane_l) * 4).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
 
-        vertices_plane_u = torch.cat(vp_list_u, dim=0)#[np.repeat(mask, 4)]
+        # vertices_plane_u = torch.cat(vp_list_u, dim=0)#[np.repeat(mask, 4)]
+        vertices_plane_u = generate_vertex_planes(uAs, ubs, lower, upper)
+
         # Create faces for the plane mesh (triangulation)
-        faces_plane_u = np.arange(len(vertices_plane_u)).reshape(-1, 4)
+        faces_plane_u = np.arange(len(vertices_plane_u) * 4).reshape(-1, 4)
         # Register the surface mesh for the plane with Polyscope
 
         # ---------------- Visualize Cube ---------------- #
@@ -268,34 +332,67 @@ def main():
             ps.register_surface_mesh('planes_u', vertices_plane_u.cpu().numpy(), faces_plane_u)
             ps.register_volume_mesh("unknown tree nodes", verts.cpu().numpy(), hexes=inds.cpu().numpy())
 
-    def plane_intersects_cube(normal, offset, lower, upper):
-        # normal = normal
-        # offset = offset
-        x_min, y_min, z_min = lower
-        x_max, y_max, z_max = upper
+    # def plane_intersects_cube(normal, offset, lower, upper):
+    #     # normal = normal
+    #     # offset = offset
+    #     x_min, y_min, z_min = lower
+    #     x_max, y_max, z_max = upper
+    #
+    #     vertices = [
+    #         torch.tensor((x_min, y_min, z_min)),
+    #         torch.tensor((x_min, y_min, z_max)),
+    #         torch.tensor((x_min, y_max, z_min)),
+    #         torch.tensor((x_min, y_max, z_max)),
+    #         torch.tensor((x_max, y_min, z_min)),
+    #         torch.tensor((x_max, y_min, z_max)),
+    #         torch.tensor((x_max, y_max, z_min)),
+    #         torch.tensor((x_max, y_max, z_max))
+    #     ]
+    #
+    #     signs = set()
+    #
+    #     for vertex in vertices:
+    #         d = torch.dot(vertex, normal) + offset
+    #         # print(d)
+    #         signs.add(int(d > 0))  # True for positive, False for negative
+    #
+    #     if len(signs) > 1:
+    #         return True  # Cube intersects the plane
+    #     else:
+    #         return False  # Cube is entirely on one side of the plane
 
-        vertices = [
-            torch.tensor((x_min, y_min, z_min)),
-            torch.tensor((x_min, y_min, z_max)),
-            torch.tensor((x_min, y_max, z_min)),
-            torch.tensor((x_min, y_max, z_max)),
-            torch.tensor((x_max, y_min, z_min)),
-            torch.tensor((x_max, y_min, z_max)),
-            torch.tensor((x_max, y_max, z_min)),
-            torch.tensor((x_max, y_max, z_max))
-        ]
+    def planes_intersect_cubes(normals, offsets, lowers, uppers):
+        # normals: Tensor of shape (n, 3) where n is the number of planes
+        # offsets: Tensor of shape (n,)
+        # lowers: Tensor of shape (n, 3) where n is the number of cubes
+        # uppers: Tensor of shape (n, 3)
 
-        signs = set()
+        # Create all 8 vertices for each cube
+        x_min, y_min, z_min = lowers.T
+        x_max, y_max, z_max = uppers.T
 
-        for vertex in vertices:
-            d = torch.dot(vertex, normal) + offset
-            # print(d)
-            signs.add(int(d > 0))  # True for positive, False for negative
+        vertices = torch.stack([
+            torch.stack((x_min, y_min, z_min), dim=-1),
+            torch.stack((x_min, y_min, z_max), dim=-1),
+            torch.stack((x_min, y_max, z_min), dim=-1),
+            torch.stack((x_min, y_max, z_max), dim=-1),
+            torch.stack((x_max, y_min, z_min), dim=-1),
+            torch.stack((x_max, y_min, z_max), dim=-1),
+            torch.stack((x_max, y_max, z_min), dim=-1),
+            torch.stack((x_max, y_max, z_max), dim=-1)
+        ], dim=1)  # Shape: (n, 8, 3)
 
-        if len(signs) > 1:
-            return True  # Cube intersects the plane
-        else:
-            return False  # Cube is entirely on one side of the plane
+        # Compute the dot products for each vertex with the corresponding plane normal
+        # Resulting shape: (n, 8)
+        dots = torch.matmul(vertices, normals.unsqueeze(-1)).squeeze(-1) + offsets.unsqueeze(-1)
+
+        # Check if the vertices for each cube have different signs when plugged into plane equations
+        signs = (dots > 0).int()
+
+        # Check if each cube has both positive and negative signs for its plane, indicating intersection
+        intersects = (signs.min(dim=-1).values < 1) & (signs.max(dim=-1).values > 0)
+
+        return intersects  # Shape: (n,)
 
     grid_res = 128
     ax_coords = torch.linspace(-1., 1., grid_res)
@@ -340,6 +437,7 @@ def main():
         ubs = torch.empty((2 ** split_depth,))
 
         batch_size_per_iteration = args.batch_size
+        t0 = time.time()
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             out_type, crown_ret = implicit_func.classify_box(params, lower[start_idx:end_idx], upper[start_idx:end_idx])
@@ -347,16 +445,20 @@ def main():
             lbs_valid[start_idx:end_idx] = crown_ret['lbias'].squeeze(1)
             uAs_valid[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
             ubs_valid[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
-
+        t1 = time.time()
+        print(t1 - t0)
         lAs[node_valid] = lAs_valid
         lbs[node_valid] = lbs_valid
         uAs[node_valid] = uAs_valid
         ubs[node_valid] = ubs_valid
 
-        mask_l = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs_valid, lbs_valid, lower, upper)])
+        # mask_l = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(lAs_valid, lbs_valid, lower, upper)])
 
-        mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs_valid, ubs_valid, lower, upper)])
-
+        # mask_u = torch.tensor([plane_intersects_cube(nv, os, l, u) for nv, os, l, u in zip(uAs_valid, ubs_valid, lower, upper)])
+        mask_l = planes_intersect_cubes(lAs_valid, lbs_valid, lower, upper)
+        mask_u = planes_intersect_cubes(uAs_valid, ubs_valid, lower, upper)
+        t2 = time.time()
+        print(t2 - t1)
         # mask = torch.full_like(mask_l, True)
         mask = mask_l | mask_u
 
