@@ -219,6 +219,8 @@ def cast_rays_shell_based(
     center = (lower + upper) / 2.
     print("branching method: ", branching_method)
     node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree, lAs, lbs, uAs, ubs, node_guaranteed = [torch.from_numpy(val).to(device) for val in np.load(load_from).values()]
+    As = (lAs + uAs) / 2.
+    bs = (lbs + ubs) / 2.
     split_depth = int(math.log2(len(node_guaranteed)))
     print(split_depth)
     t1 = time.time()
@@ -270,15 +272,11 @@ def cast_rays_shell_based(
         # test_mask = new_hit_node & (~hit_node)
         print(test_mask.sum())
         test_node_idx = point2node[test_mask]
-        normal_vector = lAs[test_node_idx]
-        offset = ubs[test_node_idx]
         p0 = roots[test_mask]
         d = dirs[test_mask]
-        test_t_l = (- offset - (normal_vector * p0).sum(dim=1)) / (normal_vector * d).sum(dim=1)
-        normal_vector = uAs[test_node_idx]
-        offset = ubs[test_node_idx]
-        test_t_u = (- offset - (normal_vector * p0).sum(dim=1)) / (normal_vector * d).sum(dim=1)
-        test_t = (test_t_l + test_t_u) / 2.
+        normal_vector = As[test_node_idx]
+        offset = bs[test_node_idx]
+        test_t = (- offset - (normal_vector * p0).sum(dim=1)) / (normal_vector * d).sum(dim=1)
 
         p = p0 + test_t.view(-1, 1) * d
 
@@ -292,8 +290,8 @@ def cast_rays_shell_based(
 
         # t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
         # hit_node = torch.logical_or(hit_node, new_hit_node)
-        t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
-        hit_node = torch.logical_or(hit_node, new_hit_node)
+        t_out = torch.where(torch.logical_and(miss_node, test_mask), t, t_out)
+        hit_node = torch.logical_or(hit_node, test_mask)
         miss_node = torch.logical_not(hit_node)
         is_hit = torch.logical_or(is_hit, test_mask)
 
@@ -320,7 +318,7 @@ def cast_rays_shell_based(
     #     # not_hit = torch.logical_not(is_hit)
     #     # hit_id_out[new_hit] = 1.
 
-    for step in range(50):
+    for step in range(0):
         bad_node = torch.logical_and(hit_node, not_hit)
         curr_ray_end = roots + (t_out.view(-1, 1) + delta) * dirs
         curr_output = torch.zeros((dirs.shape[0],))
