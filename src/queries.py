@@ -28,6 +28,7 @@ from mlp import func_as_torch
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree, construct_full_non_uniform_unknown_levelset_tree
+from src.voxel_architectures.optimized_kdtree import ShortStackKDTree
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -93,7 +94,8 @@ def cast_rays_tree_based(
     :return:
     """
     t0 = time.time()
-    split_depth = 3 * 6
+    # split_depth = 3 * 6
+    split_depth = 12
     func = func_tuple[0]
     tree_file = f'./tree/{func.obj_name}_{func.bounding_method}.npz'
     params = params_tuple[0]
@@ -122,6 +124,17 @@ def cast_rays_tree_based(
             tree['split_dim'] = split_dim_tree.detach().cpu().numpy()
             tree['split_val'] = split_val_tree.detach().cpu().numpy()
             np.savez(save_to, **tree)
+
+    optimized_kdtree = ShortStackKDTree()
+    optimized_kdtree.build_from_tensors(
+        node_lower_tree.detach().cpu(),
+        node_upper_tree.detach().cpu(),
+        node_type_tree.detach().cpu(),
+        split_dim_tree.detach().cpu(),
+        split_val_tree.detach().cpu()
+    )
+    optimized_kdtree.traverse(roots, dirs)
+
     t1 = time.time()
     print("tree building time: ", t1 - t0)
     t_out = torch.zeros((dirs.shape[0],))
