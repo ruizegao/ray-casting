@@ -153,5 +153,5 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             return output_type, None
 
-def change_mode(self, new_mode):
-        self.crown_mode = new_mode
+    def change_mode(self, new_mode):
+            self.crown_mode = new_mode
