@@ -4,7 +4,6 @@ import sys, os, time, math
 import time
 import argparse
 import warnings
-import trimesh
 
 import numpy as np
 import torch
@@ -18,6 +17,8 @@ from scipy.spatial import Delaunay
 import polyscope as ps
 from skimage import measure
 from mesh_utils import *
+import trimesh
+
 # Config
 
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
@@ -238,6 +239,7 @@ def main():
             slice_mesh = cube.section(plane_origin=origin.cpu().numpy(), plane_normal=lA.cpu().numpy())
             if slice_mesh:
                 vertices = slice_mesh.vertices
+                # print(vertices.shape)
                 vertices = sort_vertices(
                     points_on_cube_edges(lower_corner=l, upper_corner=u, points=vertices))
                 tri = triangulate(vertices)
@@ -249,6 +251,12 @@ def main():
         tri_vertices = torch.cat(tri_vertices, dim=0)
         vertices_plane_l = tri_vertices
         faces_plane_l = tri_faces.cpu().numpy()
+
+        mesh = {}
+        mesh['vertices'] = vertices_plane_l.cpu().numpy()
+        mesh['faces'] = faces_plane_l
+
+        np.savez('meshes/mesh_0.npz', **mesh)
         if uAs is not None and ubs is not None:
             # vertices_plane_u = generate_vertex_planes(uAs, ubs, lower, upper)
 
@@ -336,8 +344,7 @@ def main():
         node_lower, node_upper, node_type, split_dim, split_val, lAs, lbs, uAs, ubs, node_guaranteed = [torch.from_numpy(val).to(device) for val in np.load(args.load_from).values()]
         node_lower_last_layer = node_lower[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
         node_upper_last_layer = node_upper[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
-        mAs = (lAs + uAs) / 2
-        mbs = (lbs + ubs) / 2
+
 
     else:
         node_lower, node_upper, node_type, split_dim, split_val = construct_full_uniform_unknown_levelset_tree(implicit_func, params, -torch.ones((1,3)), torch.ones((1,3)), split_depth=split_depth, batch_size=args.batch_size)
@@ -416,10 +423,11 @@ def main():
 
             np.savez(args.save_to, **tree)
 
-
+    mAs = (lAs + uAs) / 2
+    mbs = (lbs + ubs) / 2
     # register_plane_and_cube_with_polyscope(lAs[node_guaranteed], lbs[node_guaranteed], uAs[node_guaranteed], ubs[node_guaranteed], node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
-    # register_plane_and_cube_with_polyscope(mAs[node_guaranteed], mbs[node_guaranteed], None, None, node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
-    register_plane_and_cube_with_polyscope(mAs_valid[mask], mbs_valid[mask], None, None, node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
+    register_plane_and_cube_with_polyscope(mAs[node_guaranteed], mbs[node_guaranteed], None, None, node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
+    # register_plane_and_cube_with_polyscope(mAs_valid[mask], mbs_valid[mask], None, None, node_lower_last_layer[node_guaranteed[2 ** split_depth - 1:]], node_upper_last_layer[node_guaranteed[2 ** split_depth - 1:]])
 
     if not disable_ps:
         ps.show()

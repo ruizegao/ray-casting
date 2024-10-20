@@ -14,6 +14,9 @@ import geometry
 import queries
 from utils import *
 import affine
+import trimesh
+import matplotlib.pyplot as plt
+from triro.ray.ray_optix import RayMeshIntersector
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -240,6 +243,32 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
 
     return img, depth, counts, hit_ids, n_eval, -1
 
+def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, shading_color_tuple=((0.157, 0.613, 1.000))):
+    # make sure inputs are tuples not lists (can't has lists)
+    if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
+
+    # wrap in tuples if single was passed
+
+    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
+
+    mesh_npz = np.load(load_from, allow_pickle=True)
+    print("npz file: ", mesh_npz)
+    vertices = mesh_npz['vertices'].astype(np.float32)
+    faces = mesh_npz['faces'].astype(np.uint8)
+    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    # print(mesh)
+    # intersector = RayMeshIntersector(torch.from_numpy(vertices), torch.tensor(faces))
+    mesh = trimesh.creation.icosphere()
+    intersector = RayMeshIntersector(mesh)
+    hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+        ray_roots.cuda(), ray_dirs.cuda(), stream_compaction=True
+    )
+
+    hit_pos = torch.zeros((res, res, 3)).cuda()
+    hit_pos[hit] = location
+
+    plt.imshow(hit_pos.cpu())
+    plt.show()
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure
