@@ -38,7 +38,6 @@ def main():
     parser.add_argument("--save_to", type=str)
     parser.add_argument("--mode", type=str, default='crown')
     parser.add_argument("--res", type=int, default=1024)
-    parser.add_argument("--split_depth", type=int, default=21)
 
     # Parse arguments
     args = parser.parse_args()
@@ -47,7 +46,6 @@ def main():
     opts['data_bound'] = 1
     opts['res_scale'] = 1
     mode = args.mode
-    split_depth = args.split_depth
 
 
     def register_plane_and_cube_with_polyscope(

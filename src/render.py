@@ -265,6 +265,7 @@ def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_d
     # ray_directions = torch.stack([x, y, z], dim=-1).cuda()
     # ray_origins = torch.Tensor([0, 0, 3]).cuda().broadcast_to(ray_directions.shape)
     intersector = RayMeshIntersector(mesh)
+    start_time = time.time()
     hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
         ray_roots.view(1024, 1024, 3).cuda(), ray_dirs.view(1024, 1024, 3).cuda(), stream_compaction=True
     )
@@ -274,6 +275,8 @@ def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_d
 
     hit_pos = torch.zeros((res, res, 3)).cuda()
     hit_pos[hit] = location
+    end_time = time.time()
+    print("mesh intersection calculation time: ", end_time - start_time)
     plt.imshow(hit_pos.cpu())
     plt.show()
 

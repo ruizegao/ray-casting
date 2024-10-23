@@ -95,10 +95,10 @@ def main():
     data_bound = float(opts['data_bound'])
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
-    out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth)
-    node_valid = out_dict['unknown_node_valid']
-    node_lower = out_dict['unknown_node_lower']
-    node_upper = out_dict['unknown_node_upper']
+    out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
+    node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
+    node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
+    node_upper = torch.cat((out_dict['unknown_node_upper'], out_dict['interior_node_upper']), dim=0)
 
     node_lower_valid = node_lower[node_valid]
     node_upper_valid = node_upper[node_valid]
