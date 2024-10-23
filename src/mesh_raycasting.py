@@ -1,11 +1,14 @@
 # import igl # work around some env/packaging problems by loading this first
 
-import sys, os, time, math
+# import sys, os, time, math
+# os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
+
 import time
 import argparse
 import warnings
 
 import torch
+import os
 
 # Imports from this project
 import render, geometry, queries

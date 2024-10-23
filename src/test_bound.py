@@ -42,7 +42,7 @@ def main():
     parser.add_argument("--cast_tree_based", action='store_true')
     parser.add_argument("--batch_size", type=int, default=None)
     parser.add_argument("--res", type=int, default=1024)
-    parser.add_argument("--split_depth", type=int, default=18)
+    parser.add_argument("--split_depth", type=int, default=21)
 
     parser.add_argument("--image_write_path", type=str, default="render_out.png")
 
@@ -257,6 +257,8 @@ def main():
         mesh['faces'] = faces_plane_l
 
         np.savez('meshes/mesh_0.npz', **mesh)
+        trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+        trimesh_mesh.show()
         if uAs is not None and ubs is not None:
             # vertices_plane_u = generate_vertex_planes(uAs, ubs, lower, upper)
 
@@ -279,6 +281,7 @@ def main():
                     tri_faces.append(tri + intersect_count)
                     tri_vertices.append(vertices)
                     intersect_count += len(vertices)
+
 
             tri_faces = torch.cat(tri_faces, dim=0)
             tri_vertices = torch.cat(tri_vertices, dim=0)

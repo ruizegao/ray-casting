@@ -16,6 +16,9 @@ from utils import *
 import affine
 import trimesh
 import matplotlib.pyplot as plt
+import sys, os, time, math
+os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
+
 from triro.ray.ray_optix import RayMeshIntersector
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -44,7 +47,7 @@ def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
     # Image coords on [-1,1] for each output pixel
     cam_ax_x = torch.linspace(-1., 1., res)
     cam_ax_y = torch.linspace(-1., 1., res)
-    cam_y, cam_x = torch.meshgrid(cam_ax_x, cam_ax_y)
+    cam_y, cam_x = torch.meshgrid(cam_ax_x, cam_ax_y, indexing='ij')
     cam_x = cam_x.flatten()
     cam_y = cam_y.flatten()
 
@@ -251,22 +254,26 @@ def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_d
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
 
-    mesh_npz = np.load(load_from, allow_pickle=True)
-    print("npz file: ", mesh_npz)
+    mesh_npz = np.load(load_from)
     vertices = mesh_npz['vertices'].astype(np.float32)
-    faces = mesh_npz['faces'].astype(np.uint8)
+    faces = mesh_npz['faces'].astype(np.int32)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    # print(mesh)
-    # intersector = RayMeshIntersector(torch.from_numpy(vertices), torch.tensor(faces))
-    mesh = trimesh.creation.icosphere()
+    mesh.show()
+    # y, x = torch.meshgrid([torch.linspace(1, -1, 800),
+    #                        torch.linspace(-1, 1, 800)], indexing='ij')
+    # z = -torch.ones_like(x)
+    # ray_directions = torch.stack([x, y, z], dim=-1).cuda()
+    # ray_origins = torch.Tensor([0, 0, 3]).cuda().broadcast_to(ray_directions.shape)
     intersector = RayMeshIntersector(mesh)
     hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-        ray_roots.cuda(), ray_dirs.cuda(), stream_compaction=True
+        ray_roots.view(1024, 1024, 3).cuda(), ray_dirs.view(1024, 1024, 3).cuda(), stream_compaction=True
     )
+    # hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+    #     ray_origins.cuda(), ray_directions.cuda(), stream_compaction=True
+    # )
 
     hit_pos = torch.zeros((res, res, 3)).cuda()
     hit_pos[hit] = location
-
     plt.imshow(hit_pos.cpu())
     plt.show()
 
