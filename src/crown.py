@@ -97,18 +97,16 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         return output_type
 
 
-    def classify_box(self, params, box_lower, box_upper, offset=0.):
-        ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
-        bounded_x = BoundedTensor(box_lower.float(), ptb)
-        may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
-        bound_dict = self.bounded_func.save_intermediate()
+    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False):
+
+        # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
+        # bound_dict = self.bounded_func.save_intermediate()
         # unstable_counts = []
         # for k, v in bound_dict.items():
         #     if 'input' in k:
         #         unstable_counts.append(torch.logical_and(v[0] < 0, v[1] > 0).sum().item())
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
-        # return_A = self._enable_clipping
         return_A = True
         # prepare A_dict to retrieve final lA
         if return_A:
@@ -117,8 +115,10 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             needed_A_dict = None
 
-        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True,
-                                                                return_A=return_A, needed_A_dict=needed_A_dict)
+        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_lower=True, bound_upper=True,
+                                                                return_A=return_A, needed_A_dict=needed_A_dict,
+                                                                use_clip_domains=False, decision_thresh=offset,
+                                                                swap_loss=swap_loss)
 
         if return_A:
             may_lower, may_upper, A_dict = result

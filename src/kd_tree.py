@@ -840,7 +840,7 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         func, params, continue_splitting,
         node_lower, node_upper,
         split_level,
-        offset=0., batch_size=None
+        offset=0., batch_size=None, swap_loss=False
 ):
     """
 
@@ -875,7 +875,7 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         return node_type.float(), worst_dim.float()
 
     def eval_batch_of_nodes(lower, upper):
-        node_type, _ = func.classify_box(params, lower, upper, offset=offset)
+        node_type, _ = func.classify_box(params, lower, upper, offset=offset, swap_loss=swap_loss)
         node_type = node_type.squeeze(-1)
         worst_dim = torch.argmax(upper - lower, dim=-1)
         return node_type.float(), worst_dim.float()
@@ -988,7 +988,7 @@ def construct_full_uniform_unknown_levelset_tree(
         total_n_valid = 0
         lower, upper, out_node_type, out_split_dim, out_split_val = construct_full_uniform_unknown_levelset_tree_iter(
             func, params, do_continue_splitting,
-            lower, upper, i_split, offset=offset, batch_size=batch_size)
+            lower, upper, i_split, offset=offset, batch_size=batch_size, swap_loss=quit_next)
         node_lower.append(lower)
         node_upper.append(upper)
         node_type.append(out_node_type)
