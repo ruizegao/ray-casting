@@ -1341,14 +1341,18 @@ class BoundedModule(nn.Module):
                 needed_A_dict=needed_A_dict,
                 final_node_name=final_node_name,
                 cutter=cutter, decision_thresh=decision_thresh)
-            if bound_upper:
-                ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
+            if self.bound_opts['optimize_bound_args']['joint_optimization'] and bound_upper and bound_lower:
+                # This is not supported by default. It's only used for custom loss functions.
+                ret1 = ret2 = self._get_optimized_bounds(bound_side='both', **kwargs)
             else:
-                ret2 = None
-            if bound_lower:
-                ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
-            else:
-                ret1 = None
+                if bound_upper:
+                    ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
+                else:
+                    ret2 = None
+                if bound_lower:
+                    ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
+                else:
+                    ret1 = None
             if bound_lower and bound_upper:
                 if return_A:
                     # Needs to merge the A dictionary.

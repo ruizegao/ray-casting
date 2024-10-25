@@ -16,7 +16,8 @@
 #########################################################################
 import time
 import os
-from collections import OrderedDict
+import inspect
+from collections import OrderedDict, defaultdict
 from contextlib import ExitStack
 
 import torch
@@ -97,6 +98,13 @@ default_optimize_bound_args = {
     # Try to ensure that the parameters always match with the optimized bounds.
     'deterministic': False,
     'max_time': 1e9,
+    # Use custom loss function instead of default -l (or u).
+    # This is not supported by "keep_best" yet.
+    'use_custom_loss': False,
+    # When both bound_upepr and bound_lower are set to True, instead of computing
+    # optimized bounds one by one, we jointly optimize on both sides. 
+    # This is useful for some custom optimization objectives.
+    'joint_optimization': False
 }
 
 
@@ -150,12 +158,9 @@ def _save_ret_first_time(bounds, fill_value, x, best_ret):
     if bounds is not None:
         best_bounds = torch.full_like(
             bounds, fill_value=fill_value, device=x[0].device, dtype=x[0].dtype)
-    else:
-        best_bounds = None
-
-    if bounds is not None:
         best_ret.append(bounds.detach().clone())
     else:
+        best_bounds = None
         best_ret.append(None)
 
     return best_bounds
@@ -340,11 +345,19 @@ def _get_optimized_bounds(
     sparse_intermediate_bounds = self.bound_opts.get(
         'sparse_intermediate_bounds', False)
     verbosity = self.bound_opts['verbosity']
+    use_custom_loss = opts['use_custom_loss']
+    custom_loss_func = opts.get('custom_loss_func', None)
 
-    if bound_side not in ['lower', 'upper']:
+    if bound_side not in ['lower', 'upper', 'both']:
         raise ValueError(bound_side)
     bound_lower = bound_side == 'lower'
     bound_upper = bound_side == 'upper'
+    if bound_side == 'both':
+        if keep_best: 
+            raise NotImplementedError(
+                'Keeping the best results is only supported for the default optimization objective!')
+        bound_lower = True
+        bound_upper = True
 
     assert alpha or beta, (
         'nothing to optimize, use compute bound instead!')
@@ -389,6 +402,10 @@ def _get_optimized_bounds(
                 'Please fix or discard this optimization by setting '
                 '--disable_pruning_in_iteration '
                 'or bab: pruning_in_iteration: false')
+        if bound_side != 'lower':
+            raise NotImplementedError(
+                'Pruning in iteration optimization only supports computing lower bounds.'
+            )
         pruner = OptPruner(
             x, threshold=opts['pruning_in_iteration_threshold'],
             multi_spec_keep_func=multi_spec_keep_func,
@@ -439,6 +456,25 @@ def _get_optimized_bounds(
     need_grad = True
     patience = 0
     ret_0 = None
+
+    # When using a custom loss function, we may need the A-matrix depending on
+    # the implementation of the loss function. So return A anyway.
+    # (Perhaps add one more option to specify this choice?)
+    if use_custom_loss:
+        actual_return_A = return_A
+        actual_needed_A_dict = needed_A_dict.copy()
+        output_name = self.output_name[0]
+        input_name = self.input_name[0]
+        if not return_A:
+            needed_A = defaultdict(set)
+            needed_A[output_name].add(input_name)
+            return_A = True
+        else:
+            # Even if return_A is already true, we must make sure that A_matrix of the whole network is returned
+            extra_entries = defaultdict(set)
+            extra_entries[output_name].add(input_name)
+            needed_A_dict.update(extra_entries)
+
     for i in range(iteration):
         if cutter:
             # cuts may be optimized by cutter
@@ -564,37 +600,55 @@ def _get_optimized_bounds(
                     # bounds.
                     aux_reference_bounds[node.inputs[0].name] = new_intermediate
 
-        l = ret_l
-        # Reduction over the spec dimension.
-        if ret_l is not None and ret_l.shape[1] != 1:
-            l = loss_reduction_func(ret_l)
-        u = ret_u
-        if ret_u is not None and ret_u.shape[1] != 1:
-            u = loss_reduction_func(ret_u)
-
-        # full_l, full_ret_l and full_u, full_ret_u is used for update the best
-        full_ret_l, full_ret_u = ret_l, ret_u
-        full_l = l
-        full_ret = ret
-
-        if pruner:
-            (x, C, full_l, full_ret_l, full_ret_u,
-             full_ret, stop_criterion) = pruner.prune(
-                x, C, ret_l, ret_u, ret, full_l, full_ret_l, full_ret_u,
-                full_ret, interm_bounds, aux_reference_bounds, reference_bounds,
-                stop_criterion_func, bound_lower)
+        if use_custom_loss:
+            try:
+                sig = inspect.signature(custom_loss_func)
+                param_names = list(sig.parameters.keys())
+                # We assume the keys of the functions are the names of local variables
+                variables = {}
+                for name in param_names:
+                    if name in locals():
+                        variables[name] = locals()[name]
+                    else:
+                        raise ValueError(f"Cannot find {name} in local variables.")
+                total_loss = custom_loss_func(**variables)
+                stop_criterion = False
+                full_ret = ret
+            except Exception as e:
+                print(f"An error occurred: {e}. ")
+                print("Please make sure that the implementation of the loss function is correct")
+                print("and pass it to BoundedModule using the key bound_opts['optimize_bound_args']['custom_loss_func']\n")
         else:
-            stop_criterion = (stop_criterion_func(full_ret_l) if bound_lower
-                              else stop_criterion_func(-full_ret_u))
+            l = ret_l
+            # Reduction over the spec dimension.
+            if ret_l is not None and ret_l.shape[1] != 1:
+                l = loss_reduction_func(ret_l)
+            u = ret_u
+            if ret_u is not None and ret_u.shape[1] != 1:
+                u = loss_reduction_func(ret_u)
 
-        loss_ = l if bound_lower else -u
-        total_loss = -1 * loss_
-        directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
-        for directly_optimize_layer_name in directly_optimize_layers:
-            total_loss += (
-                self[directly_optimize_layer_name].upper.sum()
-                - self[directly_optimize_layer_name].lower.sum()
-            )
+            # full_l, full_ret_l and full_u, full_ret_u is used for update the best
+            full_ret_l, full_ret_u = ret_l, ret_u
+            full_l = l
+            full_ret = ret
+
+            if pruner:
+                (x, C, full_l, full_ret_l, full_ret_u,
+                full_ret, stop_criterion) = pruner.prune(
+                    x, C, ret_l, ret_u, ret, full_l, full_ret_l, full_ret_u,
+                    full_ret, interm_bounds, aux_reference_bounds, reference_bounds,
+                    stop_criterion_func, bound_lower)
+            else:
+                stop_criterion = (stop_criterion_func(full_ret_l) if bound_lower
+                                else stop_criterion_func(-full_ret_u))
+
+            total_loss = -l if bound_lower else u
+            directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
+            for directly_optimize_layer_name in directly_optimize_layers:
+                total_loss += (
+                    self[directly_optimize_layer_name].upper.sum()
+                    - self[directly_optimize_layer_name].lower.sum()
+                )
 
         if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -639,59 +693,63 @@ def _get_optimized_bounds(
                 if full_ret[1] is not None:
                     best_ret[1] = full_ret[1]
             if return_A:
-                # FIXME: A should also be updated by idx.
-                best_ret = [best_ret[0], best_ret[1], full_ret[2]]
+                if not use_custom_loss or actual_return_A:
+                    # FIXME: A should also be updated by idx.
+                    # FIXME: When using custom loss and actual return_A is True, 
+                    # we might return more entries than those in actual_needed_A_dict
+                    best_ret = [best_ret[0], best_ret[1], full_ret[2]]
 
-            if need_update:
+            if need_update or not keep_best:
                 patience = 0  # bounds improved, reset patience
             else:
                 patience += 1
 
             time_spent = time.time() - start
 
-            # Save variables if this is the best iteration.
-            # To save computational cost, we only check keep_best at the first
-            # (in case divergence) and second half iterations
-            # or before early stop by either stop_criterion or
-            # early_stop_patience reached
-            if (i < 1 or i > int(iteration * start_save_best) or deterministic
-                    or stop_criterion_final or patience == early_stop_patience
-                    or time_spent > max_time):
+            if keep_best:
+                # Save variables if this is the best iteration.
+                # To save computational cost, we only check keep_best at the first
+                # (in case divergence) and second half iterations
+                # or before early stop by either stop_criterion or
+                # early_stop_patience reached
+                if (i < 1 or i > int(iteration * start_save_best) or deterministic
+                        or stop_criterion_final or patience == early_stop_patience
+                        or time_spent > max_time):
 
-                # compare with the first iteration results and get improved indexes
-                if bound_lower:
-                    if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
+                    # compare with the first iteration results and get improved indexes
+                    if bound_lower:
+                        if deterministic:
+                            idx = improved_idx
+                            idx_mask = None
+                        else:
+                            idx_mask, idx = _get_idx_mask(
+                                0, full_ret_l, ret_0, loss_reduction_func)
+                        ret_0[idx] = full_ret_l[idx]
                     else:
-                        idx_mask, idx = _get_idx_mask(
-                            0, full_ret_l, ret_0, loss_reduction_func)
-                    ret_0[idx] = full_ret_l[idx]
-                else:
-                    if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
-                    else:
-                        idx_mask, idx = _get_idx_mask(
-                            1, full_ret_u, ret_0, loss_reduction_func)
-                    ret_0[idx] = full_ret_u[idx]
+                        if deterministic:
+                            idx = improved_idx
+                            idx_mask = None
+                        else:
+                            idx_mask, idx = _get_idx_mask(
+                                1, full_ret_u, ret_0, loss_reduction_func)
+                        ret_0[idx] = full_ret_u[idx]
 
-                if idx is not None:
-                    # for update propose, we condition the idx to update only
-                    # on domains preserved
-                    if pruner:
-                        reference_idx, idx = pruner.prune_idx(idx_mask, idx, x)
-                    else:
-                        reference_idx = idx
+                    if idx is not None:
+                        # for update propose, we condition the idx to update only
+                        # on domains preserved
+                        if pruner:
+                            reference_idx, idx = pruner.prune_idx(idx_mask, idx, x)
+                        else:
+                            reference_idx = idx
 
-                    _update_optimizable_activations(
-                        optimizable_activations, interm_bounds,
-                        fix_interm_bounds, best_intermediate_bounds,
-                        reference_idx, idx, alpha, best_alphas, deterministic)
+                        _update_optimizable_activations(
+                            optimizable_activations, interm_bounds,
+                            fix_interm_bounds, best_intermediate_bounds,
+                            reference_idx, idx, alpha, best_alphas, deterministic)
 
-                    if beta:
-                        self.update_best_beta(enable_opt_interm_bounds, betas,
-                                              best_betas, idx)
+                        if beta:
+                            self.update_best_beta(enable_opt_interm_bounds, betas,
+                                                best_betas, idx)
 
         if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
             print(f'****** iter [{i}]',
