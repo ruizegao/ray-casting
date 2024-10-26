@@ -50,7 +50,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         self.torch_model = crown_func
         if crown_mode.lower() == 'alpha-crown':
             self.reuse_alpha = True
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 20}})#, 'relu': 'same-slope'})
+            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 20, 'lr_alpha': 1e-1}})#, 'relu': 'same-slope'})
         else:
             self.reuse_alpha = False
             self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
