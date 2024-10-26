@@ -21,6 +21,7 @@ from contextlib import ExitStack
 
 import torch
 from torch import optim, Tensor
+import numpy as np
 from typing import Tuple, Union, Optional
 from math import ceil
 
@@ -41,10 +42,12 @@ if TYPE_CHECKING:
     from .bound_general import BoundedModule
 
 # FIXME: This is here temporarily for debugging, be sure to remove later
-lb_iter, ub_iter = None, None
+lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph = None, None, False, False, False
+ax_graph, fig_graph_lower, fig_graph_upper = None, None, None
 un_mask = None
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import pickle
 import imageio
 from .hyperplane_volume_intersection import get_cube_vertices, unit_cube_faces, to_numpy, plot_cube, plot_intersection, plot_plane
 out_path = "/home/jorgejc2/Documents/Research/ray-casting/alpha_crown_planes/"
@@ -451,13 +454,13 @@ def _get_optimized_bounds(
             apply_output_constraints_to
         )
 
-    global lb_iter, ub_iter
-    if bound_lower or not bound_upper:
+    global lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph, ax_graph, fig_graph_lower, fig_graph_upper
+    if swap_loss and (bound_lower or not bound_upper):
         if lb_iter is None:
             lb_iter = 0
         else:
             lb_iter += 1
-    if bound_upper or not bound_lower:
+    if swap_loss and (bound_upper or not bound_lower):
         if ub_iter is None:
             ub_iter = 0
         else:
@@ -633,11 +636,17 @@ def _get_optimized_bounds(
                 self[directly_optimize_layer_name].upper.sum()
                 - self[directly_optimize_layer_name].lower.sum()
             )
-        if bound_lower and swap_loss:
+        # if swap_loss and bound_lower:
+        if swap_loss:
             # parse to get lA and lbias
             ret_A = ret[2]
-            dm_lb = ret[0]
-            lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+            if bound_lower:
+                dm_lb = ret[0]
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+            else:
+                dm_lb = ret[1]
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
+
             batch_lA = lA.flatten(2)
             batches, num_spec, input_dim = batch_lA.shape
 
@@ -653,19 +662,22 @@ def _get_optimized_bounds(
                 bound = lA.bmm(xhat) + sgn * lA.abs().bmm(eps) + lbias
                 return bound
 
+
+            # perform volume calculation for the loss function
             x_L = x[0].ptb.x_L
             x_U = x[0].ptb.x_U
             xhat = (x_U + x_L) / 2
             eps = (x_U - x_L) / 2
+            sgn = -1 if bound_lower else +1
             xhat_vect = xhat.unsqueeze(2)
             eps_vect = eps.unsqueeze(2)
             batch_dm_lb = dm_lb.reshape(batches, 1, -1).expand(batches, num_spec, -1)
-            lbias_vect = batch_dm_lb - batch_lA.bmm(xhat_vect) + (batch_lA.abs()).bmm(eps_vect)
+            lbias_vect = batch_dm_lb - batch_lA.bmm(xhat_vect) - sgn*(batch_lA.abs()).bmm(eps_vect)
             lbias = lbias_vect.reshape(batches, num_spec)
             atol=1e-6
-            assert torch.allclose(lbias, ret_A[self.output_name[0]][self.input_name[0]]['lbias'], atol=atol), "Computed lbias does not match lbias in dict A"
-            assert torch.allclose(_concretize(xhat_vect, eps_vect, lA, lbias_vect, -1).reshape(dm_lb.shape), dm_lb, atol=atol), "Concretized dm_lb does not match returned dm_lb"
-            dm_ub = _concretize(xhat_vect, eps_vect, lA, lbias_vect, +1).reshape(dm_lb.shape)
+            assert torch.allclose(lbias, ret_A[self.output_name[0]][self.input_name[0]]['lbias' if bound_lower else 'ubias'], atol=atol), "Computed lbias does not match lbias in dict A"
+            assert torch.allclose(_concretize(xhat_vect, eps_vect, lA, lbias_vect, sgn).reshape(dm_lb.shape), dm_lb, atol=atol), "Concretized dm_lb does not match returned dm_lb"
+            # dm_ub = _concretize(xhat_vect, eps_vect, lA, lbias_vect, -sgn).reshape(dm_lb.shape)
             lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
             x_L_reshape = x_L.reshape(batches, input_dim)
             x_U_reshape = x_U.reshape(batches, input_dim)
@@ -673,44 +685,82 @@ def _get_optimized_bounds(
             x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
             lbias_reshape = lbias.reshape(batches * num_spec, 1)
             volumes = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
-                                                      dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter)
+                                                      dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter, bound_lower)
             loss = volumes.sum()
             loss *= -1  # to maximize
 
+            # get a set of fixed masks to analyze a set of unverified nodes
             global un_mask
             if un_mask is None:
                 un_mask = (dm_lb < 0).squeeze()
             num_unverified = un_mask.to(dtype=torch.int).sum()
-            print(f"{num_unverified} unverified nodes out of {batches} nodes")
+            print(f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
 
-            # keep entries that were unverified on the first iteration of alpha crown
-            nv_x_L = x_L[un_mask]
-            nv_x_U = x_U[un_mask]
-            nv_batch_lA = batch_lA[un_mask]
-            nv_dm_lb = dm_lb[un_mask]
-            nv_dm_ub = dm_ub[un_mask]
-            nv_lbias = lbias[un_mask]
-            nv_volumes = volumes[un_mask]
+            cols = 4
+            plot_batches = min(num_unverified, 12)
+            if plot_batches <= cols:
+                cols = plot_batches
+                rows = 1
+            else:
+                rows = ceil(plot_batches / cols)
+
+            if fig_graph_lower is None:
+                fig_graph_lower = []
+
+            if fig_graph_upper is None:
+                fig_graph_upper = []
+
+            if bound_lower:
+                if len(fig_graph_lower) == i:
+                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'});
+                    axs = axs.flatten()
+                    fig_graph_lower.append((fig, axs))
+                else:
+                    fig, axs = fig_graph_lower[i]
+            else:
+                if len(fig_graph_upper) == i:
+                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                    axs = axs.flatten()
+                    fig_graph_upper.append((fig, axs))
+                else:
+                    fig, axs = fig_graph_upper[i]
+
+            # fig_graph = plt.figure(figsize=(12, 8))
+            # ax_graph = [fig_graph.add_subplot(base_subplot + b + 1, projection='3d') for b in range(plot_batches)]
 
             # for single batch dimensions, try to plot the hyperplane
-            if num_spec == 1 and input_dim == 3:
-                fig = plt.figure(figsize=(12, 8))
-                plt.subplots_adjust(hspace=0.8, wspace=0.4)  # adds more spacing between the rows
-                cols = 4
-                plot_batches = min(num_unverified, 8)
-                if plot_batches <= cols:
-                    cols = plot_batches
-                    rows = 1
-                else:
-                    rows = ceil(plot_batches / cols)
-                base_subplot = rows * 100 + cols * 10
+            # if num_spec == 1 and input_dim == 3 and ( (~displayed_ub and bound_upper) or (~displayed_lb and bound_lower) ):
+            if num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                # fig = plt.figure(figsize=(12, 8))
+                # plt.subplots_adjust(hspace=0.8, wspace=0.4)  # adds more spacing between the rows
+                # keep entries that were unverified on the first iteration of alpha crown
+                nv_x_L = x_L[un_mask]
+                nv_x_U = x_U[un_mask]
+                nv_batch_lA = batch_lA[un_mask]
+                # nv_dm_lb = dm_lb[un_mask]
+                # nv_dm_ub = dm_ub[un_mask]
+                nv_lbias = lbias[un_mask]
+                nv_volumes = volumes[un_mask]
+                plot_batches = len(axs)
                 faces = unit_cube_faces()
+
                 for b in range(plot_batches):
-                    ax1 = fig.add_subplot(base_subplot + b + 1, projection='3d')
+                    ax1 = axs[b]
+                    # ax1 = fig.add_subplot(base_subplot + b + 1, projection='3d')
                     vertices = to_numpy(get_cube_vertices(nv_x_L[b], nv_x_U[b]))
                     normal = to_numpy(nv_batch_lA[b].squeeze())
+                    curr_nv_x_L = nv_x_L[b].reshape(1, -1)
+                    curr_nv_x_U = nv_x_U[b].reshape(1, -1)
                     x_L_np = to_numpy(nv_x_L[b])
                     x_U_np = to_numpy(nv_x_U[b])
+
+                    # sample the region
+                    # if bound_lower:
+                    with torch.no_grad():
+                        in_samples = torch.rand(10000, 3) * (curr_nv_x_U - curr_nv_x_L) + curr_nv_x_L
+                        out_samples = to_numpy(self.forward(in_samples))
+                        in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
+                        ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
                     # dm_lb_np = to_numpy(nv_dm_lb.reshape(num_unverified, num_spec))
                     # dm_ub_np = to_numpy(nv_dm_ub.reshape(num_unverified, num_spec))
                     D = nv_lbias.reshape(num_unverified, num_spec)[b].item()
@@ -719,7 +769,6 @@ def _get_optimized_bounds(
                     plot_intersection(ax1, vertices, normal, D)
                     ax1.set_xlim([x_L_np[0], x_U_np[0]])
                     ax1.set_ylim([x_L_np[1], x_U_np[1]])
-                    # ax1.set_zlim([min(dm_lb_np[b], x_L_np[2]), max(dm_ub_np[b], x_U_np[2])])
                     ax1.set_zlim([x_L_np[2], x_U_np[2]])
                     ax1.set_xlabel('X')
                     ax1.set_ylabel('Y')
@@ -737,12 +786,8 @@ def _get_optimized_bounds(
                     coeffs[3] = D
                     print(f"Coefficients: {coeffs}")
                     ax1.legend(handles=handles, labels=labels)
-                plt.savefig(out_path + f"frame_{i}.png")
-                show_plots = False
-                if show_plots:
-                    plt.show()
-                else:
-                    plt.close()
+                    # ax1.legend()
+
 
         elif type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -802,7 +847,7 @@ def _get_optimized_bounds(
             # (in case divergence) and second half iterations
             # or before early stop by either stop_criterion or
             # early_stop_patience reached
-            if (i < 1 or i > int(iteration * start_save_best) or deterministic
+            if True == False and (i < 1 or i > int(iteration * start_save_best) or deterministic
                     or stop_criterion_final or patience == early_stop_patience
                     or time_spent > max_time):
 
@@ -842,35 +887,33 @@ def _get_optimized_bounds(
                                               best_betas, idx)
 
         # udpate x_L, x_U
-        with torch.no_grad():
-            ## jorgejc2 begin changes
+        # with torch.no_grad():
+        #
+        #     # Now that we have the bounds, we can perform clipping and udpate the input bounds
+        #     if use_clip_domains and bound_lower:
+        #         if ret[2] is None:
+        #             raise Exception("Using clip domains requires A_dict but A_dict was not returned")
+        #
+        #         # FIXME: Now need to consider lb and ub, this is only correct for lb
+        #         clip_ret = clip_domains(
+        #             x_L,
+        #             x_U,
+        #             decision_thresh,
+        #             lA,
+        #             ret[0],
+        #             lbias,
+        #             False
+        #         )
+        #         [new_x_L, new_x_U] = clip_ret
+        #
+        #         # Form the new input bounded tensor
+        #         data = x[0].data.clone()
+        #         ptb = PerturbationLpNorm(
+        #             norm=x[0].ptb.norm, eps=x[0].ptb.eps, x_L=new_x_L, x_U=new_x_U)
+        #         new_x = BoundedTensor(data, ptb).to(data.device)  # the value of data doesn't matter, only ptb
+        #
+        #         x = (new_x,)  # input x must be a tuple
 
-            # Now that we have the bounds, we can perform clipping and udpate the input bounds
-            if use_clip_domains and bound_lower:
-                if ret[2] is None:
-                    raise Exception("Using clip domains requires A_dict but A_dict was not returned")
-
-                # FIXME: Now need to consider lb and ub, this is only correct for lb
-                clip_ret = clip_domains(
-                    x_L,
-                    x_U,
-                    decision_thresh,
-                    lA,
-                    ret[0],
-                    lbias,
-                    False
-                )
-                [new_x_L, new_x_U] = clip_ret
-
-                # Form the new input bounded tensor
-                data = x[0].data.clone()
-                ptb = PerturbationLpNorm(
-                    norm=x[0].ptb.norm, eps=x[0].ptb.eps, x_L=new_x_L, x_U=new_x_U)
-                new_x = BoundedTensor(data, ptb).to(data.device)  # the value of data doesn't matter, only ptb
-
-                x = (new_x,)  # input x must be a tuple
-
-            ## jorgejc2 end changes
 
         if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
             print(f'****** iter [{i}]',
@@ -961,6 +1004,7 @@ def _get_optimized_bounds(
     if verbosity > 3:
         breakpoint()
 
+    keep_best = False # FIXME: should not be hardcoded
     if keep_best:
         # Set all variables to their saved best values.
         with torch.no_grad():
@@ -1019,12 +1063,38 @@ def _get_optimized_bounds(
     if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
         print()
 
+    if not displayed_ub and bound_upper and swap_loss:
+        displayed_ub = True
+        for i, (fig, axs) in enumerate(fig_graph_upper):
+            fig.tight_layout()
+            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/upper_fig_{i}"
+            fig.savefig(title + ".png")
+            with open(title + '.fig.pickle', 'wb') as file:
+                pickle.dump(fig, file)
+
+    elif not displayed_lb and bound_lower and swap_loss:
+        displayed_lb = True
+        for i, (fig, axs) in enumerate(fig_graph_lower):
+            fig.tight_layout()
+            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/lower_fig_{i}"
+            fig.savefig(title + ".png")
+            with open(title + '.fig.pickle', 'wb') as file:
+                pickle.dump(fig, file)
+
+    # if displayed_lb and displayed_ub and not displayed_graph and swap_loss:
+    #     displayed_graph = True
+    #     print(f"Displaying graphs...")
+    #     for i, (fig, axs) in enumerate(fig_graph):
+    #         fig.tight_layout()
+    #         fig.savefig(f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/fig_{i}.png")
+    #         # fig.write_html(f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/fig_{i}.html")
+
     ## turns plots into a video clip
-    if bound_lower and swap_loss:
-        with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
-            for i in range(iteration):
-                image = imageio.imread(out_path + f"frame_{i}.png")
-                writer.append_data(image)
+    # if bound_lower and swap_loss:
+    #     with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
+    #         for i in range(iteration):
+    #             image = imageio.imread(out_path + f"frame_{i}.png")
+    #             writer.append_data(image)
 
     return best_ret
 

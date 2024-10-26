@@ -5,6 +5,7 @@ from torch import vmap
 from functools import partial
 from numpy import ndarray
 from scipy.spatial import Delaunay as SciDelaunay
+from scipy.spatial import ConvexHull
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -370,7 +371,8 @@ def batch_cube_intersection_with_plane(
         D: Tensor,
         dm_lb: Tensor,
         threshold: Tensor,
-        debug_i: Optional[int] = None
+        debug_i: Optional[int] = None,
+        lower_bound = True
 ):
     """
     A batch function to calculate the volume above the plane inside the cube. vmap cannot be used on the
@@ -395,7 +397,7 @@ def batch_cube_intersection_with_plane(
     # Using these intersection points, triangulate the volume above the hyperplane and below the bounding box
     # into tetrahedrons and calculate this volume
     total_volumes = batch_calculate_volume_above_plane(vertices, intersection_pts, intersection_mask,
-                                                       normal, D, dm_lb, threshold, debug_i)
+                                                       normal, D, dm_lb, threshold, debug_i, lower_bound)
 
     return total_volumes
 
@@ -426,7 +428,8 @@ def batch_calculate_volume_above_plane(vertices: Tensor,
         D: Tensor,
         dm_lb: Tensor,
         threshold: Tensor,
-        debug_i: Optional[int] = None
+        debug_i: Optional[int] = None,
+        lower_bound = True
 ) -> Tensor:
     """
     Calculate the volume above the plane inside the cube. Due to the dynamic nature of how many
@@ -452,14 +455,19 @@ def batch_calculate_volume_above_plane(vertices: Tensor,
         if curr_i_mask.to(dtype=torch.int).sum() == 0:
             # Plane is completely out the box, set the volume to be negative
             # total_volumes[i] = dm_lb[i] - threshold[i]
-            total_volumes[i] = -1 * distance_to_plane(normal[i], D, curr_vertices).max()
+            # sgn = -1 if lower_bound else +1
+            sgn = -1
+            total_volumes[i] = sgn * distance_to_plane(normal[i], D, curr_vertices).max()
             continue
 
         # Compute distances of each vertex from the plane
         distances = A * curr_vertices[:, 0] + B * curr_vertices[:, 1] + C * curr_vertices[:, 2] + D[i]
 
         # Separate vertices above the plane
-        above_vertices = curr_vertices[distances >= 0]
+        if  lower_bound:
+            above_vertices = curr_vertices[distances >= 0]
+        else:
+            above_vertices = curr_vertices[distances <= 0]
 
         # Combine above vertices with intersection points to form the polyhedron
         polyhedron_vertices = torch.vstack([above_vertices, curr_intersection_pts[curr_i_mask]])
