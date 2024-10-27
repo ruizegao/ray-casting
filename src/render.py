@@ -67,6 +67,7 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='fini
     for func, params in zip(funcs_tuple, params_tuple):
         if isinstance(func, CrownImplicitFunction):
             f = partial(func.call_implicit_func, params)
+            # f = func.torch_forward
         else:
             f = partial(func, params)
 
@@ -273,9 +274,13 @@ def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, u
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     # mesh.show()
     intersector = RayMeshIntersector(mesh)
-    hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-    # hit_pos = hit_pos.reshape((res * res, 3))
-    # hit_ids = hit_ids.reshape((res * res,))
+    compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
+
+    # hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    hit_pos, hit_ids, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
+    hit_pos, hit_ids, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+
     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='autodiff')
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
                             shading_color_func=shading_color_func)

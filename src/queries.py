@@ -30,6 +30,8 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree, construct_full_non_uniform_unknown_levelset_tree
 import trimesh
 import os
+from typing import Tuple, Callable
+
 os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 from triro.ray.ray_optix import RayMeshIntersector
 
@@ -200,7 +202,7 @@ def cast_rays_shell_based(
         roots,
         dirs,
         intersector,
-        delta=0.001,
+        delta=0.0005,
 ) -> Tuple[Tensor, Tensor, Tensor, float]:
     """
     :param func_tuple:
@@ -218,17 +220,26 @@ def cast_rays_shell_based(
     to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
     all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
     while to_check.any():
+        t0 = time.time()
         hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
             roots[to_check], dirs[to_check], stream_compaction=True
         )
+        t1 = time.time()
+        print("ray-mesh intersection calc time: ", t1 - t0)
         to_check[to_check.clone()] = hit
         if not to_check.any():
             break
         roots[to_check] = location + delta * dirs[to_check]
+        t2 = time.time()
+        print("pre NN query time: ", t2 - t1)
+        print(to_check.sum())
         true_hit = (func.torch_forward(roots[to_check]) < 0.).squeeze()
+        t3 = time.time()
+        print("NN query time: ", t3 - t2)
         all_true_hit[to_check] = true_hit
         to_check[to_check.clone()] = ~true_hit
-        print(to_check.sum())
+        t4 = time.time()
+        print("post NN query time: ", t4 - t3)
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
     end_time = time.time()
