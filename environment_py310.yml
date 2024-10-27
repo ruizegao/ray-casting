@@ -87,6 +87,8 @@ dependencies:
       - tbb==2021.13.1
       - tifffile==2024.9.20
       - torch==2.5.0
+      - torchaudio==2.5.0+cu118
+      - torchvision==0.20.0+cu118
       - tqdm==4.66.5
       - triangle==20230923
       - trimesh==4.5.0
