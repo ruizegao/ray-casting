@@ -359,6 +359,9 @@ def backward_general(
         ub_reshaped = ub.reshape(shape)
         bound_node.perturbation.x_U = ub_reshaped - ub_reshaped.detach() + torch.min(bound_node.perturbation.x_U.detach(), ub_reshaped.detach())
 
+    lb = lb.view(batch_size, *output_shape) if bound_lower else None
+    ub = ub.view(batch_size, *output_shape) if bound_upper else None
+
     # TODO merge into `concretize`
     if (self.cut_used and getattr(self, "cut_module", None) is not None
             and self.cut_module.cut_bias is not None):
@@ -367,9 +370,6 @@ def backward_general(
         if lb is not None and ub is not None and ((lb-ub)>0).sum().item() > 0:
             # make sure there is no bug for cut constraints propagation
             print(f"Warning: lb is larger than ub with diff: {(lb-ub)[(lb-ub)>0].max().item()}")
-
-    lb = lb.view(batch_size, *output_shape) if bound_lower else None
-    ub = ub.view(batch_size, *output_shape) if bound_upper else None
 
     if verbose:
         logger.debug('')
