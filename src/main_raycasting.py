@@ -26,14 +26,14 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
                              cast_tree_based=False, shell_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
-    root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
-    look = torch.tensor([-1., 0., 0.])
-    up = torch.tensor([0., 1., 0.])
-    left = torch.tensor([0., 0., 1.])
-    # root = torch.tensor([0., -2., 0.])
-    # left = torch.tensor([1., 0., 0.])
-    # look = torch.tensor([0., 1., 0.])
-    # up = torch.tensor([0., 0., 1.])
+    # root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
+    # look = torch.tensor([-1., 0., 0.])
+    # up = torch.tensor([0., 1., 0.])
+    # left = torch.tensor([0., 0., 1.])
+    root = torch.tensor([0., -3., 0.])
+    left = torch.tensor([1., 0., 0.])
+    look = torch.tensor([0., 1., 0.])
+    up = torch.tensor([0., 0., 1.])
     fov_deg = 30
     res = args.res // opts['res_scale']
 
@@ -54,6 +54,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     # alpha_channel = torch.ones_like(img[:,:,0])
     img_alpha = torch.concatenate((img, alpha_channel[:, :, None]), dim=-1)
     img_alpha = torch.clip(img_alpha, min=0., max=1.)
+    img_alpha = (img_alpha * 255.).byte()
     print(f"Saving image to {args.image_write_path}")
     imageio.imwrite(args.image_write_path, img_alpha.cpu().detach().numpy())
 
@@ -116,29 +117,6 @@ def main():
 
     # load the matcaps
     matcaps = render.load_matcap(os.path.join(ROOT_DIR, "assets", "matcaps", "wax_{}.png"))
-    # if mode == 'affine_truncate':
-    #     # truncate options
-    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-    #
-    # elif mode == 'affine_append':
-    #     # truncate options
-    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-    #
-    # elif mode == 'sdf':
-    #
-    #     changed, affine_opts['sdf_lipschitz'] = psim.InputFloat("SDF Lipschitz", affine_opts['sdf_lipschitz'])
-    #     if changed:
-    #         implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-    #
-    # elif mode in CROWN_MODES:
-    #
-    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-    #
-    # elif mode == 'affine+backward':
-    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
-    #
-    # elif mode == 'affine_quad':
-    #     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
                              cast_tree_based=cast_tree_based, shell_based=cast_shell_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args.load_from, save_to=args.save_to)

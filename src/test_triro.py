@@ -18,11 +18,11 @@ ray_origins = torch.Tensor([0, 0, 3]).cuda().broadcast_to(ray_directions.shape)
 print(ray_directions.shape, ray_origins.shape)
 # OptiX, Launch!
 hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-    ray_origins, ray_directions, stream_compaction=True
+    ray_origins.view(640000, 3), ray_directions.reshape(640000, 3), stream_compaction=True
 )
 # drawing result
-locs = torch.zeros((800, 800, 3)).cuda()
+locs = torch.zeros((800 * 800, 3)).cuda()
 print(locs.shape, hit.shape, location.shape)
 locs[hit] = location
-plt.imshow(locs.cpu())
+plt.imshow(locs.view((800, 800, 3)).cpu())
 plt.show()

@@ -9,7 +9,7 @@ from functools import partial
 from functorch import vmap
 from crown import CrownImplicitFunction
 import imageio
-
+from PIL import Image
 import geometry
 import queries
 from utils import *
@@ -232,7 +232,7 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'])
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
                             shading_color_func=shading_color_func)
-    # print(hit_pos, hit_normals, hit_color)
+
     img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
 
     if tonemap:
@@ -246,11 +246,24 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
 
     return img, depth, counts, hit_ids, n_eval, -1
 
-def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, shading_color_tuple=((0.157, 0.613, 1.000))):
-    # make sure inputs are tuples not lists (can't has lists)
+def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
+                      shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+                      shading_color_func=None):
+    if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
+    if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
     if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
 
     # wrap in tuples if single was passed
+    if not isinstance(funcs_tuple, tuple):
+        funcs_tuple = (funcs_tuple,)
+    if not isinstance(params_tuple, tuple):
+        params_tuple = (params_tuple,)
+    if not isinstance(shading_color_tuple[0], tuple):
+        shading_color_tuple = (shading_color_tuple,)
+
+    L = len(funcs_tuple)
+    if (len(params_tuple) != L) or (len(shading_color_tuple) != L):
+        raise ValueError("render_image tuple arguments should all be same length")
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
 
@@ -258,27 +271,24 @@ def render_image_mesh(load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_d
     vertices = mesh_npz['vertices'].astype(np.float32)
     faces = mesh_npz['faces'].astype(np.int32)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    mesh.show()
-    # y, x = torch.meshgrid([torch.linspace(1, -1, 800),
-    #                        torch.linspace(-1, 1, 800)], indexing='ij')
-    # z = -torch.ones_like(x)
-    # ray_directions = torch.stack([x, y, z], dim=-1).cuda()
-    # ray_origins = torch.Tensor([0, 0, 3]).cuda().broadcast_to(ray_directions.shape)
+    # mesh.show()
     intersector = RayMeshIntersector(mesh)
-    start_time = time.time()
-    hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-        ray_roots.view(1024, 1024, 3).cuda(), ray_dirs.view(1024, 1024, 3).cuda(), stream_compaction=True
-    )
-    # hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-    #     ray_origins.cuda(), ray_directions.cuda(), stream_compaction=True
-    # )
+    hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    # hit_pos = hit_pos.reshape((res * res, 3))
+    # hit_ids = hit_ids.reshape((res * res,))
+    hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='autodiff')
+    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+                            shading_color_func=shading_color_func)
+    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
 
-    hit_pos = torch.zeros((res, res, 3)).cuda()
-    hit_pos[hit] = location
-    end_time = time.time()
-    print("mesh intersection calculation time: ", end_time - start_time)
-    plt.imshow(hit_pos.cpu())
-    plt.show()
+    if tonemap:
+        # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
+        img = tonemap_image(img)
+
+    img = img.reshape(res, res, 3)
+
+    return img
+
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure

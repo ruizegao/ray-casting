@@ -102,21 +102,31 @@ def main():
 
     node_lower_valid = node_lower[node_valid]
     node_upper_valid = node_upper[node_valid]
-    num_valid = node_valid.sum()
-    As = torch.empty_like(node_lower_valid)
-    bs = torch.empty((num_valid, ))
+    num_valid = node_valid.sum().item()
+    mAs = torch.empty_like(node_lower_valid)
+    mbs = torch.empty((num_valid,))
+    lAs = torch.empty_like(node_lower_valid)
+    lbs = torch.empty((num_valid,))
+    uAs = torch.empty_like(node_lower_valid)
+    ubs = torch.empty((num_valid,))
     for start_idx in range(0, num_valid, batch_size):
         end_idx = min(start_idx + batch_size, num_valid)
         out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx])
-        As[start_idx:end_idx] = 0.5 * (crown_ret['lA'] + crown_ret['uA']).squeeze(1)
-        bs[start_idx:end_idx] = 0.5 * (crown_ret['lbias'] + crown_ret['ubias']).squeeze(1)
-        # As[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
-        # bs[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
+        mAs[start_idx:end_idx] = 0.5 * (crown_ret['lA'] + crown_ret['uA']).squeeze(1)
+        mbs[start_idx:end_idx] = 0.5 * (crown_ret['lbias'] + crown_ret['ubias']).squeeze(1)
+        lAs[start_idx:end_idx] = crown_ret['lA'].squeeze(1)
+        lbs[start_idx:end_idx] = crown_ret['lbias'].squeeze(1)
+        uAs[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
+        ubs[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
     out_valid = {}
     out_valid['lower'] = node_lower_valid.cpu().numpy()
     out_valid['upper'] = node_upper_valid.cpu().numpy()
-    out_valid['A'] = As.cpu().numpy()
-    out_valid['b'] = bs.cpu().numpy()
+    out_valid['mA'] = mAs.cpu().numpy()
+    out_valid['mb'] = mbs.cpu().numpy()
+    out_valid['lA'] = lAs.cpu().numpy()
+    out_valid['lb'] = lbs.cpu().numpy()
+    out_valid['uA'] = uAs.cpu().numpy()
+    out_valid['ub'] = ubs.cpu().numpy()
     np.savez(args.save_to, **out_valid)
 
 if __name__ == '__main__':
