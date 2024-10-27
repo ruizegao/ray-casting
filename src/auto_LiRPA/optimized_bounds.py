@@ -466,8 +466,8 @@ def _get_optimized_bounds(
         output_name = self.output_name[0]
         input_name = self.input_name[0]
         if not return_A:
-            needed_A = defaultdict(set)
-            needed_A[output_name].add(input_name)
+            needed_A_dict = defaultdict(set)
+            needed_A_dict[output_name].add(input_name)
             return_A = True
         else:
             # Even if return_A is already true, we must make sure that A_matrix of the whole network is returned

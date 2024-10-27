@@ -128,10 +128,6 @@ def get_domain_loss(x, ret, output_name, input_name):
     domain_loss = torch.norm(hook_lower - hook_upper, dim=1)
     return domain_loss
 
-def get_test_loss(ret, use_custom_loss):
-    print("computing loss")
-    print(ret)
-    print(use_custom_loss)
 
 if __name__ == '__main__':    
     device = torch.device('cuda')
