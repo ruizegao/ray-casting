@@ -1102,7 +1102,7 @@ class BoundedModule(nn.Module):
             intermediate_constr=None, alpha_idx=None,
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
-            update_mask=None, ibp_nodes=None, cache_bounds=False):
+            update_mask=None, ibp_nodes=None, cache_bounds=False, use_clip_domains=False, swap_loss=False):
         r"""Main function for computing bounds.
 
         Args:
@@ -1340,15 +1340,15 @@ class BoundedModule(nn.Module):
                 aux_reference_bounds=aux_reference_bounds,
                 needed_A_dict=needed_A_dict,
                 final_node_name=final_node_name,
-                cutter=cutter, decision_thresh=decision_thresh)
-            if bound_upper:
-                ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
-            else:
-                ret2 = None
+                cutter=cutter, decision_thresh=decision_thresh, use_clip_domains=use_clip_domains, swap_loss=swap_loss)
             if bound_lower:
                 ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
             else:
                 ret1 = None
+            if bound_upper:
+                ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
+            else:
+                ret2 = None
             if bound_lower and bound_upper:
                 if return_A:
                     # Needs to merge the A dictionary.
