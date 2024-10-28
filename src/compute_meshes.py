@@ -35,7 +35,7 @@ def main():
 
     # Build arguments
     parser.add_argument("load_from", type=str)
-    parser.add_argument("--save_to", type=str, default='meshes/mesh_0.npz')
+    parser.add_argument("save_to", type=str)
     parser.add_argument("--mode", type=str, default='crown')
     parser.add_argument("--res", type=int, default=1024)
 

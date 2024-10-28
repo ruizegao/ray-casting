@@ -202,7 +202,7 @@ def cast_rays_shell_based(
         roots,
         dirs,
         intersector,
-        delta=0.0005,
+        delta=0.001,
 ) -> Tuple[Tensor, Tensor, Tensor, float]:
     """
     :param func_tuple:
@@ -239,6 +239,10 @@ def cast_rays_shell_based(
         all_true_hit[to_check] = true_hit
         to_check[to_check.clone()] = ~true_hit
         t4 = time.time()
+        roots[to_check] = roots[to_check] + delta * dirs[to_check]
+        true_hit = (func.torch_forward(roots[to_check]) < 0.).squeeze()
+        all_true_hit[to_check] = true_hit
+        to_check[to_check.clone()] = ~true_hit
         print("post NN query time: ", t4 - t3)
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
