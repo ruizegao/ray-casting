@@ -45,6 +45,8 @@ def construct_uniform_unknown_levelset_tree_iter(
         ):
     N_in = node_lower.shape[0]
     d = node_lower.shape[-1]
+    if not continue_splitting and isinstance(func, CrownImplicitFunction):
+        func.enable_mesh_optimization()
 
     def eval_one_node(lower, upper):
         # perform an affine evaluation
