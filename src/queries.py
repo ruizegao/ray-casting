@@ -32,10 +32,6 @@ import trimesh
 import os
 from typing import Tuple, Callable
 
-os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
-from triro.ray.ray_optix import RayMeshIntersector
-
-
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
