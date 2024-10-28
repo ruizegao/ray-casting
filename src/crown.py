@@ -99,7 +99,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
 
     def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False):
-
+        print(self.crown_mode, swap_loss)
         # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
         # bound_dict = self.bounded_func.save_intermediate()
         # unstable_counts = []

@@ -41,7 +41,7 @@ def construct_uniform_unknown_levelset_tree_iter(
         ib, out_valid, out_lower, out_upper, out_n_valid,
         finished_interior_lower, finished_interior_upper, N_finished_interior,
         finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
-        offset=0.
+        offset=0., swap_loss=False
         ):
     N_in = node_lower.shape[0]
     d = node_lower.shape[-1]
@@ -49,7 +49,7 @@ def construct_uniform_unknown_levelset_tree_iter(
     def eval_one_node(lower, upper):
         # perform an affine evaluation
         if isinstance(func, CrownImplicitFunction):
-            node_type = func.classify_box(params, lower, upper, offset=offset)[0]
+            node_type = func.classify_box(params, lower, upper, offset=offset, swap_loss=swap_loss)[0]
         else:
             node_type = func.classify_box(params, lower, upper, offset=offset)
 
@@ -59,7 +59,7 @@ def construct_uniform_unknown_levelset_tree_iter(
 
     def eval_batch_of_nodes(lower, upper):
         if isinstance(func, CrownImplicitFunction):
-            node_type = func.classify_box(params, lower, upper, offset=offset)[0].squeeze(-1)
+            node_type = func.classify_box(params, lower, upper, offset=offset, swap_loss=swap_loss)[0].squeeze(-1)
         else:
             node_type = func.classify_box(params, lower, upper, offset=offset).squeeze(-1)
 
@@ -230,6 +230,8 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
         out_lower = torch.zeros((nb, 2 * this_b, 3))
         out_upper = torch.zeros((nb, 2 * this_b, 3))
         total_n_valid = 0
+        if quit_next:
+            func.change_mode('CROWN-Optimized')
         for ib in range(n_occ):
             out_valid, out_lower, out_upper, total_n_valid, \
                 finished_interior_lower, finished_interior_upper, N_finished_interior, \
@@ -243,7 +245,7 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
                                                              N_finished_interior, \
                                                              finished_exterior_lower, finished_exterior_upper,
                                                              N_finished_exterior, \
-                                                             offset=offset)
+                                                             offset=offset, swap_loss=quit_next)
 
         node_valid = out_valid
         node_lower = out_lower

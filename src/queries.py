@@ -202,7 +202,7 @@ def cast_rays_shell_based(
         roots,
         dirs,
         intersector,
-        delta=0.0005,
+        delta=0.001,
 ) -> Tuple[Tensor, Tensor, Tensor, float]:
     """
     :param func_tuple:

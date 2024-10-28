@@ -1063,23 +1063,23 @@ def _get_optimized_bounds(
     if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
         print()
 
-    if not displayed_ub and bound_upper and swap_loss:
-        displayed_ub = True
-        for i, (fig, axs) in enumerate(fig_graph_upper):
-            fig.tight_layout()
-            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/upper_fig_{i}"
-            fig.savefig(title + ".png")
-            with open(title + '.fig.pickle', 'wb') as file:
-                pickle.dump(fig, file)
-
-    elif not displayed_lb and bound_lower and swap_loss:
-        displayed_lb = True
-        for i, (fig, axs) in enumerate(fig_graph_lower):
-            fig.tight_layout()
-            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/lower_fig_{i}"
-            fig.savefig(title + ".png")
-            with open(title + '.fig.pickle', 'wb') as file:
-                pickle.dump(fig, file)
+    # if not displayed_ub and bound_upper and swap_loss:
+    #     displayed_ub = True
+    #     for i, (fig, axs) in enumerate(fig_graph_upper):
+    #         fig.tight_layout()
+    #         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/upper_fig_{i}"
+    #         fig.savefig(title + ".png")
+    #         with open(title + '.fig.pickle', 'wb') as file:
+    #             pickle.dump(fig, file)
+    #
+    # elif not displayed_lb and bound_lower and swap_loss:
+    #     displayed_lb = True
+    #     for i, (fig, axs) in enumerate(fig_graph_lower):
+    #         fig.tight_layout()
+    #         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/lower_fig_{i}"
+    #         fig.savefig(title + ".png")
+    #         with open(title + '.fig.pickle', 'wb') as file:
+    #             pickle.dump(fig, file)
 
     # if displayed_lb and displayed_ub and not displayed_graph and swap_loss:
     #     displayed_graph = True
