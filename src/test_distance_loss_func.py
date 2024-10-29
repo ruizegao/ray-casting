@@ -34,16 +34,10 @@ def get_domain_loss(x, ret, output_name, input_name):
     x_U = x[0].ptb.x_U
     A = ret[2][output_name][input_name]
 
-    xhat = ((x_U + x_L) / 2).unsqueeze(-1)
-    eps = ((x_U - x_L) / 2).unsqueeze(-1)
-
-    # Instead of directly using A['lbias'], we compute lbias from lower bounds to make use of the gradient
     n_lower = A['lA'].permute(0, 2, 1)
-    d_lower = (ret[0].unsqueeze(-1) - A['lA'].bmm(xhat) + A['lA'].abs().bmm(eps)).squeeze(-1)
-    # assert torch.allclose(d_lower, A['lbias'])
+    d_lower = A['lbias']
     n_upper = A['uA'].permute(0, 2, 1)
-    d_upper = (ret[1].unsqueeze(-1) - A['uA'].bmm(xhat) - A['uA'].abs().bmm(eps)).squeeze(-1)
-    # assert torch.allclose(d_upper, A['ubias'])
+    d_upper = A['ubias']
 
     ndim = x_L.shape[-1]
 
