@@ -612,6 +612,7 @@ def _get_optimized_bounds(
                     else:
                         raise ValueError(f"Cannot find {name} in local variables.")
                 total_loss = custom_loss_func(**variables)
+                # print(total_loss[0].item())
                 stop_criterion = False
                 full_ret = ret
             except Exception as e:
