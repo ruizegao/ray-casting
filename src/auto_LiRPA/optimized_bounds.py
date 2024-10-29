@@ -115,6 +115,9 @@ default_optimize_bound_args = {
     # Try to ensure that the parameters always match with the optimized bounds.
     'deterministic': False,
     'max_time': 1e9,
+    # When using the total volume loss function, a batch of unverified nodes may be visually analzyed further for
+    # debugging and sanity checks
+    'save_loss_graphs': False
 }
 
 
@@ -345,6 +348,7 @@ def _get_optimized_bounds(
     apply_output_constraints_to = opts['apply_output_constraints_to']
     opt_choice = opts['optimizer']
     keep_best = opts['keep_best']
+    save_loss_graphs = opts['save_loss_graphs']
     fix_interm_bounds = opts['fix_interm_bounds']
     loss_reduction_func = opts['loss_reduction_func']
     stop_criterion_func = opts['stop_criterion_func']
@@ -641,11 +645,14 @@ def _get_optimized_bounds(
             # parse to get lA and lbias
             ret_A = ret[2]
             if bound_lower:
-                dm_lb = ret[0]
+                dm_lb = ret_l
                 lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['lbias']
             else:
-                dm_lb = ret[1]
+                dm_lb = ret_u
                 lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['ubias']
+
 
             batch_lA = lA.flatten(2)
             batches, num_spec, input_dim = batch_lA.shape
@@ -658,41 +665,42 @@ def _get_optimized_bounds(
             else:
                 raise Exception("Make sure that 'decision_thresh' is specified.")
 
-            def _concretize(xhat, eps, lA, lbias, sgn):
-                bound = lA.bmm(xhat) + sgn * lA.abs().bmm(eps) + lbias
-                return bound
+            # def _concretize(xhat, eps, lA, lbias, sgn):
+            #     bound = lA.bmm(xhat) + sgn * lA.abs().bmm(eps) + lbias
+            #     return bound
 
 
             # perform volume calculation for the loss function
             x_L = x[0].ptb.x_L
             x_U = x[0].ptb.x_U
-            xhat = (x_U + x_L) / 2
-            eps = (x_U - x_L) / 2
-            sgn = -1 if bound_lower else +1
-            xhat_vect = xhat.unsqueeze(2)
-            eps_vect = eps.unsqueeze(2)
-            batch_dm_lb = dm_lb.reshape(batches, 1, -1).expand(batches, num_spec, -1)
-            lbias_vect = batch_dm_lb - batch_lA.bmm(xhat_vect) - sgn*(batch_lA.abs()).bmm(eps_vect)
-            lbias = lbias_vect.reshape(batches, num_spec)
-            atol=1e-6
-            assert torch.allclose(lbias, ret_A[self.output_name[0]][self.input_name[0]]['lbias' if bound_lower else 'ubias'], atol=atol), "Computed lbias does not match lbias in dict A"
-            assert torch.allclose(_concretize(xhat_vect, eps_vect, lA, lbias_vect, sgn).reshape(dm_lb.shape), dm_lb, atol=atol), "Concretized dm_lb does not match returned dm_lb"
-            # dm_ub = _concretize(xhat_vect, eps_vect, lA, lbias_vect, -sgn).reshape(dm_lb.shape)
+            # xhat = (x_U + x_L) / 2
+            # eps = (x_U - x_L) / 2
+            # sgn = -1 if bound_lower else +1
+            # xhat_vect = xhat.unsqueeze(2)  # to column vectors
+            # eps_vect = eps.unsqueeze(2)  # to column vectors
+
+            # reshape tensors to be compatible with the volume calculation in batches
             lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
             x_L_reshape = x_L.reshape(batches, input_dim)
             x_U_reshape = x_U.reshape(batches, input_dim)
             x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
             x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
             lbias_reshape = lbias.reshape(batches * num_spec, 1)
-            volumes = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
+            total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
                                                       dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter, bound_lower)
-            loss = volumes.sum()
-            loss *= -1  # to maximize
+
+            volumes = total_loss.detach().clone()  # for viewing
+            total_loss *= -1  # to maximize
 
             # get a set of fixed masks to analyze a set of unverified nodes
             global un_mask
             if un_mask is None:
-                un_mask = (dm_lb < 0).squeeze()
+                if bound_lower:
+                    un_mask = (dm_lb < 0).squeeze()
+                elif bound_upper:
+                    un_mask = (dm_lb > 0).squeeze()
+                un_mask_offset = 12 * 3
+                un_mask[:un_mask_offset] = False
             num_unverified = un_mask.to(dtype=torch.int).sum()
             print(f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
 
@@ -710,14 +718,14 @@ def _get_optimized_bounds(
             if fig_graph_upper is None:
                 fig_graph_upper = []
 
-            if bound_lower:
+            if save_loss_graphs and bound_lower:
                 if len(fig_graph_lower) == i:
-                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'});
+                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
                     axs = axs.flatten()
                     fig_graph_lower.append((fig, axs))
                 else:
                     fig, axs = fig_graph_lower[i]
-            else:
+            elif save_loss_graphs and bound_upper:
                 if len(fig_graph_upper) == i:
                     fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
                     axs = axs.flatten()
@@ -725,14 +733,9 @@ def _get_optimized_bounds(
                 else:
                     fig, axs = fig_graph_upper[i]
 
-            # fig_graph = plt.figure(figsize=(12, 8))
-            # ax_graph = [fig_graph.add_subplot(base_subplot + b + 1, projection='3d') for b in range(plot_batches)]
-
             # for single batch dimensions, try to plot the hyperplane
             # if num_spec == 1 and input_dim == 3 and ( (~displayed_ub and bound_upper) or (~displayed_lb and bound_lower) ):
-            if num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
-                # fig = plt.figure(figsize=(12, 8))
-                # plt.subplots_adjust(hspace=0.8, wspace=0.4)  # adds more spacing between the rows
+            if save_loss_graphs and num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
                 # keep entries that were unverified on the first iteration of alpha crown
                 nv_x_L = x_L[un_mask]
                 nv_x_U = x_U[un_mask]
@@ -761,8 +764,7 @@ def _get_optimized_bounds(
                         out_samples = to_numpy(self.forward(in_samples))
                         in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
                         ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
-                    # dm_lb_np = to_numpy(nv_dm_lb.reshape(num_unverified, num_spec))
-                    # dm_ub_np = to_numpy(nv_dm_ub.reshape(num_unverified, num_spec))
+
                     D = nv_lbias.reshape(num_unverified, num_spec)[b].item()
                     plot_cube(ax1, vertices, faces)
                     plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]])
@@ -773,7 +775,7 @@ def _get_optimized_bounds(
                     ax1.set_xlabel('X')
                     ax1.set_ylabel('Y')
                     ax1.set_zlabel('Z')
-                    ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {i})\n(Volume {nv_volumes[b].item():.5f})\nx_L Limits: {x_L_np}\nx_U Limits: {x_U_np}")
+                    ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {i})\n(Volume {nv_volumes[b].item():.3e})\nx_L Limits: {x_L_np}\nx_U Limits: {x_U_np}")
                     # display the legend with the hyperplane coefficients
                     handles, labels = ax1.get_legend_handles_labels()
                     handles.extend([mpatches.Patch() for _ in range(4)])
@@ -786,10 +788,8 @@ def _get_optimized_bounds(
                     coeffs[3] = D
                     print(f"Coefficients: {coeffs}")
                     ax1.legend(handles=handles, labels=labels)
-                    # ax1.legend()
 
-
-        elif type(stop_criterion) == bool:
+        if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
         else:
             assert total_loss.shape == stop_criterion.shape
@@ -1004,7 +1004,6 @@ def _get_optimized_bounds(
     if verbosity > 3:
         breakpoint()
 
-    keep_best = False # FIXME: should not be hardcoded
     if keep_best:
         # Set all variables to their saved best values.
         with torch.no_grad():
@@ -1063,31 +1062,23 @@ def _get_optimized_bounds(
     if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
         print()
 
-    # if not displayed_ub and bound_upper and swap_loss:
-    #     displayed_ub = True
-    #     for i, (fig, axs) in enumerate(fig_graph_upper):
-    #         fig.tight_layout()
-    #         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/upper_fig_{i}"
-    #         fig.savefig(title + ".png")
-    #         with open(title + '.fig.pickle', 'wb') as file:
-    #             pickle.dump(fig, file)
-    #
-    # elif not displayed_lb and bound_lower and swap_loss:
-    #     displayed_lb = True
-    #     for i, (fig, axs) in enumerate(fig_graph_lower):
-    #         fig.tight_layout()
-    #         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/lower_fig_{i}"
-    #         fig.savefig(title + ".png")
-    #         with open(title + '.fig.pickle', 'wb') as file:
-    #             pickle.dump(fig, file)
+    if save_loss_graphs and not displayed_ub and bound_upper and swap_loss:
+        displayed_ub = True
+        for i, (fig, axs) in enumerate(fig_graph_upper):
+            fig.tight_layout()
+            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/maximize_loss_upper_fig_{i}"
+            fig.savefig(title + ".png")
+            # with open(title + '.fig.pickle', 'wb') as file:
+            #     pickle.dump(fig, file)
+            plt.close(fig)
 
-    # if displayed_lb and displayed_ub and not displayed_graph and swap_loss:
-    #     displayed_graph = True
-    #     print(f"Displaying graphs...")
-    #     for i, (fig, axs) in enumerate(fig_graph):
-    #         fig.tight_layout()
-    #         fig.savefig(f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/fig_{i}.png")
-    #         # fig.write_html(f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/fig_{i}.html")
+    elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
+        displayed_lb = True
+        for i, (fig, axs) in enumerate(fig_graph_lower):
+            fig.tight_layout()
+            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/maximize_loss_lower_fig_{i}"
+            fig.savefig(title + ".png")
+            plt.close(fig)
 
     ## turns plots into a video clip
     # if bound_lower and swap_loss:
