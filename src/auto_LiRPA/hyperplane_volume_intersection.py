@@ -191,6 +191,7 @@ def calculate_volume_above_plane(
         i_mask: Tensor,
         normal: Tensor,
         D: float,
+        lower_bound = False,
         ax: Optional[Axes] = None,
         verbose = False):
     """
@@ -212,10 +213,21 @@ def calculate_volume_above_plane(
     distances = A * vertices[:, 0] + B * vertices[:, 1] + C * vertices[:, 2] + D
 
     # Separate vertices above the plane
-    above_vertices = vertices[distances >= 0]
+    if lower_bound:
+        above_vertices = vertices[distances >= 0]
+    else:
+        above_vertices = vertices[distances <= 0]
+
+    if i_mask.to(dtype=torch.int).sum() == 0 and len(above_vertices) == 0:
+        # Plane is completely out the box, set the volume to be negative
+        # total_volumes[i] = dm_lb[i] - threshold[i]
+        return -1 * distance_to_plane(normal, D, vertices).max()
 
     # Combine above vertices with intersection points to form the polyhedron
-    polyhedron_vertices = torch.vstack([above_vertices, intersection_pts[i_mask]])
+    if i_mask.to(dtype=torch.int).sum() == 0:
+        polyhedron_vertices = above_vertices
+    else:
+        polyhedron_vertices = torch.vstack([above_vertices, intersection_pts[i_mask]])
     polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
     # Perform Delaunay tetrahedralization
@@ -242,6 +254,10 @@ def calculate_volume_above_plane(
         total_volume += curr_volume
         if verbose:
             print(f"i {i + 1} | {curr_volume:.3f} | {total_volume:.3f}")
+
+    if i_mask.to(dtype=torch.int).sum() == 0:
+        # FIXME: Redundant calculation to include gradient. Much faster to precompute volumes instead
+        total_volume += 0 * (normal.sum() + D)
 
     if ax is not None:
         # Plot each tetrahedron
@@ -282,6 +298,7 @@ def cube_intersection_with_plane(
         normal: Tensor,
         D: float,
         iter: int,
+        lower_bound = False,
         show_plots=True,
         verbose=False,
         visualize=False
@@ -326,7 +343,7 @@ def cube_intersection_with_plane(
             print(f"Intersection Points: \n{intersection_pts_np}")
 
     intersection_volume = calculate_volume_above_plane(vertices, intersection_pts, intersection_mask,
-                                                       normal, D, ax2, verbose)
+                                                       normal, D, lower_bound, ax2, verbose)
     if verbose:
         print(f"Volume intersection: {to_numpy(intersection_volume)}")
         print(f"Total volume: {(x_U - x_L).prod()}")
@@ -382,6 +399,10 @@ def batch_cube_intersection_with_plane(
     :param x_U:
     :param normal:
     :param D:
+    :param dm_lb:
+    :param threshold:
+    :param debug_i:
+    :param lower_bound:
     :return:
     """
 
@@ -421,7 +442,8 @@ def distance_to_plane(normal: Tensor, D: float, vertex: Tensor) -> Tensor:
         dist = (normal.bmm(vertices) + D) / torch.norm(normal)
     return dist.abs()
 
-def batch_calculate_volume_above_plane(vertices: Tensor,
+def batch_calculate_volume_above_plane(
+        vertices: Tensor,
         intersection_pts: Tensor,
         i_mask: Tensor,
         normal: Tensor,
@@ -440,6 +462,10 @@ def batch_calculate_volume_above_plane(vertices: Tensor,
     :param i_mask:              Intersection mask. True if element in intersection_pts is not infinity.
     :param normal:              Normal vector of the plane
     :param D:                   Plane offset
+    :param dm_lb:
+    :param threshold:
+    :param debug_i:
+    :param lower_bound:
     :return:                    Volume above the plane inside the cube
     """
     batches = normal.shape[0]
@@ -448,29 +474,32 @@ def batch_calculate_volume_above_plane(vertices: Tensor,
     for i in range(batches):
         # Get current batch parameters
         [A, B, C] = normal[i]
+        curr_D = D[i].squeeze()  # squeeze offset to be a float
         curr_vertices = vertices[i]
         curr_intersection_pts= intersection_pts[i]
         curr_i_mask = i_mask[i]
-
-        if curr_i_mask.to(dtype=torch.int).sum() == 0:
-            # Plane is completely out the box, set the volume to be negative
-            # total_volumes[i] = dm_lb[i] - threshold[i]
-            # sgn = -1 if lower_bound else +1
-            sgn = -1
-            total_volumes[i] = sgn * distance_to_plane(normal[i], D, curr_vertices).max()
-            continue
+        num_inter_points = curr_i_mask.to(dtype=torch.int).sum()  # number of intersection points
 
         # Compute distances of each vertex from the plane
-        distances = A * curr_vertices[:, 0] + B * curr_vertices[:, 1] + C * curr_vertices[:, 2] + D[i]
+        distances = A * curr_vertices[:, 0] + B * curr_vertices[:, 1] + C * curr_vertices[:, 2] + curr_D
 
         # Separate vertices above the plane
-        if  lower_bound:
+        if lower_bound:
             above_vertices = curr_vertices[distances >= 0]
         else:
             above_vertices = curr_vertices[distances <= 0]
 
+        if num_inter_points == 0 and len(above_vertices) == 0:
+            # Plane is completely out the box, set the volume to be negative
+            # total_volumes[i] = dm_lb[i] - threshold[i]
+            total_volumes[i] = -1 * distance_to_plane(normal[i], curr_D, curr_vertices).max()
+            continue
+
         # Combine above vertices with intersection points to form the polyhedron
-        polyhedron_vertices = torch.vstack([above_vertices, curr_intersection_pts[curr_i_mask]])
+        if num_inter_points == 0:
+            polyhedron_vertices = above_vertices
+        else:
+            polyhedron_vertices = torch.vstack([above_vertices, curr_intersection_pts[curr_i_mask]])
         polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
         # Perform Delaunay tetrahedralization
@@ -486,6 +515,10 @@ def batch_calculate_volume_above_plane(vertices: Tensor,
         b_c = tetrahedron_vertices[:, 2, :]
         b_ref = tetrahedron_vertices[:, 3, :]
         total_volumes[i] = b_volume_of_tetrahedron(b_ref, b_a, b_b, b_c).sum(0)
+
+        if num_inter_points == 0:
+            # FIXME: Redundant calculation to include gradient. Much faster to precompute volumes instead
+            total_volumes[i] += 0 * (normal[i].sum() + curr_D)
 
     return total_volumes
 
@@ -507,6 +540,7 @@ def batched_main(batches: int):
     # plane equation <normal, x> + D = 0
     normal = torch.ones((batches, 3), requires_grad=True, **set_t)
     D = torch.full((batches,), -1.5, **set_t)
+    lower_bound = True
 
     # input bounding box
     x_L = torch.zeros((batches, 3), **set_t)
@@ -518,7 +552,7 @@ def batched_main(batches: int):
     losses = np.zeros((batches, iters))
     for i in range(iters):
         opt.zero_grad()
-        loss = batch_cube_intersection_with_plane(x_L, x_U, normal, D, torch.zeros_like(D), torch.zeros_like(D))
+        loss = batch_cube_intersection_with_plane(x_L, x_U, normal, D, torch.zeros_like(D), torch.zeros_like(D), None, lower_bound)
         losses[:, i] = to_numpy(loss)
         loss = loss.sum()
         loss.backward()
@@ -533,6 +567,7 @@ def main():
     # plane equation <normal, x> + D = 0
     normal = torch.tensor([1,1,1], requires_grad=True, **set_t)
     D = -1.5
+    lower_bound = False
 
     # input bounding box
     x_L = torch.zeros(3, **set_t)
@@ -545,7 +580,7 @@ def main():
     normal_coeffs = np.zeros((iters, len(normal)))
     for i in range(iters):
         opt.zero_grad()
-        loss = cube_intersection_with_plane(x_L, x_U, normal, D, i, True, True, True)
+        loss = cube_intersection_with_plane(x_L, x_U, normal, D, i, lower_bound, True, True, True)
         losses[i] = loss.item()
         normal_coeffs[i] = to_numpy(normal)
         loss.backward()
