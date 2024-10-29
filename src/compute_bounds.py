@@ -95,6 +95,7 @@ def main():
     data_bound = float(opts['data_bound'])
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
+    start_time = time.time()
     out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
     node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
     node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
@@ -128,6 +129,8 @@ def main():
     out_valid['uA'] = uAs.cpu().numpy()
     out_valid['ub'] = ubs.cpu().numpy()
     np.savez(args.save_to, **out_valid)
+    end_time = time.time()
+    print("total time cost: ", end_time - start_time)
 
 if __name__ == '__main__':
     main()
