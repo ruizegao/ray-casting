@@ -225,18 +225,19 @@ def cast_rays_shell_based(
         to_check[to_check.clone()] = hit
         if not to_check.any():
             break
-        roots[to_check] = location + delta * dirs[to_check]
+        # roots[to_check] = location + delta * dirs[to_check]
+        roots[to_check] = location
         t2 = time.time()
         print("pre NN query time: ", t2 - t1)
         print(to_check.sum())
-        true_hit = (func.torch_forward(roots[to_check]) < 0.).squeeze()
+        true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
         t3 = time.time()
         print("NN query time: ", t3 - t2)
         all_true_hit[to_check] = true_hit
         to_check[to_check.clone()] = ~true_hit
         t4 = time.time()
         roots[to_check] = roots[to_check] + delta * dirs[to_check]
-        true_hit = (func.torch_forward(roots[to_check]) < 0.).squeeze()
+        true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
         all_true_hit[to_check] = true_hit
         to_check[to_check.clone()] = ~true_hit
         print("post NN query time: ", t4 - t3)
@@ -439,29 +440,29 @@ def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs,
         #                                                                                                                 start_idx:end_idx] = take_several_steps_batched(
         #         batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
     else:
-        curr_t, curr_int_size, is_hit, hit_id, num_inner_steps \
-            = vmap(take_several_steps)(curr_roots, curr_dirs, curr_t, curr_int_size)
+        # curr_t, curr_int_size, is_hit, hit_id, num_inner_steps \
+        #     = vmap(take_several_steps)(curr_roots, curr_dirs, curr_t, curr_int_size)
 
-        # total_samples = curr_roots.shape[0]
-        # batch_size_per_iteration = 100000
-        # if funcs_are_affine_all:
-        #     batch_size_per_iteration = 30000
-        # is_hit = torch.empty_like(curr_t)
-        # hit_id = torch.empty_like(curr_t)
-        # num_inner_steps = torch.empty_like(curr_t)
-        # for start_idx in range(0, total_samples, batch_size_per_iteration):
-        #     end_idx = min(start_idx + batch_size_per_iteration, total_samples)
-        #     batch_curr_roots = curr_roots[start_idx:end_idx]
-        #     batch_curr_dirs = curr_dirs[start_idx:end_idx]
-        #     batch_curr_t = curr_t[start_idx:end_idx]
-        #     batch_curr_int_size = curr_int_size[start_idx:end_idx]
-        #
-        #     # Perform computation on the current batch
-        #     curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
-        #                                                                                             start_idx:end_idx], num_inner_steps[
-        #                                                                                                                 start_idx:end_idx] = vmap(
-        #         take_several_steps)(
-        #         batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
+        total_samples = curr_roots.shape[0]
+        batch_size_per_iteration = 100000
+        if funcs_are_affine_all:
+            batch_size_per_iteration = 30000
+        is_hit = torch.empty_like(curr_t)
+        hit_id = torch.empty_like(curr_t)
+        num_inner_steps = torch.empty_like(curr_t)
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            batch_curr_roots = curr_roots[start_idx:end_idx]
+            batch_curr_dirs = curr_dirs[start_idx:end_idx]
+            batch_curr_t = curr_t[start_idx:end_idx]
+            batch_curr_int_size = curr_int_size[start_idx:end_idx]
+
+            # Perform computation on the current batch
+            curr_t[start_idx:end_idx], curr_int_size[start_idx:end_idx], is_hit[start_idx:end_idx], hit_id[
+                                                                                                    start_idx:end_idx], num_inner_steps[
+                                                                                                                        start_idx:end_idx] = vmap(
+                take_several_steps)(
+                batch_curr_roots, batch_curr_dirs, batch_curr_t, batch_curr_int_size)
 
     curr_count += curr_valid * num_inner_steps.int()
 
