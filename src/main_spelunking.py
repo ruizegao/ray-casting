@@ -67,7 +67,8 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     img_alpha = torch.concatenate((img, alpha_channel[:,:,None]), dim=-1)
     img_alpha = torch.clip(img_alpha, min=0., max=1.)
     print(f"Saving image to {args.image_write_path}")
-    imageio.imwrite(args.image_write_path, img_alpha.cpu().detach().numpy())
+    img_alpha = img_alpha.cpu().detach().numpy() * 255
+    imageio.imwrite(args.image_write_path, img_alpha.astype(np.uint8))
 
 
 def do_sample_surface(opts, implicit_func, params, n_samples, sample_width, n_node_thresh, do_viz_tree, do_uniform_sample):

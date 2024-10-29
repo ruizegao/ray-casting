@@ -1,0 +1,3 @@
+[submodule "trimesh-ray-optix"]
+	path = trimesh-ray-optix
+	url = https://github.com/lcp29/trimesh-ray-optix
