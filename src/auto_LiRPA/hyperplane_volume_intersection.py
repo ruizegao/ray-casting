@@ -10,7 +10,10 @@ from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+import matplotlib.patches as mpatches
+from math import ceil
 import imageio
+import pickle
 
 set_t = {
     "dtype": torch.float32,
@@ -529,6 +532,97 @@ b_get_cube_vertices = vmap(get_cube_vertices)
 b_calculate_intersection = vmap(partial(calculate_intersection, verbose=False))  # verbose must be false for batches
 b_volume_of_tetrahedron = vmap(volume_of_tetrahedron)
 b_distance_to_plane = vmap(distance_to_plane)
+
+### for help with plotting in autoLiRPA
+
+def get_rows_cols(total_plots, max_cols = 4, max_plots = 12):
+    cols = max_cols
+    plot_batches = min(total_plots, max_plots)
+
+    # determine plot rows/columns
+    if plot_batches <= cols:
+        cols = plot_batches
+        rows = 1
+    else:
+        rows = ceil(plot_batches / cols)
+
+    return rows, cols
+
+def fill_plots(
+        axs,
+        forward_fn,
+        x_L: Tensor,
+        x_U: Tensor,
+        lA: Tensor,
+        lbias: Tensor,
+        volumes: Tensor,
+        plot_batches: int,
+        num_unverified,
+        num_spec,
+        i = 0
+):
+    faces = unit_cube_faces()
+
+    for b in range(plot_batches):
+        ax1 = axs[b]
+        vertices = to_numpy(get_cube_vertices(x_L[b], x_U[b]))
+        normal = to_numpy(lA[b].squeeze())
+        curr_nv_x_L = x_L[b].reshape(1, -1)
+        curr_nv_x_U = x_U[b].reshape(1, -1)
+        x_L_np = to_numpy(x_L[b])
+        x_U_np = to_numpy(x_U[b])
+
+        # sample the region
+        with torch.no_grad():
+            in_samples = torch.rand(10000, 3) * (curr_nv_x_U - curr_nv_x_L) + curr_nv_x_L
+            out_samples = to_numpy(forward_fn(in_samples))
+            in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
+            ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
+
+        D = lbias.reshape(num_unverified, num_spec)[b].item()
+        plot_cube(ax1, vertices, faces)
+        plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]])
+        plot_intersection(ax1, vertices, normal, D)
+        ax1.set_xlim([x_L_np[0], x_U_np[0]])
+        ax1.set_ylim([x_L_np[1], x_U_np[1]])
+        ax1.set_zlim([x_L_np[2], x_U_np[2]])
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.set_zlabel('Z')
+        ax1.set_title(f"Iter. {i}\n(Volume {volumes[b].item():.3e})\nx_L: {x_L_np}\nx_U: {x_U_np}")
+        # display the legend with the hyperplane coefficients
+        handles, labels = ax1.get_legend_handles_labels()
+        handles.extend([mpatches.Patch() for _ in range(4)])
+        coeffs = [0 for _ in range(4)]
+        for c in range(3):
+            curr_char = chr(ord('a') + c)
+            labels.append(f"{curr_char}: {normal[c]:.2f}")
+            coeffs[c] = normal[c]
+        labels.append(f"d: {D:.2f}")
+        coeffs[3] = D
+        print(f"Coefficients: {coeffs}")
+        ax1.legend(handles=handles, labels=labels)
+
+def finalize_plots(figs, main_title: str, titles: list[str], pickle_data = False):
+    """
+    Finalizes the plots received by autoLiRPA for viewing
+    :param figs:
+    :param main_title:
+    :param titles:
+    :param pickle_data:
+    :return:
+    """
+    assert len(figs) == len(titles), "Mismatch in lengths"
+    with imageio.get_writer(main_title + '.mp4', fps=5) as writer:
+        for fig, title in zip(figs, titles):
+            fig.tight_layout()
+            fig.savefig(title + ".png")
+            if pickle_data:
+                with open(title + '.fig.pickle', 'wb') as file:
+                    pickle.dump(fig, file)
+            plt.close(fig)
+            image = imageio.imread(title + '.png')
+            writer.append_data(image)
 
 ### main functions
 

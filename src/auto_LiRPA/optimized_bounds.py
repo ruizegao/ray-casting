@@ -22,7 +22,7 @@ from contextlib import ExitStack
 import torch
 from torch import optim, Tensor
 import numpy as np
-from typing import Tuple, Union, Optional
+from typing import Tuple, Union, Optional, final
 from math import ceil
 
 from .perturbations import PerturbationLpNorm
@@ -32,7 +32,8 @@ from .cuda_utils import double2float
 from .utils import reduction_sum, multi_spec_keep_func_all
 from .opt_pruner import OptPruner
 from .clip_autoLiRPA import clip_domains
-from .hyperplane_volume_intersection import batch_cube_intersection_with_plane
+from .hyperplane_volume_intersection import batch_cube_intersection_with_plane, finalize_plots, fill_plots, \
+    get_rows_cols
 ### preprocessor-hint: private-section-start
 from .adam_element_lr import AdamElementLR
 ### preprocessor-hint: private-section-end
@@ -46,9 +47,6 @@ lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph = None, None, Fals
 ax_graph, fig_graph_lower, fig_graph_upper = None, None, None
 un_mask = None
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-import pickle
-import imageio
 from .hyperplane_volume_intersection import get_cube_vertices, unit_cube_faces, to_numpy, plot_cube, plot_intersection, plot_plane
 out_path = "/home/jorgejc2/Documents/Research/ray-casting/alpha_crown_planes/"
 
@@ -692,102 +690,61 @@ def _get_optimized_bounds(
             volumes = total_loss.detach().clone()  # for viewing
             total_loss *= -1  # to maximize
 
-            # get a set of fixed masks to analyze a set of unverified nodes
-            global un_mask
-            if un_mask is None:
-                if bound_lower:
-                    un_mask = (dm_lb < 0).squeeze()
-                elif bound_upper:
-                    un_mask = (dm_lb > 0).squeeze()
-                un_mask_offset = 12 * 3
-                un_mask[:un_mask_offset] = False
-            num_unverified = un_mask.to(dtype=torch.int).sum()
-            print(f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
-
-            cols = 4
-            plot_batches = min(num_unverified, 12)
-            if plot_batches <= cols:
-                cols = plot_batches
-                rows = 1
-            else:
-                rows = ceil(plot_batches / cols)
-
-            if fig_graph_lower is None:
-                fig_graph_lower = []
-
-            if fig_graph_upper is None:
-                fig_graph_upper = []
-
-            if save_loss_graphs and bound_lower:
-                if len(fig_graph_lower) == i:
-                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                    axs = axs.flatten()
-                    fig_graph_lower.append((fig, axs))
-                else:
-                    fig, axs = fig_graph_lower[i]
-            elif save_loss_graphs and bound_upper:
-                if len(fig_graph_upper) == i:
-                    fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                    axs = axs.flatten()
-                    fig_graph_upper.append((fig, axs))
-                else:
-                    fig, axs = fig_graph_upper[i]
-
-            # for single batch dimensions, try to plot the hyperplane
-            # if num_spec == 1 and input_dim == 3 and ( (~displayed_ub and bound_upper) or (~displayed_lb and bound_lower) ):
+            # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
             if save_loss_graphs and num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+
+                ## graph set up
+
+                # get a set of fixed masks to analyze a set of unverified nodes
+                global un_mask
+                if un_mask is None:
+                    if bound_lower:
+                        un_mask = (dm_lb < 0).squeeze()
+                    elif bound_upper:
+                        un_mask = (dm_lb > 0).squeeze()
+                    un_mask_offset = 12 * 3  # start idx of nodes to plot
+                    un_mask[:un_mask_offset] = False
+                num_unverified = un_mask.to(dtype=torch.int).sum()
+                print(
+                    f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
+
+                [rows, cols] = get_rows_cols(num_unverified)
+
+                # create/retrieve list of figures that will be manipulated
+                if fig_graph_lower is None:
+                    fig_graph_lower = []
+
+                if fig_graph_upper is None:
+                    fig_graph_upper = []
+
+                if bound_lower:
+                    if len(fig_graph_lower) == i:
+                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                        axs = axs.flatten()
+                        fig_graph_lower.append((fig, axs))
+                    else:
+                        fig, axs = fig_graph_lower[i]
+                else:
+                    if len(fig_graph_upper) == i:
+                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                        axs = axs.flatten()
+                        fig_graph_upper.append((fig, axs))
+                    else:
+                        fig, axs = fig_graph_upper[i]
+
+                ## start of actual plotting
+
                 # keep entries that were unverified on the first iteration of alpha crown
-                nv_x_L = x_L[un_mask]
+                nv_x_L = x_L[un_mask]  # nv for not verified
                 nv_x_U = x_U[un_mask]
                 nv_batch_lA = batch_lA[un_mask]
-                # nv_dm_lb = dm_lb[un_mask]
-                # nv_dm_ub = dm_ub[un_mask]
                 nv_lbias = lbias[un_mask]
                 nv_volumes = volumes[un_mask]
-                plot_batches = len(axs)
-                faces = unit_cube_faces()
+                plot_batches = len(axs)   # number of plots
 
-                for b in range(plot_batches):
-                    ax1 = axs[b]
-                    # ax1 = fig.add_subplot(base_subplot + b + 1, projection='3d')
-                    vertices = to_numpy(get_cube_vertices(nv_x_L[b], nv_x_U[b]))
-                    normal = to_numpy(nv_batch_lA[b].squeeze())
-                    curr_nv_x_L = nv_x_L[b].reshape(1, -1)
-                    curr_nv_x_U = nv_x_U[b].reshape(1, -1)
-                    x_L_np = to_numpy(nv_x_L[b])
-                    x_U_np = to_numpy(nv_x_U[b])
-
-                    # sample the region
-                    # if bound_lower:
-                    with torch.no_grad():
-                        in_samples = torch.rand(10000, 3) * (curr_nv_x_U - curr_nv_x_L) + curr_nv_x_L
-                        out_samples = to_numpy(self.forward(in_samples))
-                        in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
-                        ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
-
-                    D = nv_lbias.reshape(num_unverified, num_spec)[b].item()
-                    plot_cube(ax1, vertices, faces)
-                    plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]])
-                    plot_intersection(ax1, vertices, normal, D)
-                    ax1.set_xlim([x_L_np[0], x_U_np[0]])
-                    ax1.set_ylim([x_L_np[1], x_U_np[1]])
-                    ax1.set_zlim([x_L_np[2], x_U_np[2]])
-                    ax1.set_xlabel('X')
-                    ax1.set_ylabel('Y')
-                    ax1.set_zlabel('Z')
-                    ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {i})\n(Volume {nv_volumes[b].item():.3e})\nx_L Limits: {x_L_np}\nx_U Limits: {x_U_np}")
-                    # display the legend with the hyperplane coefficients
-                    handles, labels = ax1.get_legend_handles_labels()
-                    handles.extend([mpatches.Patch() for _ in range(4)])
-                    coeffs = [0 for _ in range(4)]
-                    for c in range(3):
-                        curr_char = chr(ord('a') + c)
-                        labels.append(f"{curr_char}: {normal[c]:.2f}")
-                        coeffs[c] = normal[c]
-                    labels.append(f"d: {D:.2f}")
-                    coeffs[3] = D
-                    print(f"Coefficients: {coeffs}")
-                    ax1.legend(handles=handles, labels=labels)
+                fill_plots(
+                    axs, self.forward,
+                    nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec, i)
 
         if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -1064,28 +1021,17 @@ def _get_optimized_bounds(
 
     if save_loss_graphs and not displayed_ub and bound_upper and swap_loss:
         displayed_ub = True
-        for i, (fig, axs) in enumerate(fig_graph_upper):
-            fig.tight_layout()
-            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/maximize_loss_upper_fig_{i}"
-            fig.savefig(title + ".png")
-            # with open(title + '.fig.pickle', 'wb') as file:
-            #     pickle.dump(fig, file)
-            plt.close(fig)
+        figs = [fig for (fig, _) in fig_graph_upper]
+        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
+        titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
+        finalize_plots(figs, title, titles)
 
     elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
         displayed_lb = True
-        for i, (fig, axs) in enumerate(fig_graph_lower):
-            fig.tight_layout()
-            title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/maximize_loss_lower_fig_{i}"
-            fig.savefig(title + ".png")
-            plt.close(fig)
-
-    ## turns plots into a video clip
-    # if bound_lower and swap_loss:
-    #     with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
-    #         for i in range(iteration):
-    #             image = imageio.imread(out_path + f"frame_{i}.png")
-    #             writer.append_data(image)
+        figs = [fig for (fig, _) in fig_graph_lower]
+        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
+        titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
+        finalize_plots(figs, title, titles)
 
     return best_ret
 
