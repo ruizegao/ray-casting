@@ -109,8 +109,11 @@ def main():
     distance = get_distance(node_lower, node_upper, uAs.unsqueeze(-1), ubs.unsqueeze(-1), lAs.unsqueeze(-1), lbs.unsqueeze(-1))
     print(torch.sqrt(torch.norm(node_upper - node_lower, dim=1)))
     print(node_upper[0] - node_lower[0])
-    print(torch.sqrt(distance).min())
-    print(torch.sqrt(distance).max())
+    print(distance.min())
+    print(distance.max())
+    print((distance > 0.08).sum())
+    print(distance.size(0))
+    print((distance > 0.08).sum() / distance.size(0))
 
 if __name__ == '__main__':
     main()

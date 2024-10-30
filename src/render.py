@@ -281,7 +281,8 @@ def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, u
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
     # mesh.show()
     intersector = RayMeshIntersector(mesh)
-    compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
+    # compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
+    compiled_cast_rays_shell_based = queries.cast_rays_shell_based
 
     # hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
     hit_pos, hit_ids, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)

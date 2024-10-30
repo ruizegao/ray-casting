@@ -213,34 +213,38 @@ def cast_rays_shell_based(
     # roots = roots.reshape((res, res, 3))
     # dirs = dirs.reshape((res, res, 3))
     start_time = time.time()
-    to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
-    all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
-    while to_check.any():
-        t0 = time.time()
-        hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-            roots[to_check], dirs[to_check], stream_compaction=True
-        )
-        t1 = time.time()
-        print("ray-mesh intersection calc time: ", t1 - t0)
-        to_check[to_check.clone()] = hit
-        if not to_check.any():
-            break
-        # roots[to_check] = location + delta * dirs[to_check]
-        roots[to_check] = location
-        t2 = time.time()
-        print("pre NN query time: ", t2 - t1)
-        print(to_check.sum())
-        true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
-        t3 = time.time()
-        print("NN query time: ", t3 - t2)
-        all_true_hit[to_check] = true_hit
-        to_check[to_check.clone()] = ~true_hit
-        t4 = time.time()
-        roots[to_check] = roots[to_check] + delta * dirs[to_check]
-        true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
-        all_true_hit[to_check] = true_hit
-        to_check[to_check.clone()] = ~true_hit
-        print("post NN query time: ", t4 - t3)
+    # to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
+    # all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
+    # while to_check.any():
+    #     t0 = time.time()
+    #     hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+    #         roots[to_check], dirs[to_check], stream_compaction=True
+    #     )
+    #     t1 = time.time()
+    #     print("ray-mesh intersection calc time: ", t1 - t0)
+    #     to_check[to_check.clone()] = hit
+    #     if not to_check.any():
+    #         break
+    #     # roots[to_check] = location + delta * dirs[to_check]
+    #     roots[to_check] = location
+    #     t2 = time.time()
+    #     print("pre NN query time: ", t2 - t1)
+    #     print(to_check.sum())
+    #     true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
+    #     t3 = time.time()
+    #     print("NN query time: ", t3 - t2)
+    #     all_true_hit[to_check] = true_hit
+    #     to_check[to_check.clone()] = ~true_hit
+    #     t4 = time.time()
+    #     roots[to_check] = roots[to_check] + delta * dirs[to_check]
+    #     true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
+    #     all_true_hit[to_check] = true_hit
+    #     to_check[to_check.clone()] = ~true_hit
+    #     print("post NN query time: ", t4 - t3)
+    all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+        roots, dirs, stream_compaction=True
+    )
+    roots[all_true_hit] = location
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
     end_time = time.time()

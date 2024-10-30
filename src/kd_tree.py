@@ -1,12 +1,14 @@
 import os.path
 
-
+import itertools
 from functools import partial
 import math
 import random
 
 import numpy as np
 from functorch import vmap
+from triton.language import dtype
+
 import utils
 from bucketing import *
 import implicit_function
@@ -28,6 +30,136 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_printoptions(threshold=6)
 DEBUG_NONUNIFORM_KDTREE = False
+
+
+def planes_intersect_cubes(normals, offsets, lowers, uppers):
+    # normals: Tensor of shape (n, 3) where n is the number of planes
+    # offsets: Tensor of shape (n,)
+    # lowers: Tensor of shape (n, 3) where n is the number of cubes
+    # uppers: Tensor of shape (n, 3)
+
+    # Create all 8 vertices for each cube
+    x_min, y_min, z_min = lowers.T
+    x_max, y_max, z_max = uppers.T
+
+    vertices = torch.stack([
+        torch.stack((x_min, y_min, z_min), dim=-1),
+        torch.stack((x_min, y_min, z_max), dim=-1),
+        torch.stack((x_min, y_max, z_min), dim=-1),
+        torch.stack((x_min, y_max, z_max), dim=-1),
+        torch.stack((x_max, y_min, z_min), dim=-1),
+        torch.stack((x_max, y_min, z_max), dim=-1),
+        torch.stack((x_max, y_max, z_min), dim=-1),
+        torch.stack((x_max, y_max, z_max), dim=-1)
+    ], dim=1)  # Shape: (n, 8, 3)
+
+    # Compute the dot products for each vertex with the corresponding plane normal
+    # Resulting shape: (n, 8)
+    dots = torch.matmul(vertices, normals.unsqueeze(-1)).squeeze(-1) + offsets.unsqueeze(-1)
+
+    # Check if the vertices for each cube have different signs when plugged into plane equations
+    signs = (dots > 0).int()
+
+    # Check if each cube has both positive and negative signs for its plane, indicating intersection
+    intersects = (signs.min(dim=-1).values < 1) & (signs.max(dim=-1).values > 0)
+
+    return intersects  # Shape: (n,)
+
+def get_distance(x_L, x_U, n_lower, d_lower, n_upper, d_upper):
+    r"""
+    x_L: (batch_size, input_size)
+    x_U: (batch_size, input_size)
+
+    n_lower (n_upper): (batch_size, 3, 1)
+    d_lower (d_upper): (batch_size, 1)
+
+    plane equation: n[0]*x + n[1]*y + n[2]*z + d = 0
+    """
+    device = x_L.device
+    ndim = x_L.shape[-1]
+
+    # Create indices
+    # indices:
+    # [[1, 1],
+    #  [1, 2],
+    #  [2, 1],
+    #  [2, 2]]
+
+    # all_indices (batch_size, 2^(input_size-1)*input_size, input_size):
+    # [[0, 1, 1],
+    #  [0, 1, 2],
+    #  [0, 2, 1],
+    #  [0, 2, 2],
+    #  [1, 0, 1],
+    #  [1, 0, 2],
+    #  ...
+    #  [2, 2, 0]] (repeat batch_size times)
+    # 2^(input_size-1)*input_size is the number of edges
+    binary_numbers = [list(map(int, bits)) for bits in itertools.product('12', repeat=ndim - 1)]
+    indices = torch.tensor(binary_numbers, device=device)
+    indices_with_zeros = []
+    for i in range(ndim):
+        zeros_column = torch.zeros((2 ** (ndim - 1), 1), dtype=int, device=device)
+        new_matrix = torch.cat((indices[:, :i], zeros_column, indices[:, i:]), dim=1)
+        indices_with_zeros.append(new_matrix)
+    all_indices = torch.cat(indices_with_zeros, dim=0)
+    all_indices = all_indices.unsqueeze(0).repeat(x_L.shape[0], 1, 1)
+
+    # input_domain (batch_size, 3, input_size):
+    # [[0,   0,   0  ],
+    #  [x_l, y_l, z_l],
+    #  [x_u, y_u, z_u]]
+    input_domain = torch.stack((torch.zeros_like(x_L), x_L, x_U), dim=1)
+
+    # Two end points for each edge (batch_size, 2^(input_size-1)*input_size, 2)
+    bound_to_check_in_box = torch.zeros(*all_indices.shape[:2], 2, device=device)
+    index_to_check_in_box = (all_indices == 0).nonzero()[:, 2].reshape(bound_to_check_in_box.shape[0], -1)
+    bound_to_check_in_box[:, :, 0] = torch.gather(x_L, dim=1, index=index_to_check_in_box)
+    bound_to_check_in_box[:, :, 1] = torch.gather(x_U, dim=1, index=index_to_check_in_box)
+
+    # All vertices of the box (batch_size, 2^input_size, input_size)
+    binary_numbers = [list(map(int, bits)) for bits in itertools.product('12', repeat=ndim)]
+    vertices_indices = torch.tensor(binary_numbers, device=device).unsqueeze(0).repeat(x_L.shape[0], 1, 1)
+    all_vertices = torch.gather(input_domain, dim=1, index=vertices_indices)
+
+    def _get_hook(n, d):
+        # temp_cofficients[b][i][j] = input_domain[b][all_indices[b][i][j]][j]
+        temp_edge_intersections = torch.gather(input_domain, dim=1, index=all_indices)
+        temp_edge = torch.zeros_like(temp_edge_intersections, device=temp_edge_intersections.device)
+
+        denominators = n.repeat(1, 1, 2 ** (ndim - 1)).flatten(1)
+        intersections = -(torch.bmm(temp_edge_intersections, n).squeeze(-1) + d) / denominators
+        temp_edge[all_indices == 0] = intersections.flatten()
+        edge_intersections = temp_edge_intersections + temp_edge
+
+        valid_intersections = torch.logical_and(intersections >= bound_to_check_in_box[:, :, 0],
+                                                intersections <= bound_to_check_in_box[:, :, 1])
+
+        average_intersections = torch.einsum('bij, bi -> bij', edge_intersections, valid_intersections).mean(dim=1)
+
+        # Now compute the distances from vertices to planes
+        # distance = (ax + by + cz + d) / sqrt(a^2 + b^2 + c^2) (signed)
+        all_distances = (torch.bmm(all_vertices, n).squeeze(-1) + d) / torch.norm(n, dim=1)
+
+        completely_outside = torch.logical_or(torch.all(all_distances >= 0, dim=1),
+                                              torch.all(all_distances <= 0, dim=1))
+
+        shortest_distance, shortest_index = torch.min(torch.abs(all_distances), dim=1)
+
+        # x_h = x - (ax + by + cz + d)/(a^2 + b^2 + c^2) * a
+        feet_perpendicular = all_vertices - (all_distances / torch.norm(n, dim=1)).unsqueeze(-1) * n.unsqueeze(
+            1).squeeze(-1)
+        shortest_feet = feet_perpendicular[torch.arange(feet_perpendicular.shape[0]), shortest_index]
+
+        chosen_feet = torch.einsum('bj, b -> bj', shortest_feet, completely_outside)
+
+        hook = average_intersections + chosen_feet
+        return hook
+
+    hook_lower = _get_hook(n_lower, d_lower)
+    hook_upper = _get_hook(n_upper, d_upper)
+    domain_loss = torch.norm(hook_lower - hook_upper, dim=1)
+    return domain_loss
 
 
 def split_generator(generator, num_splits=2):
@@ -286,6 +418,248 @@ def construct_uniform_unknown_levelset_tree(func, params, lower, upper, node_ter
 
 
     return out_dict
+
+def construct_adaptive_tree_iter(
+        func, params, continue_splitting,
+        node_valid, node_lower, node_upper,
+        ib, out_valid, out_lower, out_upper, out_n_valid,
+        finished_interior_lower, finished_interior_upper, N_finished_interior,
+        finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
+        offset=0.
+        ):
+    N_in = node_lower.shape[0]
+    d = node_lower.shape[-1]
+
+    assert isinstance(func, CrownImplicitFunction)
+
+    def eval_batch_of_nodes(lower, upper):
+        node_type, crown_ret = func.classify_box(params, lower, upper, offset=offset)
+        node_type = node_type.squeeze(-1)
+        worst_dim = torch.argmax(upper - lower, dim=-1)
+        # to_check = ((~planes_intersect_cubes(crown_ret['lA'].squeeze(1), crown_ret['lbias'].squeeze(1), lower, upper)) |
+        #             (~planes_intersect_cubes(crown_ret['uA'].squeeze(1), crown_ret['ubias'].squeeze(1), lower, upper)))
+        to_check = get_distance(lower, upper, crown_ret['lA'].transpose(1, 2), crown_ret['lbias'], crown_ret['uA'].transpose(1, 2), crown_ret['ubias']) > 0.002
+        to_check = to_check | (~planes_intersect_cubes(crown_ret['lA'].squeeze(1), crown_ret['lbias'].squeeze(1), lower, upper))
+        to_check = to_check | (~planes_intersect_cubes(crown_ret['uA'].squeeze(1), crown_ret['ubias'].squeeze(1), lower, upper))
+        return node_type, worst_dim, to_check
+
+    batch_size_per_iteration = 256
+    total_samples = node_lower.shape[0]
+    node_types = torch.empty((total_samples,))
+    node_split_dim = torch.empty((total_samples,))
+    node_to_check = torch.empty((total_samples,), dtype=torch.bool)
+    for start_idx in range(0, total_samples, batch_size_per_iteration):
+        end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+        node_types[start_idx:end_idx], node_split_dim[start_idx:end_idx], node_to_check[start_idx:end_idx] \
+            = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx])
+
+    # if requested, write out interior nodes
+    if finished_interior_lower is not None:
+        out_mask = torch.logical_and(node_valid, node_types == SIGN_NEGATIVE) | utils.logical_and_all([node_valid, node_types == SIGN_UNKNOWN, ~node_to_check])
+        out_inds = utils.enumerate_mask(out_mask) + N_finished_interior
+        mask = (- 1 < out_inds) & (out_inds < finished_interior_lower.shape[0])
+        out_inds = out_inds[mask]
+        node_interior_lower = node_lower[mask].float()
+        node_interior_upper = node_upper[mask].float()
+        finished_interior_lower[out_inds, :] = node_interior_lower
+        finished_interior_upper[out_inds, :] = node_interior_upper
+        N_finished_interior += torch.sum(out_mask)
+
+    # if requested, write out exterior nodes
+    if finished_exterior_lower is not None:
+        out_mask = torch.logical_and(node_valid, node_types == SIGN_POSITIVE)
+        out_inds = utils.enumerate_mask(out_mask) + N_finished_exterior
+        mask = (- 1 < out_inds) & (out_inds < finished_exterior_lower.shape[0])
+        out_inds = out_inds[mask]
+        node_exterior_lower = node_lower[mask].float()
+        node_exterior_upper = node_upper[mask].float()
+        finished_exterior_lower[out_inds, :] = node_exterior_lower
+        finished_exterior_upper[out_inds, :] = node_exterior_upper
+        N_finished_exterior += torch.sum(out_mask)
+
+
+    # split the unknown nodes to children
+    # (if split_children is False this will just not create any children at all)
+    split_mask = utils.logical_and_all([node_valid, node_types == SIGN_UNKNOWN, node_to_check])
+    N_new = torch.sum(split_mask)  # each split leads to two children (for a total of 2*N_new)
+    ## now actually build the child nodes
+    continue_splitting = split_mask.any()
+    if split_mask.any():
+        # extents of the new child nodes along each split dimension
+        new_lower = node_lower
+        new_upper = node_upper
+        new_mid = 0.5 * (new_lower + new_upper)
+        new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
+        newA_lower = new_lower
+        newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
+        newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
+        newB_upper = new_upper
+
+        # concatenate the new children to form output arrays
+        node_valid = torch.cat((split_mask, split_mask))
+        node_lower = torch.cat((newA_lower, newB_lower))
+        node_upper = torch.cat((newA_upper, newB_upper))
+        new_N_valid = 2 * N_new
+        outL = out_valid.shape[1]
+        # print(node_valid.sum(), node_valid.shape)
+
+    else:
+        node_valid = torch.logical_and(node_valid, node_types == SIGN_UNKNOWN)
+        new_N_valid = torch.sum(node_valid)
+        outL = node_valid.shape[0]
+
+    # write the result in to arrays
+    # utils.printarr(out_valid, node_valid, out_lower, node_lower, out_upper, node_upper)
+    out_valid[ib, :outL] = node_valid
+    out_lower[ib, :outL, :] = node_lower
+    out_upper[ib, :outL, :] = node_upper
+    out_n_valid = out_n_valid + new_N_valid
+
+    return (out_valid, out_lower, out_upper, out_n_valid, \
+        finished_interior_lower, finished_interior_upper, N_finished_interior, \
+        finished_exterior_lower, finished_exterior_upper, N_finished_exterior, \
+            continue_splitting)
+
+def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=None, split_depth=None,
+                                            compress_after=False, with_childern=False, with_interior_nodes=False,
+                                            with_exterior_nodes=False, offset=0., batch_process_size=2048):
+    # Validate input
+    # ASSUMPTION: all of our bucket sizes larger than batch_process_size must be divisible by batch_process_size
+    for b in bucket_sizes:
+        if b > batch_process_size and (b // batch_process_size) * batch_process_size != b:
+            raise ValueError(
+                f"batch_process_size must be a factor of our bucket sizes, is not a factor of {b} (try a power of 2)")
+    if node_terminate_thresh is None and split_depth is None:
+        raise ValueError("must specify at least one of node_terminate_thresh or split_depth as a terminating condition")
+    if node_terminate_thresh is None:
+        node_terminate_thresh = 9999999999
+
+    d = lower.shape[-1]
+    B = batch_process_size
+
+    print(f"\n == CONSTRUCTING LEVELSET TREE")
+
+    # Initialize data
+    node_lower = lower[None, :]
+    node_upper = upper[None, :]
+    node_valid = torch.ones((1,), dtype=torch.bool)
+    N_curr_nodes = 1
+    finished_interior_lower = torch.zeros((batch_process_size, 3)) if with_interior_nodes else None
+    finished_interior_upper = torch.zeros((batch_process_size, 3)) if with_interior_nodes else None
+    N_finished_interior = 0
+    finished_exterior_lower = torch.zeros((batch_process_size, 3)) if with_exterior_nodes else None
+    finished_exterior_upper = torch.zeros((batch_process_size, 3)) if with_exterior_nodes else None
+    N_finished_exterior = 0
+    N_func_evals = 0
+
+    ## Recursively build the tree
+    i_split = 0
+    n_splits = 99999999 if split_depth is None else split_depth + 1  # 1 extra because last round doesn't split
+    do_continue_splitting = True
+    while do_continue_splitting:
+        if i_split > 36:
+            break
+        # Reshape in to batches of size <= B
+        init_bucket_size = node_lower.shape[0]
+        this_b = min(B, init_bucket_size)
+        N_func_evals += node_lower.shape[0]
+        # utils.printarr(node_valid, node_lower, node_upper)
+        node_valid = torch.reshape(node_valid, (-1, this_b))
+        node_lower = torch.reshape(node_lower, (-1, this_b, d))
+        node_upper = torch.reshape(node_upper, (-1, this_b, d))
+        nb = node_lower.shape[0]
+        n_occ = int(math.ceil(
+            N_curr_nodes / this_b))  # only the batches which are occupied (since valid nodes are densely packed at the start)
+
+        # Detect when to quit. On the last iteration we need to not do any more splitting, but still process existing nodes one last time
+        quit_next = not do_continue_splitting
+
+        print(
+            f"Adaptive levelset tree. iter: {i_split}  N_curr_nodes: {N_curr_nodes}  bucket size: {init_bucket_size}  batch size: {this_b}  number of batches: {nb}  quit next: {quit_next}  do_continue_splitting: {do_continue_splitting}")
+        # enlarge the finished nodes if needed
+        if with_interior_nodes:
+            while finished_interior_lower.shape[0] - N_finished_interior < N_curr_nodes:
+                finished_interior_lower = utils.resize_array_axis(finished_interior_lower,
+                                                                  2 * finished_interior_lower.shape[0])
+                finished_interior_upper = utils.resize_array_axis(finished_interior_upper,
+                                                                  2 * finished_interior_upper.shape[0])
+        if with_exterior_nodes:
+            while finished_exterior_lower.shape[0] - N_finished_exterior < N_curr_nodes:
+                finished_exterior_lower = utils.resize_array_axis(finished_exterior_lower,
+                                                                  2 * finished_exterior_lower.shape[0])
+                finished_exterior_upper = utils.resize_array_axis(finished_exterior_upper,
+                                                                  2 * finished_exterior_upper.shape[0])
+
+        # map over the batches
+        out_valid = torch.zeros((nb, 2 * this_b), dtype=torch.bool)
+        out_lower = torch.zeros((nb, 2 * this_b, 3))
+        out_upper = torch.zeros((nb, 2 * this_b, 3))
+        total_n_valid = 0
+        for ib in range(n_occ):
+            if i_split <= split_depth:
+                (out_valid, out_lower, out_upper, total_n_valid,
+                    finished_interior_lower, finished_interior_upper, N_finished_interior,
+                    finished_exterior_lower, finished_exterior_upper, N_finished_exterior) \
+                    = \
+                    construct_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
+                                                 node_valid[ib, ...], node_lower[ib, ...], node_upper[ib, ...],
+                                                 ib, out_valid, out_lower, out_upper, total_n_valid,
+                                                 finished_interior_lower, finished_interior_upper, N_finished_interior,
+                                                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
+                                                 offset=offset)
+            else:
+                (out_valid, out_lower, out_upper, total_n_valid,
+                 finished_interior_lower, finished_interior_upper, N_finished_interior,
+                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
+                 do_continue_splitting) \
+                    = \
+                    construct_adaptive_tree_iter(func, params, do_continue_splitting,
+                                                 node_valid[ib, ...], node_lower[ib, ...], node_upper[ib, ...],
+                                                 ib, out_valid, out_lower, out_upper, total_n_valid,
+                                                 finished_interior_lower, finished_interior_upper, N_finished_interior,
+                                                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
+                                                 offset=offset)
+
+        node_valid = out_valid
+        node_lower = out_lower
+        node_upper = out_upper
+        N_curr_nodes = total_n_valid
+
+        # flatten back out
+        node_valid = torch.reshape(node_valid, (-1,))
+        node_lower = torch.reshape(node_lower, (-1, d))
+
+
+        node_upper = torch.reshape(node_upper, (-1, d))
+
+        # Compactify and rebucket arrays
+        target_bucket_size = get_next_bucket_size(total_n_valid)
+        node_valid, N_curr_nodes, node_lower, node_upper = compactify_and_rebucket_arrays(node_valid,
+                                                                                          target_bucket_size,
+                                                                                          node_lower, node_upper)
+        i_split += 1
+
+
+    # pack the output in to a dict to support optional outputs
+    out_dict = {
+        'unknown_node_valid': node_valid,
+        'unknown_node_lower': node_lower,
+        'unknown_node_upper': node_upper,
+    }
+
+    if with_interior_nodes:
+        out_dict['interior_node_valid'] = torch.arange(finished_interior_lower.shape[0]) < N_finished_interior
+        out_dict['interior_node_lower'] = finished_interior_lower
+        out_dict['interior_node_upper'] = finished_interior_upper
+
+    if with_exterior_nodes:
+        out_dict['exterior_node_valid'] = torch.arange(finished_exterior_lower.shape[0]) < N_finished_exterior
+        out_dict['exterior_node_lower'] = finished_exterior_lower
+        out_dict['exterior_node_upper'] = finished_exterior_upper
+
+
+    return out_dict
+
 
 
 def construct_full_uniform_unknown_levelset_tree_iter(

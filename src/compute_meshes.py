@@ -54,6 +54,7 @@ def main():
             lower: torch.Tensor,
             upper: torch.Tensor):
 
+        start_time = time.time()
 
         tri_faces = []
         tri_vertices = []
@@ -74,6 +75,8 @@ def main():
 
         tri_faces = np.concatenate(tri_faces, axis=0)
         tri_vertices = np.concatenate(tri_vertices, axis=0)
+        end_time = time.time()
+        print("total time cost: ", end_time - start_time)
 
         mesh = {}
         mesh['vertices'] = tri_vertices
@@ -82,7 +85,6 @@ def main():
         np.savez(args.save_to, **mesh)
         trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
         trimesh_mesh.show()
-
 
     node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
 
