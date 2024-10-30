@@ -83,8 +83,8 @@ def main():
         mesh['faces'] = tri_faces
 
         np.savez(args.save_to, **mesh)
-        trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
-        trimesh_mesh.show()
+        # trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+        # trimesh_mesh.show()
 
     node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
 

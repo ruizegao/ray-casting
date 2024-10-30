@@ -1,11 +1,4 @@
 #python src/compute_bounds.py sample_inputs/fox.npz trees/tree_fox_30.npz --split_depth 30
-python src/compute_bounds.py sample_inputs/hammer.npz trees/tree_hammer_30.npz --split_depth 30
-python src/compute_bounds.py sample_inputs/birdcage_occ.npz trees/tree_birdcage_30.npz --split_depth 30
-
-python src/compute_bounds.py sample_inputs/fox.npz trees/tree_fox_27.npz --split_depth 27
-python src/compute_bounds.py sample_inputs/hammer.npz trees/tree_hammer_27.npz --split_depth 27
-python src/compute_bounds.py sample_inputs/birdcage_occ.npz trees/tree_birdcage_27.npz --split_depth 27
-
-#python src/compute_bounds.py sample_inputs/fox.npz trees/tree_fox_24.npz --split_depth 24
-#python src/compute_bounds.py sample_inputs/hammer.npz trees/tree_hammer_24.npz --split_depth 24
-#python src/compute_bounds.py sample_inputs/birdcage_occ.npz trees/tree_birdcage_24.npz --split_depth 24
+python src/compute_bounds.py sample_inputs/fox.npz trees/tree_fox_adaptive.npz
+python src/compute_meshes.py trees/tree_fox_adaptive.npz meshes/mesh_fox_adaptive.npz
+python src/mesh_raycasting.py sample_inputs/fox.npz meshes/mesh_fox_adaptive.npz --image_write_path images/img_fox_adaptive.png

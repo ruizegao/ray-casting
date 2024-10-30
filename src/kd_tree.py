@@ -504,7 +504,8 @@ def construct_adaptive_tree_iter(
         # print(node_valid.sum(), node_valid.shape)
 
     else:
-        node_valid = torch.logical_and(node_valid, node_types == SIGN_UNKNOWN)
+        # node_valid = torch.logical_and(node_valid, node_types == SIGN_UNKNOWN)
+        node_valid = utils.logical_and_all([node_valid, node_types == SIGN_UNKNOWN, node_to_check])
         new_N_valid = torch.sum(node_valid)
         outL = node_valid.shape[0]
 
