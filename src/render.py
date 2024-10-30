@@ -17,7 +17,7 @@ import affine
 import trimesh
 import matplotlib.pyplot as plt
 import sys, os, time, math
-os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
+# os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 
 from triro.ray.ray_optix import RayMeshIntersector
 

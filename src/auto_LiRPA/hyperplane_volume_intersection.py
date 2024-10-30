@@ -6,6 +6,7 @@ from functools import partial
 from numpy import ndarray
 from scipy.spatial import Delaunay as SciDelaunay
 from scipy.spatial import ConvexHull
+from enum import Enum
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
@@ -20,6 +21,13 @@ set_t = {
     "device": torch.device("cuda"),
 }
 out_path = "/home/jorgejc2/Documents/Research/ray-casting/plane_training/"
+
+class VolumeCalculationMethod(Enum):
+    SinglePlaneSingleVolume = 1
+    SinglePlaneBatchVolume = 2
+    MultiPlaneSingleVolume = 3
+    MultiPlaneBatchVolume = 4
+
 
 def to_numpy(tensor: Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
@@ -382,6 +390,161 @@ def cube_intersection_with_plane(
 
     return intersection_volume
 
+def cube_intersection_with_plane_with_constraints(
+        x_L: Tensor,
+        x_U: Tensor,
+        normal: Tensor,
+        D: float,
+        iter: int,
+        plane_constraints: list[Tuple[Tensor, float]],
+        lower_bound = True,
+        show_plots=True,
+        verbose=False,
+        visualize=False
+) -> Tensor:
+    """
+
+    :param x_L:                 Input lower bounds
+    :param x_U:                 Input upper bounds
+    :param normal:              Plane normal coefficients
+    :param D:                   Plane offset
+    :param iter:
+    :param plane_constraints:
+    :param lower_bound:
+    :param show_plots:          Displays and saves the plots, otherwise just saves the plots.
+    :param verbose:             Print debugging logs
+    :param visualize:           Creates the Matplotlib figures
+    :return:
+    """
+    # Create 3D plot
+    ax1, ax2, ax3 = [None] * 3
+    if visualize:
+        fig = plt.figure(figsize=(12, 8))
+        ax1 = fig.add_subplot(131, projection='3d')
+        ax2 = fig.add_subplot(132, projection='3d')
+        ax3 = fig.add_subplot(133, projection='3d')
+
+    # Define cube vertices and faces
+    vertices = get_cube_vertices(x_L, x_U)
+    edge_masks = generate_cube_edges()
+    edges = vertices[edge_masks, :]
+    faces = unit_cube_faces()
+
+    # respective numpy vectors
+    vertices_np = to_numpy(vertices)
+
+    if verbose:
+        print(f"Vertices (num {len(vertices)}): \n{to_numpy(vertices)}")
+        print(f"Edges (num {len(edges)}): \n{edges}")
+
+    def _get_edges_from_hull(_points: ndarray) -> Tuple[ndarray, ndarray, ndarray, ndarray]:
+        curr_hull = ConvexHull(_points)
+        _edge_idx = set()
+        for simplex in curr_hull.simplices:
+            # Each simplex has three edges, we add each edge as a sorted tuple to the set
+            _edge_idx.add(tuple(sorted([simplex[0], simplex[1]])))
+            _edge_idx.add(tuple(sorted([simplex[1], simplex[2]])))
+            _edge_idx.add(tuple(sorted([simplex[0], simplex[2]])))
+
+        _edge_idx = np.array(list(_edge_idx))
+        _edges = _points[_edge_idx]  # get edges
+        _vertices = _points[curr_hull.vertices]  # filter out interior points
+        return _edge_idx, _edges, _vertices, _points
+
+    # initialize the hull to be the bounding box
+    hull_ret = _get_edges_from_hull(vertices_np)
+    [curr_edges_idx_np, curr_edges_np, curr_vertices_np, curr_points_np] = hull_ret
+    [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+    for c_normal, c_D in plane_constraints:
+        [A, B, C] = c_normal
+        c_ret = calculate_intersection(curr_edges_torch, c_normal, c_D, verbose)
+        [_, c_i_mask, c_inter_pts] = c_ret
+        distances = A * curr_vertices_torch[:, 0] + B * curr_vertices_torch[:, 1] + C * curr_vertices_torch[:, 2] + c_D
+        # Separate vertices above the plane
+        if not lower_bound:
+            above_vertices = curr_vertices_torch[distances >= 0]
+        else:
+            above_vertices = curr_vertices_torch[distances <= 0]
+        total_vertices = to_numpy(torch.vstack((above_vertices, c_inter_pts[c_i_mask])))
+        hull_ret = _get_edges_from_hull(total_vertices)
+        [curr_edges_idx_np, curr_edges_np, curr_vertices_np, curr_points_np] = hull_ret
+        [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+
+    # display the polyhedron (3D box with planar constraints)
+    if visualize or verbose:
+        print(f"curr edges ({curr_edges_np.shape}): \n{curr_edges_np}")
+        print(f"curr vertices ({curr_vertices_np.shape}): \n{curr_vertices_np}")
+
+        # Plot vertices
+        ax3.scatter(curr_vertices_np[:, 0], curr_vertices_np[:, 1], curr_vertices_np[:, 2], c='r', marker='o')
+
+        # Plot edges
+        for edge in curr_edges_idx_np:
+            i1, i2 = edge
+            ax3.plot([curr_points_np[i1, 0], curr_points_np[i2, 0]],
+                    [curr_points_np[i1, 1], curr_points_np[i2, 1]],
+                    [curr_points_np[i1, 2], curr_points_np[i2, 2]], 'b-')
+
+        # Label vertices
+        for i, point in enumerate(curr_vertices_np):
+            ax3.text(point[0], point[1], point[2], str(i))
+
+        ax3.set_title("Constrained Polyhedron")
+
+    # Now calculate the intersection between the polyhedron and the optimizable plane as well as the volume
+    lambdas, intersection_mask, intersection_pts = calculate_intersection(curr_edges_torch, normal, D, verbose)
+    intersection_volume = calculate_volume_above_plane(curr_vertices_torch, intersection_pts, intersection_mask,
+                                                       normal, D, lower_bound, ax2, verbose)
+    if verbose:
+        print(f"Volume intersection: {to_numpy(intersection_volume)}")
+        print(f"Total volume: {(x_U - x_L).prod()}")
+
+    if visualize:
+
+        # Plot vertices
+        ax1.scatter(curr_vertices_np[:, 0], curr_vertices_np[:, 1], curr_vertices_np[:, 2], marker='o')
+
+        # Plot edges
+        for edge in curr_edges_idx_np:
+            i1, i2 = edge
+            ax1.plot([curr_points_np[i1, 0], curr_points_np[i2, 0]],
+                     [curr_points_np[i1, 1], curr_points_np[i2, 1]],
+                     [curr_points_np[i1, 2], curr_points_np[i2, 2]], 'b-')
+
+        # Label vertices
+        for i, point in enumerate(curr_vertices_np):
+            ax1.text(point[0], point[1], point[2], str(i))
+
+        # Plot the cube
+        plot_cube(ax1, to_numpy(vertices), faces)
+
+        # Plot the intersecting plane
+        plot_plane(ax1, to_numpy(normal), D, [0, 1], [0, 1])
+
+        # # Plot the intersection of the plane with the cube
+        plot_intersection(ax1, to_numpy(vertices), to_numpy(normal), D)
+
+        # Label the axes
+        x_L_np = to_numpy(x_L)
+        x_U_np = to_numpy(x_U)
+        ax1.set_xlim([x_L_np[0], x_U_np[0]])
+        ax1.set_ylim([x_L_np[1], x_U_np[1]])
+        ax1.set_zlim([x_L_np[2], x_U_np[2]])
+        ax1.set_xlabel('X')
+        ax1.set_ylabel('Y')
+        ax1.set_zlabel('Z')
+
+        ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {iter})")
+
+        ax1.legend()
+        plt.savefig(out_path + f"frame_{iter}.png")
+        if show_plots:
+            plt.show()
+        else:
+            plt.close()
+
+    return intersection_volume
+
 ### batch algorithms that cannot be simply vectorized using vmap
 
 def batch_cube_intersection_with_plane(
@@ -661,7 +824,7 @@ def main():
     # plane equation <normal, x> + D = 0
     normal = torch.tensor([1,1,1], requires_grad=True, **set_t)
     D = -1.5
-    lower_bound = False
+    lower_bound = True
 
     # input bounding box
     x_L = torch.zeros(3, **set_t)
@@ -713,12 +876,90 @@ def main():
     plt.savefig(out_path + "training_summary.png")
     plt.show()
 
+def multiplane_main():
+    """
+        Example usage of the 'cube_interesction_with_plane' method.
+        """
+    # plane equation <normal, x> + D = 0
+    c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    c_D = -1.5
+    plane_constraints: list[tuple[Tensor, float]] = [
+        (c_normal, c_D)
+    ]
+    normal = torch.tensor([1, 1, 1], requires_grad=True, **set_t)
+    D = -1.5 - 1e-1
+
+    lower_bound = True
+
+    # input bounding box
+    x_L = torch.zeros(3, **set_t)
+    x_U = torch.ones(3, **set_t)
+
+    iters = 10
+    lr = 1e-1
+    opt = torch.optim.Adam([normal], lr=lr, maximize=False)
+    losses = np.zeros(iters)
+    normal_coeffs = np.zeros((iters, len(normal)))
+    for i in range(iters):
+        opt.zero_grad()
+        loss = cube_intersection_with_plane_with_constraints(
+            x_L, x_U, normal, D, i, plane_constraints, lower_bound, True, True, True)
+        losses[i] = loss.item()
+        normal_coeffs[i] = to_numpy(normal)
+        loss.backward()
+        opt.step()
+
+    print(f"Losses (volume): \n{losses}")
+
+    ## turns plots into a video clip
+    with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
+        for i in range(iters):
+            image = imageio.imread(out_path + f"frame_{i}.png")
+            writer.append_data(image)
+
+    plt.figure(figsize=(12, 8))
+    plt.subplot(2, 2, 1)
+    plt.plot(losses)
+    plt.title("Losses Over Iterations")
+    plt.xlabel("Iteration")
+    plt.ylabel("Loss (Volume)")
+    plt.grid()
+    plt.subplot(2, 2, 2)
+    plt.plot(normal_coeffs[:, 0])
+    plt.title("Normal Coefficient a")
+    plt.xlabel("Iteration")
+    plt.grid()
+    plt.subplot(2, 2, 3)
+    plt.plot(normal_coeffs[:, 1])
+    plt.title("Normal Coefficient b")
+    plt.xlabel("Iteration")
+    plt.grid()
+    plt.subplot(2, 2, 4)
+    plt.plot(normal_coeffs[:, 2])
+    plt.title("Normal Coefficient c")
+    plt.xlabel("Iteration")
+    plt.grid()
+    plt.savefig(out_path + "training_summary.png")
+    plt.show()
+
+def batched_multiplane_main(batches: int):
+
+    pass
+
 
 if __name__ == '__main__':
-    num_batches = 1
-    if num_batches == 1:
+    num_batches = 3  # only used for batch methods
+    method = VolumeCalculationMethod.MultiPlaneSingleVolume  # method to run
+    # method = VolumeCalculationMethod.SinglePlaneSingleVolume
+
+
+    if method == VolumeCalculationMethod.SinglePlaneSingleVolume:
         main()
-    elif num_batches > 1:
+    elif method == VolumeCalculationMethod.SinglePlaneBatchVolume:
         batched_main(num_batches)
+    elif method == VolumeCalculationMethod.MultiPlaneSingleVolume:
+        multiplane_main()
+    elif method == VolumeCalculationMethod.MultiPlaneBatchVolume:
+        batched_multiplane_main(num_batches)
     else:
-        raise Exception("Please enter a non-negative number of batches.")
+        raise Exception("Unknown volume calculation method")
