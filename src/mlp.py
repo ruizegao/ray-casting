@@ -1,6 +1,10 @@
 from functools import partial
 
 import torch
+import torch.nn.init as torch_init
+from torch import Tensor
+import jax
+import jax.random as jax_random
 import numpy as np
 import functorch
 # Imports from this project
@@ -13,9 +17,20 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
+# def split_generator(generator, num_splits=2):
+#     return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
 
 def split_generator(generator, num_splits=2):
-    return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
+    # Check if we're working with a PyTorch or JAX generator
+    if isinstance(generator, torch.Generator):
+        # PyTorch generator split using manual_seed
+        device = generator.device
+        return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
+    elif isinstance(generator, jax.Array):
+        # JAX generator split using jax.random.split
+        return jax_random.split(generator, num_splits)
+    else:
+        raise TypeError("Unsupported generator type. Must be a torch.Generator or jax.PRNGKey.")
 
 
 # ===== High-level flow
@@ -331,10 +346,14 @@ def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
 opt_params['dense'] = ['A', 'b']
 
 def default_dense(input, A, b):
-    A = torch.tensor(A, dtype=input[0].dtype, device=input[0].device)
+    if not isinstance(input, Tensor):
+        input = torch.tensor(input, device=device)
+    if not isinstance(A, Tensor):
+        A = torch.tensor(jax.device_get(A).copy(), dtype=input[0].dtype, device=input[0].device)
     out = torch.matmul(input, A)
     if b is not None:
-        b = torch.tensor(b, dtype=input[0].dtype, device=input[0].device)
+        if not isinstance(b, Tensor):
+            b = torch.tensor(jax.device_get(b).copy(), dtype=input[0].dtype, device=input[0].device)
         out += b
     return out
 apply_func['default']['dense'] = default_dense
@@ -343,13 +362,18 @@ def initialize_dense(rngkey=None, A=None, b=None):
     if isinstance(A, tuple): # if A needs initialization, it is a tuple giving the size
         check_rng_key(rngkey)
         subkey, rngkey = split_generator(rngkey)
-        initF = torch.nn.functional.initializers.glorot_normal()
+        # initF = torch.nn.functional.initializers.glorot_normal()  # deprecated
+        initF = jax.nn.initializers.glorot_normal()
         A = initF(subkey, A)
+        # A = torch.from_numpy(jax.device_get(A).copy()).to(device=device)
     if isinstance(b, tuple): # if b needs initialization, it is a tuple giving the size
         check_rng_key(rngkey)
         subkey, rngkey = split_generator(rngkey)
-        initF = torch.nn.functional.initializers.normal()
+        # initF = torch.nn.functional.initializers.normal()  # deprecated
+        initF = jax.nn.initializers.normal()
         b = initF(subkey, b)
+        # b = torch.from_numpy(jax.device_get(b).copy()).to(device=device)
+
 
     out_dict = { 'A' : A }
     if b is not None:
