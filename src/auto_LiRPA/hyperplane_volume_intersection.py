@@ -505,10 +505,15 @@ def cube_intersection_with_plane_with_constraints(
     hull_ret = get_edges_from_hull(vertices_np)
     [curr_edges_idx_np, curr_edges_np, curr_vertices_np, curr_points_np] = hull_ret
     [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+    is_constrained = False  # initially assume that no constraint hyperplanes intersect the bbox
     for c_normal, c_D in plane_constraints:
         [A, B, C] = c_normal
         c_ret = calculate_intersection(curr_edges_torch, c_normal, c_D, verbose)
         [_, c_i_mask, c_inter_pts] = c_ret
+        if c_i_mask.to(dtype=int).sum() == 0:
+            continue
+
+        is_constrained = True
         distances = A * curr_vertices_torch[:, 0] + B * curr_vertices_torch[:, 1] + C * curr_vertices_torch[:, 2] + c_D
         # Separate vertices above the plane
         if not lower_bound:
@@ -539,7 +544,7 @@ def cube_intersection_with_plane_with_constraints(
         for i, point in enumerate(curr_vertices_np):
             ax3.text(point[0], point[1], point[2], str(i))
 
-        ax3.set_title("Constrained Polyhedron")
+        ax3.set_title(f"Input Polyhedron\nIs Constrained: {is_constrained}")
 
     # Now calculate the intersection between the polyhedron and the optimizable plane as well as the volume
     lambdas, intersection_mask, intersection_pts = calculate_intersection(curr_edges_torch, normal, D, verbose)
@@ -769,13 +774,15 @@ def batch_cube_intersection_with_plane_with_constraints(
         # initialize the hull to be the bounding box
         hull_ret = get_edges_from_hull(vertices_np)
         [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
-        # for c_normal, c_D in plane_constraints:
         for j in range(len(curr_plane_constraints)):
             c_normal = curr_plane_constraints[j, :3].flatten()
             c_D = curr_plane_constraints[j, 3]
             [A, B, C] = c_normal
             c_ret = calculate_intersection(curr_edges_torch, c_normal, c_D, verbose)
             [_, c_i_mask, c_inter_pts] = c_ret
+            if c_i_mask.to(dtype=int).sum() == 0:
+                continue
+
             distances = A * curr_vertices_torch[:, 0] + B * curr_vertices_torch[:, 1] + C * curr_vertices_torch[:, 2] + c_D
             # Separate vertices above the plane
             if not lower_bound:
@@ -995,10 +1002,22 @@ def multiplane_main():
         Example usage of the 'cube_intersection_with_plane_with_constraints' method.
     """
     # plane equation <normal, x> + D = 0
-    c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
-    c_D = -1.5
+
+    ## single constraint
+    # c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    # c_D = -1.5
+    # plane_constraints: list[tuple[Tensor, float]] = [
+    #     (c_normal, c_D)
+    # ]
+
+    ## two constraints
+    c_normal_one = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    c_D_one = -1.5
+    c_normal_two = torch.tensor([-0.15, 0.16, 0.9], requires_grad=False, **set_t)
+    c_D_two = -0.35
     plane_constraints: list[tuple[Tensor, float]] = [
-        (c_normal, c_D)
+        (c_normal_one, c_D_one),
+        (c_normal_two, c_D_two)
     ]
 
     # perturb the optimizable plane to prevent nan in gradient ascent
@@ -1065,14 +1084,23 @@ def batched_multiplane_main(batches: int):
     Example usage of the 'batch_cube_intersection_with_plane_with_constraints' method.
     """
     # plane equation <normal, x> + D = 0
-    c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
-    c_D = -1.5
-    plane_constraints = c_normal.reshape(1, 1, -1).repeat(batches, 1, 1)
-    c_D = torch.ones(batches, 1, 1, **set_t) * c_D
 
-    # finalize plane constraints to be (batches, num constraints, 3 + 1 where 3 are normal params and 1 for offset)
-    plane_constraints = torch.concatenate((plane_constraints, c_D), dim=2)
-    assert plane_constraints.shape == (batches, 1, 4), "Plane constraints is not formatted correctly"
+    ## single constraint
+    # c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    # c_D = -1.5
+    # plane_constraints = c_normal.reshape(1, 1, -1).repeat(batches, 1, 1)
+    # c_D = torch.ones(batches, 1, 1, **set_t) * c_D
+    # # finalize plane constraints to be (batches, num constraints, 3 + 1 where 3 are normal params and 1 for offset)
+    # plane_constraints = torch.concatenate((plane_constraints, c_D), dim=2)
+    # assert plane_constraints.shape == (batches, 1, 4), "Plane constraints is not formatted correctly"
+
+    ## two constraints
+    plane_constraints = torch.tensor(
+        [
+            [1, 1, 1, -1.5],
+            [-0.15, 0.16, 0.9, -0.35]
+        ], requires_grad=False, **set_t
+    ).repeat(batches, 1, 1)
 
     # perturb the optimizable plane to prevent nan in gradient ascent
     normal = torch.tensor([1 + 1e-6, 1 + 1e-5, 1 + 1e-4]*batches, **set_t).reshape(batches, 3)
@@ -1106,6 +1134,8 @@ def batched_multiplane_main(batches: int):
 if __name__ == '__main__':
     num_batches = 3  # only used for batch methods
     method = VolumeCalculationMethod.MultiPlaneBatchVolume  # method to run
+
+    print(f"Running program: {method.name}")
 
     if method == VolumeCalculationMethod.SinglePlaneSingleVolume:
         main()
