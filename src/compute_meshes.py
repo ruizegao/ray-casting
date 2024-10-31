@@ -4,7 +4,6 @@ import sys, os, time, math
 import time
 import argparse
 import warnings
-
 import numpy as np
 import torch
 import imageio
@@ -18,6 +17,7 @@ import polyscope as ps
 from skimage import measure
 from mesh_utils import *
 import trimesh
+from PIL import Image
 
 # Config
 
@@ -35,7 +35,7 @@ def main():
 
     # Build arguments
     parser.add_argument("load_from", type=str)
-    parser.add_argument("--save_to", type=str)
+    parser.add_argument("save_to", type=str)
     parser.add_argument("--mode", type=str, default='crown')
     parser.add_argument("--res", type=int, default=1024)
 
@@ -54,6 +54,7 @@ def main():
             lower: torch.Tensor,
             upper: torch.Tensor):
 
+        start_time = time.time()
 
         tri_faces = []
         tri_vertices = []
@@ -74,22 +75,20 @@ def main():
 
         tri_faces = np.concatenate(tri_faces, axis=0)
         tri_vertices = np.concatenate(tri_vertices, axis=0)
-
-
+        end_time = time.time()
+        print("total time cost: ", end_time - start_time)
 
         mesh = {}
         mesh['vertices'] = tri_vertices
         mesh['faces'] = tri_faces
 
-        np.savez('meshes/mesh_0.npz', **mesh)
-        trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
-        trimesh_mesh.show()
+        np.savez(args.save_to, **mesh)
+        # trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+        # trimesh_mesh.show()
 
+    node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
 
-    node_lower, node_upper, As, bs = [val for val in np.load(args.load_from).values()]
-
-    register_plane_and_cube_with_polyscope(As, bs, node_lower, node_upper)
-
+    register_plane_and_cube_with_polyscope(lAs, lbs, node_lower, node_upper)
 
 if __name__ == '__main__':
     main()
