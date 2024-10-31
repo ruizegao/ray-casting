@@ -4,7 +4,7 @@ from torch import Tensor
 from torch import vmap
 from functools import partial
 from numpy import ndarray
-from scipy.spatial import Delaunay as SciDelaunay
+from scipy.spatial import Delaunay
 from scipy.spatial import ConvexHull
 from enum import Enum
 from typing import Tuple, Union, Optional
@@ -27,6 +27,7 @@ class VolumeCalculationMethod(Enum):
     SinglePlaneBatchVolume = 2
     MultiPlaneSingleVolume = 3
     MultiPlaneBatchVolume = 4
+    MiscMain = 5
 
 class OptimizerMethod(Enum):
     Adam = 1
@@ -306,7 +307,7 @@ def calculate_volume_above_plane(
     polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
     # Perform Delaunay tetrahedralization
-    delaunay = SciDelaunay(polyhedron_vertices_np)
+    delaunay = Delaunay(polyhedron_vertices_np)
 
     # Extract the tetrahedrons (each row represents the indices of 4 vertices forming a tetrahedron)
     tetrahedrons = delaunay.simplices
@@ -635,6 +636,12 @@ def batch_cube_intersection_with_plane(
     # get the intersection points formed by the hyperplane and bounding box
     ret = b_calculate_intersection(edges, normal, D)
     [_, intersection_mask, intersection_pts] = ret
+    i_mask_sums = intersection_mask.to(dtype=int).sum(axis=1).unsqueeze(1).expand(intersection_mask.shape)
+    intersection_mask = torch.where(
+        i_mask_sums >= 3,
+        intersection_mask,
+        False
+    )
 
     # Using these intersection points, triangulate the volume above the hyperplane and below the bounding box
     # into tetrahedrons and calculate this volume
@@ -704,7 +711,7 @@ def batch_calculate_volume_above_plane(
         polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
         # Perform Delaunay tetrahedralization
-        delaunay = SciDelaunay(polyhedron_vertices_np)
+        delaunay = Delaunay(polyhedron_vertices_np)
 
         # Extract the tetrahedrons (each row represents the indices of 4 vertices forming a tetrahedron)
         tetrahedrons = delaunay.simplices
@@ -1130,10 +1137,39 @@ def batched_multiplane_main(batches: int):
 
     print(f"Losses (volume): \n{losses}")
 
+def misc_main():
+    x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703]).reshape(1, -1)
+    x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875]).reshape(1, -1)
+    normal = torch.tensor([[ 0.11218592, 0.8509685, -0.03051529]]).reshape(1, -1)
+    D = torch.tensor([-0.10903698])
+
+    vertices = b_get_cube_vertices(x_L, x_U)
+    edge_masks = generate_cube_edges()
+    edges = vertices[:, edge_masks, :]
+
+    # get the intersection points formed by the hyperplane and bounding box
+    ret = b_calculate_intersection(edges, normal, D)
+    [lambdas, intersection_mask, intersection_pts] = ret
+
+    # ad-hoc fix that assumes no
+    i_mask_sums = intersection_mask.to(dtype=int).sum(axis=1).unsqueeze(1).expand(intersection_mask.shape)
+    intersection_mask = torch.where(
+        i_mask_sums >= 3,
+        intersection_mask,
+        False
+    )
+    num_intersections = intersection_mask.to(dtype=int).sum()
+    print(f"Number of intersections: {num_intersections}")
+    print(f"Lambdas ({lambdas.shape}): \n{lambdas}")
+    print(f"Intersection Mask ({intersection_mask.shape}): \n{intersection_mask}")
+    print(f"Intersection Pts ({intersection_pts.shape}): \n{intersection_pts}")
+    print(f"Filtered Intesrctions Pts ({intersection_pts[intersection_mask].shape}): \n{intersection_pts[intersection_mask]}")
+
+
 
 if __name__ == '__main__':
     num_batches = 3  # only used for batch methods
-    method = VolumeCalculationMethod.MultiPlaneBatchVolume  # method to run
+    method = VolumeCalculationMethod.MiscMain  # method to run
 
     print(f"Running program: {method.name}")
 
@@ -1145,5 +1181,7 @@ if __name__ == '__main__':
         multiplane_main()
     elif method == VolumeCalculationMethod.MultiPlaneBatchVolume:
         batched_multiplane_main(num_batches)
+    elif method == VolumeCalculationMethod.MiscMain:
+        misc_main()
     else:
         raise Exception("Unknown volume calculation method")

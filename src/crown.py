@@ -6,6 +6,8 @@ from collections import defaultdict
 
 import numpy as np
 
+from typing import Tuple, Union, Optional
+
 import utils
 import torch
 import implicit_function
@@ -48,14 +50,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
         self.torch_model = crown_func
-        if crown_mode.lower() == 'alpha-crown':
-            self.reuse_alpha = True
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)), bound_opts={'optimize_bound_args': {'iteration': 30, 'lr_alpha': 1e-1, 'keep_best': False, 'early_stop_patience': 1e6, 'lr_decay': 1, 'save_loss_graphs': True}})#, 'relu': 'same-slope'})
-        else:
-            self.reuse_alpha = False
-            self.bounded_func = BoundedModule(crown_func, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
-
         self.crown_mode = crown_mode
+        self._init_bounded_func()
         self._enable_clipping = enable_clipping
         if enable_clipping:
             self.bounding_method = crown_mode+'_clipping'
@@ -69,6 +65,25 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         # self.crown_func.to(device)
         # return self.crown_func(x)
         return self.implicit_func(params, x)
+
+    def _init_bounded_func(self, bound_opts: Optional[dict] = None):
+
+        if self.crown_mode.lower() == 'alpha-crown':
+            default_bound_opts = {
+                'optimize_bound_args':
+                    {
+                        'iteration': 30,
+                        'lr_alpha': 1e-1,
+                        'keep_best': False,
+                        'early_stop_patience': 1e6,
+                        'lr_decay': 1,
+                        'save_loss_graphs': True}
+            }
+            self.reuse_alpha = True
+            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, 3)), bound_opts= bound_opts if bound_opts else default_bound_opts)
+        else:
+            self.reuse_alpha = False
+            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
 
     def torch_forward(self, x):
         return self.torch_model(x)
@@ -153,5 +168,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             return output_type, None
 
-    def change_mode(self, new_mode):
-            self.crown_mode = new_mode
+    def change_mode(self, new_mode: str, new_bound_opts: Optional[dict] = None):
+        print(f"Swapping Bounding Mode to be: {new_mode} with parameters \n{new_bound_opts if new_bound_opts else 'None'}")
+        self.crown_mode = new_mode
+        self._init_bounded_func(new_bound_opts)

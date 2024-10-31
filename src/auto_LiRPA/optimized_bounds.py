@@ -684,6 +684,9 @@ def _get_optimized_bounds(
             x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
             x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
             lbias_reshape = lbias.reshape(batches * num_spec, 1)
+            curr_shape = (batches, num_spec, input_dim)
+            assert num_spec == 1, f"Should be single dimension output, instead got (curr_shape)"
+            assert input_dim == 3, f"Should be 3D input, intead got ({curr_shape})"
             total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
                                                       dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter, bound_lower)
 

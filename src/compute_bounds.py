@@ -1,6 +1,6 @@
 # import igl # work around some env/packaging problems by loading this first
 
-import sys, os, time, math
+import sys, os, time, math, datetime
 import time
 import argparse
 import warnings
@@ -29,6 +29,9 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 print(device)
 
+cache_dir = "cache_bounds/compute_bounds_cache.npz"
+
+to_numpy = lambda x : x.detach().cpu().numpy()
 
 def main():
     parser = argparse.ArgumentParser()
@@ -40,6 +43,7 @@ def main():
     parser.add_argument("--res", type=int, default=1024)
     parser.add_argument("--split_depth", type=int, default=21)
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--use_cache", action='store_true')
     # Parse arguments
     args = parser.parse_args()
 
@@ -49,6 +53,7 @@ def main():
     opts['tree_max_depth'] = 12
     opts['tree_split_aff'] = False
     mode = args.mode
+    use_cache = args.use_cache
     split_depth = args.split_depth
     batch_size = args.batch_size
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
@@ -96,30 +101,62 @@ def main():
     lower = torch.tensor((-data_bound, -data_bound, -data_bound))
     upper = torch.tensor((data_bound, data_bound, data_bound))
     start_time = time.time()
-    # out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
-    out_dict = construct_adaptive_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
-    node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
-    node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
-    node_upper = torch.cat((out_dict['unknown_node_upper'], out_dict['interior_node_upper']), dim=0)
+    if not use_cache:
+        print(f"Not using cache, computing bounds as saving to (and overwriting) {cache_dir}")
+        # out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
+        out_dict = construct_adaptive_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
+        node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
+        node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
+        node_upper = torch.cat((out_dict['unknown_node_upper'], out_dict['interior_node_upper']), dim=0)
+        cache_dict = {
+            "node_valid": to_numpy(node_valid),
+            "node_lower": to_numpy(node_lower),
+            "node_upper": to_numpy(node_upper),
+        }
+        np.savez(cache_dir, **cache_dict)
+    else:
+        modification_time = os.path.getmtime(cache_dir)
+        modification_datetime = datetime.datetime.fromtimestamp(modification_time)
+        formatted_time = modification_datetime.strftime('%Y-%m-%d %I:%M %p')
+        print(f"Using cache, reading from {cache_dir}, last modified: {formatted_time}")
+        loaded_cache = np.load(cache_dir)
+        node_valid = torch.from_numpy(loaded_cache["node_valid"]).to(device=device)
+        node_lower = torch.from_numpy(loaded_cache["node_lower"]).to(device=device)
+        node_upper = torch.from_numpy(loaded_cache["node_upper"]).to(device=device)
+
+    # update the implicit function
+    alpha_bound_params = {
+        'optimize_bound_args':
+            {
+                'iteration': 5,
+                'lr_alpha': 1e-1,
+                'keep_best': False,
+                'early_stop_patience': 1e6,
+                'lr_decay': 1,
+                'save_loss_graphs': True}
+    }
+    implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
     node_lower_valid = node_lower[node_valid]
     node_upper_valid = node_upper[node_valid]
     num_valid = node_valid.sum().item()
-    mAs = torch.empty_like(node_lower_valid)
-    mbs = torch.empty((num_valid,))
+    mAs = torch.empty_like(node_lower_valid, device="cpu")
+    mbs = torch.empty((num_valid,), device="cpu")
     lAs = torch.empty_like(node_lower_valid)
-    lbs = torch.empty((num_valid,))
+    lbs = torch.empty((num_valid,), device="cpu")
     uAs = torch.empty_like(node_lower_valid)
-    ubs = torch.empty((num_valid,))
+    ubs = torch.empty((num_valid,), device="cpu")
     for start_idx in range(0, num_valid, batch_size):
         end_idx = min(start_idx + batch_size, num_valid)
-        out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx])
-        mAs[start_idx:end_idx] = 0.5 * (crown_ret['lA'] + crown_ret['uA']).squeeze(1)
-        mbs[start_idx:end_idx] = 0.5 * (crown_ret['lbias'] + crown_ret['ubias']).squeeze(1)
-        lAs[start_idx:end_idx] = crown_ret['lA'].squeeze(1)
-        lbs[start_idx:end_idx] = crown_ret['lbias'].squeeze(1)
-        uAs[start_idx:end_idx] = crown_ret['uA'].squeeze(1)
-        ubs[start_idx:end_idx] = crown_ret['ubias'].squeeze(1)
+        i = start_idx // batch_size
+        print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
+        out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx], swap_loss=True)
+        mAs[start_idx:end_idx] = 0.5 * (crown_ret['lA'] + crown_ret['uA']).squeeze(1).detach().cpu()
+        mbs[start_idx:end_idx] = 0.5 * (crown_ret['lbias'] + crown_ret['ubias']).squeeze(1).detach().cpu()
+        lAs[start_idx:end_idx] = crown_ret['lA'].squeeze(1).detach().cpu()
+        lbs[start_idx:end_idx] = crown_ret['lbias'].squeeze(1).detach().cpu()
+        uAs[start_idx:end_idx] = crown_ret['uA'].squeeze(1).detach().cpu()
+        ubs[start_idx:end_idx] = crown_ret['ubias'].squeeze(1).detach().cpu()
     out_valid = {}
     out_valid['lower'] = node_lower_valid.cpu().numpy()
     out_valid['upper'] = node_upper_valid.cpu().numpy()
