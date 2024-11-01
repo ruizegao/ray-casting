@@ -392,6 +392,11 @@ def _get_optimized_bounds(
 
     optimizable_activations = self.get_enabled_opt_act()
 
+    # for volume loss function, it is best to randomize alphas
+    if alpha:
+        for m in optimizable_activations:
+            m.clip_alpha(randomize=True)
+
     alphas, parameters = [], []
     dense_coeffs_mask = []
     if alpha:

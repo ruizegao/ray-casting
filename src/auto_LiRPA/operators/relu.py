@@ -377,8 +377,12 @@ class BoundRelu(BoundTwoPieceLinear):
         self.alpha_indices = torch.logical_and(
             self.inputs[0].lower < 0, self.inputs[0].upper > 0).any(dim=0).nonzero(as_tuple=True)
 
-    def clip_alpha(self):
+    def clip_alpha(self, randomize=False):
+        min_val = self.leaky_alpha
+        max_val = 1.
         for v in self.alpha.values():
+            if randomize:
+                v.data = min_val + (max_val - min_val) * torch.rand_like(v.data)
             v.data = torch.clamp(v.data, self.leaky_alpha, 1.)
 
     def forward(self, x):

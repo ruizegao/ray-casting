@@ -1103,25 +1103,27 @@ def multiplane_main():
     # plane equation <normal, x> + D = 0
 
     ## single constraint
-    # c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
-    # c_D = -1.5
-    # plane_constraints: list[tuple[Tensor, float]] = [
-    #     (c_normal, c_D)
-    # ]
-
-    ## two constraints
-    c_normal_one = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
-    c_D_one = -1.5
-    c_normal_two = torch.tensor([-0.15, 0.16, 0.9], requires_grad=False, **set_t)
-    c_D_two = -0.35
+    c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    c_D = -1.5
     plane_constraints: list[tuple[Tensor, float]] = [
-        (c_normal_one, c_D_one),
-        (c_normal_two, c_D_two)
+        (c_normal, c_D)
     ]
 
+    ## two constraints
+    # c_normal_one = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    # c_D_one = -1.5
+    # c_normal_two = torch.tensor([-0.15, 0.16, 0.9], requires_grad=False, **set_t)
+    # c_D_two = -0.35
+    # plane_constraints: list[tuple[Tensor, float]] = [
+    #     (c_normal_one, c_D_one),
+    #     (c_normal_two, c_D_two)
+    # ]
+
     # perturb the optimizable plane to prevent nan in gradient ascent
-    normal = torch.tensor([1 + 1e-6, 1 + 1e-5, 1 + 1e-4], requires_grad=True, **set_t)
-    D = -1.5 - 1e-1
+    # normal = torch.tensor([1 + 1e-6, 1 + 1e-5, 1 + 1e-4], requires_grad=True, **set_t)
+    # D = -1.5 - 1e-1
+    normal = torch.tensor([1, 1, 1], requires_grad=True, **set_t)
+    D = -1.5
 
     lower_bound = True
 
