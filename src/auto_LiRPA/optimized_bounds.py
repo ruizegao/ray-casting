@@ -33,7 +33,7 @@ from .utils import reduction_sum, multi_spec_keep_func_all
 from .opt_pruner import OptPruner
 from .clip_autoLiRPA import clip_domains
 from .hyperplane_volume_intersection import batch_cube_intersection_with_plane, finalize_plots, fill_plots, \
-    get_rows_cols
+    get_rows_cols, batch_cube_intersection_with_plane_with_constraints
 ### preprocessor-hint: private-section-start
 from .adam_element_lr import AdamElementLR
 ### preprocessor-hint: private-section-end
@@ -115,7 +115,12 @@ default_optimize_bound_args = {
     'max_time': 1e9,
     # When using the total volume loss function, a batch of unverified nodes may be visually analzyed further for
     # debugging and sanity checks
-    'save_loss_graphs': False
+    'save_loss_graphs': False,
+    # When using the alternative loss function (maximizing the total volume), plane constraints may be added so long
+    # as they are of the appropriate shape. If the 'swap_loss' parameter is not set, these constraints are simply
+    # ignored and the original alpha-crown loss function is used.
+    "plane_constraints_lower": None,
+    "plane_constraints_upper": None,
 }
 
 
@@ -365,6 +370,14 @@ def _get_optimized_bounds(
         raise ValueError(bound_side)
     bound_lower = bound_side == 'lower'
     bound_upper = bound_side == 'upper'
+
+    # get necessary plane constraints
+    if bound_lower and swap_loss:
+        plane_constraints = opts['plane_constraints_lower']
+    elif bound_upper and swap_loss:
+        plane_constraints = opts['plane_constraints_upper']
+    else:
+        plane_constraints = None
 
     assert alpha or beta, (
         'nothing to optimize, use compute bound instead!')
@@ -684,11 +697,17 @@ def _get_optimized_bounds(
             x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
             x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
             lbias_reshape = lbias.reshape(batches * num_spec, 1)
-            curr_shape = (batches, num_spec, input_dim)
-            assert num_spec == 1, f"Should be single dimension output, instead got (curr_shape)"
-            assert input_dim == 3, f"Should be 3D input, intead got ({curr_shape})"
-            total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
-                                                      dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter, bound_lower)
+
+            if plane_constraints is not None:
+                plane_constraints = plane_constraints.to(device=x_L_reshape.device, dtype=x_L_reshape.dtype)
+                total_loss = batch_cube_intersection_with_plane_with_constraints(x_L_reshape, x_U_reshape, lA_reshape,
+                                                                                 lbias_reshape, plane_constraints,
+                                                                                 bound_lower, False)
+            else:
+                total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
+                                                                dm_lb.reshape(batches * num_spec, -1), threshold,
+                                                                lb_iter,
+                                                                bound_lower)
 
             volumes = total_loss.detach().clone()  # for viewing
             total_loss *= -1  # to maximize

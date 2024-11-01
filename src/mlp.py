@@ -165,7 +165,7 @@ def bounded_func_from_spec(mode='affine'):
     return eval_spec
 
 
-def func_as_torch(params):
+def func_as_torch(params, dtype=torch.float32):
     op_list = []
     N_op = n_ops(params)
     for i_op in range(N_op):
@@ -173,15 +173,15 @@ def func_as_torch(params):
         # print(name)
         # self.op_list.append((name, args))
         if name == 'dense':
-            A = torch.tensor(args['A'], dtype=torch.float32).T#.to(device)
-            b = torch.tensor(args['b'], dtype=torch.float32)#.to(device)
-            linear = torch.nn.Linear(A.shape[1], A.shape[0])
+            A = torch.tensor(args['A'], dtype=dtype).T#.to(device)
+            b = torch.tensor(args['b'], dtype=dtype)#.to(device)
+            linear = torch.nn.Linear(A.shape[1], A.shape[0], dtype=dtype)
             linear.weight = torch.nn.Parameter(A)
             linear.bias = torch.nn.Parameter(b)
             op_list.append(linear)
         elif name == 'relu':
             op_list.append(torch.nn.ReLU())
-    model = torch.nn.Sequential(*op_list)
+    model = torch.nn.Sequential(*op_list).to(dtype=dtype)
 
     return model
 

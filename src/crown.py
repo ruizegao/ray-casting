@@ -18,6 +18,7 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
+
 batch_size_per_iteration = 100000
 
 # === Crown utility methods
@@ -113,7 +114,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         return output_type
 
 
-    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False):
+    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False, return_A=True):
 
         # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
         # bound_dict = self.bounded_func.save_intermediate()
@@ -123,7 +124,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         #         unstable_counts.append(torch.logical_and(v[0] < 0, v[1] > 0).sum().item())
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
         bounded_x = BoundedTensor(box_lower.float(), ptb)
-        return_A = True
         # prepare A_dict to retrieve final lA
         if return_A:
             needed_A_dict = defaultdict(set)
@@ -136,6 +136,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
                                                                 use_clip_domains=False, decision_thresh=offset,
                                                                 swap_loss=swap_loss)
 
+        # unpack the returned dictionary
         if return_A:
             may_lower, may_upper, A_dict = result
             lA = A_dict[self.bounded_func.output_name[0]][self.bounded_func.input_name[0]]['lA']
@@ -149,6 +150,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             uA = None
             ubias = None
 
+        # format the output types
         torch.set_printoptions(threshold=float('inf'), precision=4)
         # output_bounds = [may_lower.item(), may_upper.item()]
         # print(*(output_bounds + unstable_counts))
@@ -156,9 +158,11 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         output_type = output_type.where(may_lower <= offset, torch.full_like(may_lower, SIGN_POSITIVE))
         output_type = output_type.where(may_upper >= -offset, torch.full_like(may_lower, SIGN_NEGATIVE))
 
+        # return the outputs and the A dictionary if requested
         if return_A:
             crown_ret = {
                 "dm_lb": may_lower.detach(),
+                "dm_ub": may_upper.detach(),
                 "lA": lA,
                 "lbias": lbias,
                 "uA": uA,
@@ -169,6 +173,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             return output_type, None
 
     def change_mode(self, new_mode: str, new_bound_opts: Optional[dict] = None):
-        print(f"Swapping Bounding Mode to be: {new_mode} with parameters \n{new_bound_opts if new_bound_opts else 'None'}")
+        print(f"Swapping Bounding Mode to be: {new_mode}")
         self.crown_mode = new_mode
         self._init_bounded_func(new_bound_opts)
