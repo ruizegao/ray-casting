@@ -245,8 +245,8 @@ def main():
     out_valid = {
         'lower': to_numpy(node_lower_valid),
         'upper': to_numpy(node_upper_valid),
-         'plane_constraints_lower': to_numpy(plane_constraints_lower),
-         'plane_constraints_upper': to_numpy(plane_constraints_upper)
+         'plane_constraints_lower': plane_constraints_lower,
+         'plane_constraints_upper': plane_constraints_upper
     }
     np.savez(args.save_to, **out_valid)
     third_stage_time = time.time() - start_time

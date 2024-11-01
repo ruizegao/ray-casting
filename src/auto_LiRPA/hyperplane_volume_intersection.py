@@ -1,4 +1,5 @@
 import numpy as np
+from jax.interpreters.batching import batch
 from torch import Tensor
 from torch import vmap
 from functools import partial
@@ -47,7 +48,8 @@ class VolumeCalculationMethod(Enum):
     SinglePlaneBatchVolume = 2
     MultiPlaneSingleVolume = 3
     MultiPlaneBatchVolume = 4
-    MiscMain = 5
+    HeuristicVolume = 5
+    MiscMain = 6
 
 class OptimizerMethod(Enum):
     Adam = 1
@@ -820,7 +822,7 @@ def batch_cube_intersection_with_plane_with_constraints(
         D: Tensor,
         plane_constraints: Tensor,
         lower_bound = True,
-        verbose=False,
+        verbose=False
 ) -> Tensor:
     """
     Calculate the volume above some hyperplane and polyhedron. The polyhedron is defined by the intersection of the
@@ -898,6 +900,61 @@ def batch_cube_intersection_with_plane_with_constraints(
             print(f"Total volume: {(x_U - x_L).prod()}")
 
     return total_volumes
+
+def batch_estimate_volume(
+        x_L: Tensor,
+        x_U: Tensor,
+        normal: Tensor,
+        D: Tensor,
+        lower_bound: float = True,
+        grid_precision: int = 10,
+) -> Tensor:
+    """
+
+    Rather than computing the exact volume that is formed by the intersection of a plane and some bounding box (bbox), a
+    heuristic is put into place that calculates the distance between the plane and sample points in the box.
+    The objective is to move the plane to be completely above the bbox (all sample points fall below the plane).
+
+    More detailed, the bbox becomes a discretized voxel grid where the corner point of each voxel is recorded.
+    All corner points of each voxel are the sample points (IOW, the bbox is uniformly sampled). The distance between
+    each sample point that is above the bbox is calculated, and the total distance is summed. The objective should be
+    to minimize this total distance to 0 (all points are below the plane).
+
+    :param x_L:         bbox lower bounds
+    :param x_U:         bbox upper bounds
+    :param normal:      plane coefficients
+    :param D:           plane offsets
+    :param lower_bound: if the plane is a lower bound or an upper bound
+    :return:            `sum_dist` -- sum of distances between plane and points above the plane
+    """
+
+    # aids in the creation of the corner points of each grid
+    step_tensor = torch.linspace(0, 1, grid_precision).reshape(1, 1, grid_precision).to(x_L)
+
+    grid_pts = (x_U - x_L).unsqueeze(2) * step_tensor
+    x_range, y_range, z_range = grid_pts[:, 0, :], grid_pts[:, 1, :], grid_pts[:, 2, :]
+
+    # creates mesh grids in batches
+    _b_meshgrid = vmap(partial(torch.meshgrid, indexing='ij'))
+
+    # Create a 3D grid of the corner points
+    x, y, z = _b_meshgrid(x_range, y_range, z_range)
+
+    # Stack into a list of 3D coordinates for each grid center
+    grid_centers = torch.stack([x, y, z], dim=-1)  # Shape: (batches, num_x, num_y, num_z, 3)
+    # where num_x=num_y=num_z=grid_precision
+
+    # We do not care to keep them in grid format so flatten the points
+    grid_centers = grid_centers.flatten(1, 3)  # Shape: (batches, grid_precision^3, 3)
+
+    # calculate the distances (use einsum to compact this to a single line instead of performing so much reshaping and expanding)
+    distances = torch.einsum('bij,bj->bi', grid_centers, normal) + D.reshape(-1, 1)
+
+    # want to minimize the total distance between the points above the plane and the plane itself
+    pos_mask = distances >= 0. if lower_bound else distances <= 0.
+    sum_dist = distances[pos_mask].sum()
+
+    return sum_dist
 
 
 ### vmap function signatures for simple batching
@@ -1298,10 +1355,35 @@ def misc_main():
     print(f"Intersection Pts ({intersection_pts.shape}): \n{intersection_pts}")
     print(f"Filtered Intesrctions Pts ({intersection_pts[intersection_mask].shape}): \n{intersection_pts[intersection_mask]}")
 
+def heuristic_main():
+
+    batches = 3
+    x_L = torch.zeros((batches, 3), **set_t)
+    x_U = torch.ones((batches, 3), **set_t)
+    normal = torch.ones((batches, 3), requires_grad=True, **set_t)
+    D = torch.ones(batches, **set_t) * -1.5
+
+    lower_bound = True
+
+    iters = 50
+    grid_steps = 10
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=False, **optimizer_params)
+    losses = np.zeros(iters)
+    for i in range(iters):
+        opt.zero_grad()
+        loss = batch_estimate_volume(x_L, x_U, normal, D, lower_bound, grid_steps)
+        losses[i] = loss.item()
+        loss.backward()
+        opt.step()
+
+    print(f"Losses (volume): \n{losses}")
 
 if __name__ == '__main__':
     num_batches = 3  # only used for batch methods
-    method = VolumeCalculationMethod.MultiPlaneSingleVolume  # method to run
+    method = VolumeCalculationMethod.HeuristicVolume  # method to run
 
     print(f"Running program: {method.name}")
 
@@ -1313,6 +1395,8 @@ if __name__ == '__main__':
         multiplane_main()
     elif method == VolumeCalculationMethod.MultiPlaneBatchVolume:
         batched_multiplane_main(num_batches)
+    elif method == VolumeCalculationMethod.HeuristicVolume:
+        heuristic_main()
     elif method == VolumeCalculationMethod.MiscMain:
         misc_main()
     else:
