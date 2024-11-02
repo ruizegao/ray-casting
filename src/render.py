@@ -98,7 +98,7 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
     return grad_out
 
 
-def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='finite_differences'):
+def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='autodiff'):
     this_normal_one = lambda p, id: outward_normal(funcs_tuple, params_tuple, p, id, eps, method=method)
     if method == 'autodiff':
         N = int(hit_pos.shape[0]/3)

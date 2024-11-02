@@ -87,6 +87,7 @@ def main():
         # trimesh_mesh.show()
 
     node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
+    # node_lower, node_upper, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
 
     register_plane_and_cube_with_polyscope(lAs, lbs, node_lower, node_upper)
 

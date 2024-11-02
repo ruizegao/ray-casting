@@ -62,7 +62,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             self.bounding_method = crown_mode
         self.obj_name = obj_name
-        print(self.crown_mode, enable_clipping)
 
     def __call__(self, params, x):
         # x_device = x.to(device)
