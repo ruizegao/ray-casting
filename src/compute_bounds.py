@@ -19,6 +19,7 @@ import polyscope as ps
 from skimage import measure
 from mesh_utils import *
 import trimesh
+from auto_LiRPA.hyperplane_volume_intersection import custom_loss_batch_estimate_volume
 
 # Config
 
@@ -26,6 +27,9 @@ SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
 CROWN_MODES = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
              'dynamic_forward+backward']
+
+USE_CUSTOM_LOSS_OPTION = True  # if false, uses old hard-coded loss func, if true, uses custom loss func API
+
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 set_t = {
@@ -184,10 +188,10 @@ def main():
         'keep_best': False,
         'early_stop_patience': 1e6,
         'lr_decay': 1,
-        'save_loss_graphs': False,
-        # 'plane_constraints_lower': torch.from_numpy(plane_constraints_lower),
-        # 'plane_constraints_upper': torch.from_numpy(plane_constraints_upper),
+        'save_loss_graphs': False
     }
+    if USE_CUSTOM_LOSS_OPTION:
+        opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})
     alpha_bound_params = {'optimize_bound_args': opt_bound_args}
     implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
@@ -197,6 +201,7 @@ def main():
         print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
         out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
                                                          node_upper_valid[start_idx:end_idx], swap_loss=True,
+                                                         use_custom_loss=USE_CUSTOM_LOSS_OPTION,
                                                          plane_constraints_lower=torch.from_numpy(
                                                              plane_constraints_lower[start_idx:end_idx]),
                                                          plane_constraints_upper=torch.from_numpy(
@@ -234,6 +239,7 @@ def main():
         print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
         out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
                                                          node_upper_valid[start_idx:end_idx], swap_loss=True,
+                                                         use_custom_loss=USE_CUSTOM_LOSS_OPTION,
                                                          plane_constraints_lower=torch.from_numpy(
                                                              plane_constraints_lower[start_idx:end_idx]),
                                                          plane_constraints_upper=torch.from_numpy(

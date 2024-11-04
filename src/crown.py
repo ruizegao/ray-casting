@@ -115,7 +115,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         return output_type
 
 
-    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False, return_A=True,
+    def classify_box(self, params, box_lower, box_upper, offset=0., use_custom_loss=False, swap_loss=False, return_A=True,
                      plane_constraints_lower: Optional[Tensor]=None, plane_constraints_upper: Optional[Tensor]=None):
 
         # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
@@ -133,14 +133,28 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             needed_A_dict = None
 
-        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
-                                                                bound_lower=True, bound_upper=True,
-                                                                return_A=return_A, needed_A_dict=needed_A_dict,
-                                                                use_clip_domains=False, decision_thresh=offset,
-                                                                swap_loss=swap_loss,
-                                                                plane_constraints_lower=plane_constraints_lower,
-                                                                plane_constraints_upper=plane_constraints_upper
-                                                  )
+        if use_custom_loss:
+            custom_loss_func_params = {
+                'params': {
+                    'plane_constraints_lower': plane_constraints_lower,
+                    'plane_constraints_upper': plane_constraints_upper,
+                }
+            }
+            result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
+                                                      bound_lower=True, bound_upper=True,
+                                                      return_A=return_A, needed_A_dict=needed_A_dict,
+                                                      use_clip_domains=False, decision_thresh=offset,
+                                                      custom_loss_func_params=custom_loss_func_params
+                                                      )
+        else:
+            result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
+                                                                    bound_lower=True, bound_upper=True,
+                                                                    return_A=return_A, needed_A_dict=needed_A_dict,
+                                                                    use_clip_domains=False, decision_thresh=offset,
+                                                                    swap_loss=swap_loss,
+                                                                    plane_constraints_lower=plane_constraints_lower,
+                                                                    plane_constraints_upper=plane_constraints_upper
+                                                      )
 
         # unpack the returned dictionary
         if return_A:

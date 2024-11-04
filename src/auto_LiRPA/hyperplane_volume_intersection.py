@@ -930,17 +930,68 @@ def batch_cube_intersection_with_plane_with_constraints(
 
     return total_volumes
 
+def custom_loss_batch_estimate_volume(x: tuple, ret: dict, bound_lower: bool, output_name: str, input_name: str,
+                                      params: dict) -> Tensor:
+    """
+    This is a wrapper for `batch_estimate_volume` to be compatible with the `custom_loss_func` API in alpha crown.
+    :param x:           Perturbed input
+    :param ret:         CROWN return tuple (has bounds and A dictionary
+    :param bound_lower: If the lower or upper bound is being computed in CROWN
+    :param output_name: Name of output layer of the network
+    :param input_name:  Name of input layer of the network
+    :param params:      Additional parameters to be passed to the loss function
+    :return:            Total loss from the custom loss function
+    """
+
+    # unpack arguments
+    x_L = x[0].ptb.x_L
+    x_U = x[0].ptb.x_U
+    A = ret[2][output_name][input_name]
+
+    if bound_lower:
+        # dm_lb = ret[0]  # set lb as dm_lb
+        lA = A['lA']
+        lbias = A['lbias']
+    else:
+        # dm_lb = ret[1]  # set ub as dm_lb
+        lA = A['uA']
+        lbias = A['ubias']
+
+    batch_lA = lA.flatten(2)
+    batches, num_spec, input_dim = batch_lA.shape
+
+    # if specified, handle plane constraints
+    if bound_lower:
+        plane_constraints=params.pop('plane_constraints_lower', None)
+        params.pop('plane_constraints_lower', None)
+    else:
+        plane_constraints=params.pop('plane_constraints_upper', None)
+        params.pop('plane_constraints_lower', None)
+    if isinstance(plane_constraints, Tensor):
+        # ensure it is the right data type and on the right device
+        plane_constraints = plane_constraints.to(x_L)
+
+    # reshape tensors to be compatible with the volume calculation in batches
+    # in our case, we expect num_spec = 1; if num_spec != 1, results may be unexpected and/or cause errors
+    # lA_reshape = -1 * batch_lA.reshape(batches * num_spec, input_dim) if bound_lower else batch_lA.reshape(batches * num_spec, input_dim)
+    lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
+    x_L_reshape = x_L.reshape(batches, input_dim)
+    x_U_reshape = x_U.reshape(batches, input_dim)
+    x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
+    x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
+    # lbias_reshape = -1 * lbias.reshape(batches * num_spec, 1) if bound_lower else lbias.reshape(batches * num_spec, 1)
+    lbias_reshape = lbias.reshape(batches * num_spec, 1)
+
+    # with formatted inputs, perform calculation
+    total_loss, bev_dict = batch_estimate_volume(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape, not bound_lower,
+                                                 plane_constraints=plane_constraints, **params)
+
+    return total_loss
+
 def batch_estimate_volume(
-        x_L: Tensor,
-        x_U: Tensor,
-        normal: Tensor,
-        D: Tensor,
-        lower_bound: float = True,
-        plane_constraints: Optional[Tensor] = None,
-        grid_precision: int = 10,
-        constraint_multiplier: float = 2.,
-        perpendicular_multiplier: Optional[float] = None,
-        return_dict = False
+        x_L: Tensor, x_U: Tensor, normal: Tensor, D: Tensor,
+        lower_bound: float = True, plane_constraints: Optional[Tensor] = None, grid_precision: int = 10,
+        constraint_multiplier: float = 2., perpendicular_multiplier: Optional[float] = None, return_dict = False
 ) -> Tuple[Tensor, Optional[dict]]:
     """
 
@@ -953,13 +1004,18 @@ def batch_estimate_volume(
     each sample point that is above the bbox is calculated, and the total distance is summed. The objective should be
     to minimize this total distance to 0 (all points are below the plane).
 
-    :param x_L:                 bbox lower bounds
-    :param x_U:                 bbox upper bounds
-    :param normal:              plane coefficients
-    :param D:                   plane offsets
-    :param lower_bound:         if the plane is a lower bound or an upper bound
-    :param plane_constraints:   constraints on the bbox separating verified/unverified area
-    :return:                    `sum_dist` -- sum of distances between plane and points above the plane
+    :param x_L:                         bbox lower bounds
+    :param x_U:                         bbox upper bounds
+    :param normal:                      plane coefficients
+    :param D:                           plane offsets
+    :param lower_bound:                 if the plane is a lower bound or an upper bound
+    :param plane_constraints:           constraints on the bbox separating verified/unverified area
+    :param grid_precision:              number of uniform grid points along each axis to use
+    :param constraint_multiplier:       how much to penalize already verified points being re-verified
+    :param perpendicular_multiplier:    if set, adds a penalty for `normal` not being perpendicular to the plane
+                                        constraints
+    :param return_dict:                 if true, returns a dictionary of values of interest in the loss calculation
+    :return:                            `sum_dist` -- sum of distances between plane and points above the plane
     """
     batches = x_L.size(0)
 
