@@ -33,7 +33,7 @@ from .utils import reduction_sum, multi_spec_keep_func_all
 from .opt_pruner import OptPruner
 from .clip_autoLiRPA import clip_domains
 from .hyperplane_volume_intersection import batch_cube_intersection_with_plane, finalize_plots, fill_plots, \
-    get_rows_cols, batch_cube_intersection_with_plane_with_constraints
+    get_rows_cols, batch_cube_intersection_with_plane_with_constraints, batch_estimate_volume
 ### preprocessor-hint: private-section-start
 from .adam_element_lr import AdamElementLR
 ### preprocessor-hint: private-section-end
@@ -116,11 +116,7 @@ default_optimize_bound_args = {
     # When using the total volume loss function, a batch of unverified nodes may be visually analzyed further for
     # debugging and sanity checks
     'save_loss_graphs': False,
-    # When using the alternative loss function (maximizing the total volume), plane constraints may be added so long
-    # as they are of the appropriate shape. If the 'swap_loss' parameter is not set, these constraints are simply
-    # ignored and the original alpha-crown loss function is used.
-    "plane_constraints_lower": None,
-    "plane_constraints_upper": None,
+    'perpendicular_multiplier': None,
 }
 
 
@@ -338,7 +334,9 @@ def _get_optimized_bounds(
         reuse_ibp=False, return_A=False, average_A=False, final_node_name=None,
         interm_bounds=None, reference_bounds=None,
         aux_reference_bounds=None, needed_A_dict=None, cutter=None,
-        decision_thresh=None, epsilon_over_decision_thresh=1e-4, use_clip_domains=False, swap_loss=False):
+        decision_thresh=None, epsilon_over_decision_thresh=1e-4, use_clip_domains=False, swap_loss=False,
+        plane_constraints_lower:Optional[Tensor]=None, plane_constraints_upper:Optional[Tensor]=None
+):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -352,6 +350,7 @@ def _get_optimized_bounds(
     opt_choice = opts['optimizer']
     keep_best = opts['keep_best']
     save_loss_graphs = opts['save_loss_graphs']
+    perpendicular_multiplier = opts['perpendicular_multiplier']
     fix_interm_bounds = opts['fix_interm_bounds']
     loss_reduction_func = opts['loss_reduction_func']
     stop_criterion_func = opts['stop_criterion_func']
@@ -371,11 +370,10 @@ def _get_optimized_bounds(
     bound_lower = bound_side == 'lower'
     bound_upper = bound_side == 'upper'
 
-    # get necessary plane constraints
-    if bound_lower and swap_loss:
-        plane_constraints = opts['plane_constraints_lower']
-    elif bound_upper and swap_loss:
-        plane_constraints = opts['plane_constraints_upper']
+    if bound_lower and plane_constraints_lower is not None:
+        plane_constraints = plane_constraints_lower.to(x[0])
+    elif bound_upper and plane_constraints_upper is not None:
+        plane_constraints = plane_constraints_upper.to(x[0])
     else:
         plane_constraints = None
 
@@ -393,9 +391,9 @@ def _get_optimized_bounds(
     optimizable_activations = self.get_enabled_opt_act()
 
     # for volume loss function, it is best to randomize alphas
-    if alpha:
-        for m in optimizable_activations:
-            m.clip_alpha(randomize=True)
+    # if alpha:
+    #     for m in optimizable_activations:
+    #         m.clip_alpha(randomize=True)
 
     alphas, parameters = [], []
     dense_coeffs_mask = []
@@ -648,16 +646,18 @@ def _get_optimized_bounds(
             stop_criterion = (stop_criterion_func(full_ret_l) if bound_lower
                               else stop_criterion_func(-full_ret_u))
 
-        loss_ = l if bound_lower else -u
-        total_loss = -1 * loss_
-        directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
-        for directly_optimize_layer_name in directly_optimize_layers:
-            total_loss += (
-                self[directly_optimize_layer_name].upper.sum()
-                - self[directly_optimize_layer_name].lower.sum()
-            )
+
+        if not swap_loss:
+            loss_ = l if bound_lower else -u
+            total_loss = -1 * loss_
+            directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
+            for directly_optimize_layer_name in directly_optimize_layers:
+                total_loss += (
+                    self[directly_optimize_layer_name].upper.sum()
+                    - self[directly_optimize_layer_name].lower.sum()
+                )
         # if swap_loss and bound_lower:
-        if swap_loss:
+        else:
             # parse to get lA and lbias
             ret_A = ret[2]
             if bound_lower:
@@ -696,82 +696,100 @@ def _get_optimized_bounds(
             # eps_vect = eps.unsqueeze(2)  # to column vectors
 
             # reshape tensors to be compatible with the volume calculation in batches
+            # lA_reshape = -1 * batch_lA.reshape(batches * num_spec, input_dim) if bound_lower else batch_lA.reshape(batches * num_spec, input_dim)
             lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
             x_L_reshape = x_L.reshape(batches, input_dim)
             x_U_reshape = x_U.reshape(batches, input_dim)
             x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
             x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
+            # lbias_reshape = -1 * lbias.reshape(batches * num_spec, 1) if bound_lower else lbias.reshape(batches * num_spec, 1)
             lbias_reshape = lbias.reshape(batches * num_spec, 1)
 
-            if plane_constraints is not None:
-                plane_constraints = plane_constraints.to(device=x_L_reshape.device, dtype=x_L_reshape.dtype)
-                total_loss = batch_cube_intersection_with_plane_with_constraints(x_L_reshape, x_U_reshape, lA_reshape,
-                                                                                 lbias_reshape, plane_constraints,
-                                                                                 bound_lower, False)
-            else:
-                total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
-                                                                dm_lb.reshape(batches * num_spec, -1), threshold,
-                                                                lb_iter,
-                                                                bound_lower)
+            # try out heuristic volume loss
+            total_loss, bev_dict = batch_estimate_volume(
+                x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape, not bound_lower, plane_constraints,
+                perpendicular_multiplier=perpendicular_multiplier, return_dict=True
+            )
+
+            # try out exact volume loss
+            # if plane_constraints is not None:
+            #     plane_constraints = plane_constraints.to(x_L_reshape)
+            #     total_loss = batch_cube_intersection_with_plane_with_constraints(x_L_reshape, x_U_reshape, lA_reshape,
+            #                                                                      lbias_reshape, plane_constraints,
+            #                                                                      bound_lower, False)
+            # else:
+            #     total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
+            #                                                     dm_lb.reshape(batches * num_spec, -1), threshold,
+            #                                                     lb_iter,
+            #                                                     bound_lower)
 
             volumes = total_loss.detach().clone()  # for viewing
-            total_loss *= -1  # to maximize
+            # total_loss *= -1  # to maximize (maximize for exact volume, minimize for heuristic)
 
             # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
             if save_loss_graphs and num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                with torch.no_grad(): # to be safe that gradients do not get affected
+                    ## graph set up
+                    print(f"i {i} bev_dict: {bev_dict}")
 
-                ## graph set up
+                    # get a set of fixed masks to analyze a set of unverified nodes
+                    global un_mask
+                    if un_mask is None:
+                        if bound_lower:
+                            un_mask = (dm_lb < 0).squeeze()
+                        elif bound_upper:
+                            un_mask = (dm_lb > 0).squeeze()
+                        un_mask_offset = 12 * 3  # start idx of nodes to plot
+                        un_mask[:un_mask_offset] = False
+                    num_unverified = un_mask.to(dtype=torch.int).sum()
+                    print(
+                        f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
 
-                # get a set of fixed masks to analyze a set of unverified nodes
-                global un_mask
-                if un_mask is None:
+                    [rows, cols] = get_rows_cols(num_unverified)
+
+                    # create/retrieve list of figures that will be manipulated
+                    if fig_graph_lower is None:
+                        fig_graph_lower = []
+
+                    if fig_graph_upper is None:
+                        fig_graph_upper = []
+
                     if bound_lower:
-                        un_mask = (dm_lb < 0).squeeze()
-                    elif bound_upper:
-                        un_mask = (dm_lb > 0).squeeze()
-                    un_mask_offset = 12 * 3  # start idx of nodes to plot
-                    un_mask[:un_mask_offset] = False
-                num_unverified = un_mask.to(dtype=torch.int).sum()
-                print(
-                    f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
-
-                [rows, cols] = get_rows_cols(num_unverified)
-
-                # create/retrieve list of figures that will be manipulated
-                if fig_graph_lower is None:
-                    fig_graph_lower = []
-
-                if fig_graph_upper is None:
-                    fig_graph_upper = []
-
-                if bound_lower:
-                    if len(fig_graph_lower) == i:
-                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                        axs = axs.flatten()
-                        fig_graph_lower.append((fig, axs))
+                        if len(fig_graph_lower) == i:
+                            fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                            axs = axs.flatten()
+                            fig_graph_lower.append((fig, axs))
+                        else:
+                            fig, axs = fig_graph_lower[i]
                     else:
-                        fig, axs = fig_graph_lower[i]
-                else:
-                    if len(fig_graph_upper) == i:
-                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                        axs = axs.flatten()
-                        fig_graph_upper.append((fig, axs))
-                    else:
-                        fig, axs = fig_graph_upper[i]
+                        if len(fig_graph_upper) == i:
+                            fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                            axs = axs.flatten()
+                            fig_graph_upper.append((fig, axs))
+                        else:
+                            fig, axs = fig_graph_upper[i]
 
-                ## start of actual plotting
+                    ## start of actual plotting
 
-                # keep entries that were unverified on the first iteration of alpha crown
-                nv_x_L = x_L[un_mask]  # nv for not verified
-                nv_x_U = x_U[un_mask]
-                nv_batch_lA = batch_lA[un_mask]
-                nv_lbias = lbias[un_mask]
-                nv_volumes = volumes[un_mask]
-                plot_batches = len(axs)   # number of plots
+                    # keep entries that were unverified on the first iteration of alpha crown
+                    nv_x_L = x_L[un_mask]  # nv for not verified
+                    nv_x_U = x_U[un_mask]
+                    # nv_batch_lA = -1 * batch_lA[un_mask] if bound_lower else batch_lA[un_mask]
+                    # nv_lbias = -1 * lbias[un_mask] if bound_lower else lbias[un_mask]
+                    nv_batch_lA = batch_lA[un_mask]
+                    nv_lbias = lbias[un_mask]
+                    nv_volumes = volumes[un_mask]
+                    nv_dm_lb = dm_lb[un_mask]
+                    plot_batches = len(axs)   # number of plots
+                    nv_plane_constraints = None
+                    if plane_constraints is not None:
+                        # nv_plane_constraints = -1 * plane_constraints[un_mask] if bound_lower else plane_constraints[un_mask]
+                        nv_plane_constraints = plane_constraints[un_mask]
 
-                fill_plots(
-                    axs, self.forward,
-                    nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec, i)
+                    fill_plots(
+                        axs, self.forward,
+                        nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec,
+                        nv_dm_lb, nv_plane_constraints, True, i)
 
         if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -1051,14 +1069,14 @@ def _get_optimized_bounds(
         figs = [fig for (fig, _) in fig_graph_upper]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
-        finalize_plots(figs, title, titles)
+        finalize_plots(figs, title, titles, pickle_data=True)
 
     elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
         displayed_lb = True
         figs = [fig for (fig, _) in fig_graph_lower]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
-        finalize_plots(figs, title, titles)
+        finalize_plots(figs, title, titles, pickle_data=True)
 
     return best_ret
 

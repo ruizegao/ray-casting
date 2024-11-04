@@ -10,6 +10,7 @@ from typing import Tuple, Union, Optional
 
 import utils
 import torch
+from torch import Tensor
 import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 from auto_LiRPA import BoundedModule, BoundedTensor
@@ -114,7 +115,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         return output_type
 
 
-    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False, return_A=True):
+    def classify_box(self, params, box_lower, box_upper, offset=0., swap_loss=False, return_A=True,
+                     plane_constraints_lower: Optional[Tensor]=None, plane_constraints_upper: Optional[Tensor]=None):
 
         # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
         # bound_dict = self.bounded_func.save_intermediate()
@@ -131,10 +133,14 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             needed_A_dict = None
 
-        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_lower=True, bound_upper=True,
+        result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
+                                                                bound_lower=True, bound_upper=True,
                                                                 return_A=return_A, needed_A_dict=needed_A_dict,
                                                                 use_clip_domains=False, decision_thresh=offset,
-                                                                swap_loss=swap_loss)
+                                                                swap_loss=swap_loss,
+                                                                plane_constraints_lower=plane_constraints_lower,
+                                                                plane_constraints_upper=plane_constraints_upper
+                                                  )
 
         # unpack the returned dictionary
         if return_A:
@@ -173,6 +179,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             return output_type, None
 
     def change_mode(self, new_mode: str, new_bound_opts: Optional[dict] = None):
-        print(f"Swapping Bounding Mode to be: {new_mode}")
+        print(f"Swapping Bounding Mode to be: {new_mode}; new bound options: \n{new_bound_opts}")
         self.crown_mode = new_mode
         self._init_bounded_func(new_bound_opts)

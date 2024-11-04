@@ -178,19 +178,17 @@ def main():
     plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
     plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
     # update the implicit function
-    alpha_bound_params = {
-        'optimize_bound_args':
-            {
-                'iteration': 5,
-                'lr_alpha': 1e-1,
-                'keep_best': False,
-                'early_stop_patience': 1e6,
-                'lr_decay': 1,
-                'save_loss_graphs': True,
-                'plane_constraints_lower': torch.from_numpy(plane_constraints_lower),
-                'plane_constraints_upper': torch.from_numpy(plane_constraints_upper),
-            }
+    opt_bound_args = {
+        'iteration': 10,
+        'lr_alpha': 1e-1,
+        'keep_best': False,
+        'early_stop_patience': 1e6,
+        'lr_decay': 1,
+        'save_loss_graphs': False,
+        # 'plane_constraints_lower': torch.from_numpy(plane_constraints_lower),
+        # 'plane_constraints_upper': torch.from_numpy(plane_constraints_upper),
     }
+    alpha_bound_params = {'optimize_bound_args': opt_bound_args}
     implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
     for start_idx in range(0, num_valid, batch_size):
@@ -198,7 +196,14 @@ def main():
         i = start_idx // batch_size
         print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
         out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
-                                                         node_upper_valid[start_idx:end_idx], swap_loss=True)
+                                                         node_upper_valid[start_idx:end_idx], swap_loss=True,
+                                                         plane_constraints_lower=torch.from_numpy(
+                                                             plane_constraints_lower[start_idx:end_idx]),
+                                                         plane_constraints_upper=torch.from_numpy(
+                                                             plane_constraints_upper[start_idx:end_idx]),
+                                                         # plane_constraints_lower=None,
+                                                         # plane_constraints_upper=None,
+                                                         )
         lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
         lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
         uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
@@ -215,14 +220,12 @@ def main():
 
     ### third, we do a final pass of CROWN with two plane constraints ###
 
-    new_alpha_bound_params = {
-        'optimize_bound_args':
-        {
-            'plane_constraints_lower': torch.from_numpy(plane_constraints_lower),
-            'plane_constraints_upper': torch.from_numpy(plane_constraints_upper),
-        }
+    new_bound_opt_args = {
+            'save_loss_graphs': True,
+            'perpendicular_multiplier': 100,
     }
-    alpha_bound_params.update(new_alpha_bound_params)
+    opt_bound_args.update(new_bound_opt_args)
+    alpha_bound_params.update({'optimize_bound_args': opt_bound_args})
     implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
     for start_idx in range(0, num_valid, batch_size):
@@ -230,7 +233,14 @@ def main():
         i = start_idx // batch_size
         print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
         out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
-                                                         node_upper_valid[start_idx:end_idx], swap_loss=True)
+                                                         node_upper_valid[start_idx:end_idx], swap_loss=True,
+                                                         plane_constraints_lower=torch.from_numpy(
+                                                             plane_constraints_lower[start_idx:end_idx]),
+                                                         plane_constraints_upper=torch.from_numpy(
+                                                             plane_constraints_upper[start_idx:end_idx]),
+                                                         # plane_constraints_lower=None,
+                                                         # plane_constraints_upper=None,
+                                                         )
         lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
         lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
         uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))

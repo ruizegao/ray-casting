@@ -1,5 +1,4 @@
 import numpy as np
-from jax.interpreters.batching import batch
 from torch import Tensor
 from torch import vmap
 from functools import partial
@@ -10,6 +9,7 @@ from enum import Enum
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 from datetime import datetime
 import matplotlib.patches as mpatches
@@ -106,7 +106,11 @@ def plot_plane(
         D: float,
         xlim: list[Union[float, int]],
         ylim: list[Union[float, int]],
-        samples: int = 1000
+        samples: int = 1000,
+        label: Optional[str] = None,
+        plot_normal_vector: bool = False,
+        x_L: Tensor = None,
+        x_U: Tensor = None,
 ):
     """
 
@@ -115,13 +119,38 @@ def plot_plane(
     :param D:       Plane offset
     :param xlim:    Graph x limits
     :param ylim:    Graph y limits
+    :param samples: Number of samples for the plane
+    :param label:   Label to give the plane in the plot
     :return:
     """
+    if plot_normal_vector:
+        assert x_L is not None and x_U is not None, "Cannot plot normal vector without x_L and x_U"
     [A, B, C] = normal
     xx, yy = np.meshgrid(np.linspace(xlim[0], xlim[1], samples), np.linspace(ylim[0], ylim[1], samples))
     zz = (-D - A * xx - B * yy) / C
     ax.plot_surface(xx, yy, zz, alpha=0.5)
+    if label is not None:
+        handles, labels = ax.get_legend_handles_labels()
+        surface_handle = Line2D([0], [0], color='blue', lw=4, label='My Surface')
+        handles.append(surface_handle)
+        labels.append(label)
+        ax.legend(handles=handles, labels=labels)
 
+    # plot the normal of the plane
+    if plot_normal_vector:
+        vertices = get_cube_vertices(x_L, x_U)
+        edge_masks = generate_cube_edges()
+        edges = vertices[edge_masks, :]
+        _, intersection_mask, intersection_pts = calculate_intersection(edges, torch.from_numpy(normal).to(edges), D, False)
+        intersection_pts = to_numpy(intersection_pts[intersection_mask])
+        inter_x = intersection_pts[:, 0]
+        inter_y = intersection_pts[:, 1]
+        normal_length = np.linalg.norm(normal)
+        unit_normal = normal / normal_length
+        x0, y0 = (np.mean(inter_x), np.mean(inter_y))  # Take the midpoint of x and y limits
+        z0 = (-D - A * x0 - B * y0) / C  # Calculate the corresponding z coordinate
+        ax.quiver(x0, y0, z0, unit_normal[0], unit_normal[1], unit_normal[2],
+                  color='red', length=1.0, normalize=True)
 
 def plot_cube(ax: Axes, vertices: ndarray, faces: ndarray):
     """
@@ -907,8 +936,12 @@ def batch_estimate_volume(
         normal: Tensor,
         D: Tensor,
         lower_bound: float = True,
+        plane_constraints: Optional[Tensor] = None,
         grid_precision: int = 10,
-) -> Tensor:
+        constraint_multiplier: float = 2.,
+        perpendicular_multiplier: Optional[float] = None,
+        return_dict = False
+) -> Tuple[Tensor, Optional[dict]]:
     """
 
     Rather than computing the exact volume that is formed by the intersection of a plane and some bounding box (bbox), a
@@ -920,18 +953,20 @@ def batch_estimate_volume(
     each sample point that is above the bbox is calculated, and the total distance is summed. The objective should be
     to minimize this total distance to 0 (all points are below the plane).
 
-    :param x_L:         bbox lower bounds
-    :param x_U:         bbox upper bounds
-    :param normal:      plane coefficients
-    :param D:           plane offsets
-    :param lower_bound: if the plane is a lower bound or an upper bound
-    :return:            `sum_dist` -- sum of distances between plane and points above the plane
+    :param x_L:                 bbox lower bounds
+    :param x_U:                 bbox upper bounds
+    :param normal:              plane coefficients
+    :param D:                   plane offsets
+    :param lower_bound:         if the plane is a lower bound or an upper bound
+    :param plane_constraints:   constraints on the bbox separating verified/unverified area
+    :return:                    `sum_dist` -- sum of distances between plane and points above the plane
     """
+    batches = x_L.size(0)
 
     # aids in the creation of the corner points of each grid
     step_tensor = torch.linspace(0, 1, grid_precision).reshape(1, 1, grid_precision).to(x_L)
 
-    grid_pts = (x_U - x_L).unsqueeze(2) * step_tensor
+    grid_pts = (x_U - x_L).unsqueeze(2) * step_tensor + x_L.unsqueeze(2)
     x_range, y_range, z_range = grid_pts[:, 0, :], grid_pts[:, 1, :], grid_pts[:, 2, :]
 
     # creates mesh grids in batches
@@ -947,14 +982,80 @@ def batch_estimate_volume(
     # We do not care to keep them in grid format so flatten the points
     grid_centers = grid_centers.flatten(1, 3)  # Shape: (batches, grid_precision^3, 3)
 
+    # utilize plane constraints if specified
+    verified_mask, perp_cost = [None]*2
+    if plane_constraints is not None:
+        num_constraints = plane_constraints.size(1)
+        c_normal, c_d = plane_constraints[:, :, :3], plane_constraints[:, :, 3]
+        constraint_distances = torch.einsum('bij,bkj->bik', grid_centers, c_normal) + c_d.reshape(batches, 1, num_constraints)
+        # b = batches, i = number of grid points, j = 3, k = m = number of constraints
+        if lower_bound:
+            verified_mask = (constraint_distances <= 0.).any(dim=2)
+        else:
+            verified_mask = (constraint_distances >= 0.).any(dim=2)
+
+        if perpendicular_multiplier is not None:
+            dot_prod = torch.einsum('bkj,bj->bk', c_normal, normal)  # shape (batches, m)
+            n1 = torch.linalg.norm(c_normal, dim=2)  # shape (batches, m)
+            n2 = torch.linalg.norm(normal, dim=1).reshape(batches, 1)
+            perp_cost = perpendicular_multiplier * (dot_prod / (n1 * n2)).sum()
+
     # calculate the distances (use einsum to compact this to a single line instead of performing so much reshaping and expanding)
-    distances = torch.einsum('bij,bj->bi', grid_centers, normal) + D.reshape(-1, 1)
+    distances = torch.einsum('bij,bj->bi', grid_centers, normal) + D.reshape(batches, 1)
+    distances /= torch.norm(normal, dim=1).reshape(batches, 1)
+    # b = batches, i = number of grid points, j = 3
 
     # want to minimize the total distance between the points above the plane and the plane itself
-    pos_mask = distances >= 0. if lower_bound else distances <= 0.
-    sum_dist = distances[pos_mask].sum()
+    inter_cost, above_cost = [None]*2
+    if lower_bound:
+        if verified_mask is not None:
+            pos_mask = distances >= 0.
+            inter_mask = torch.logical_and(pos_mask, verified_mask)
+            above_mask = torch.logical_and(pos_mask, torch.logical_not(verified_mask))
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[inter_mask] = constraint_multiplier
+            cost_matrix[above_mask] = 1.
+            inter_cost = (distances * cost_matrix).sum(dim=1)
+            above_cost = (distances * cost_matrix).sum(dim=1)
+            sum_dist = inter_cost + above_cost
+        else:
+            pos_mask = distances >= 0.
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[pos_mask] = 1.
+            above_cost = (distances*cost_matrix).sum(dim=1)
+            sum_dist = above_cost
+    else:
+        if verified_mask is not None:
+            pos_mask = distances <= 0.
+            inter_mask = torch.logical_and(pos_mask, verified_mask)
+            above_mask = torch.logical_and(pos_mask, torch.logical_not(verified_mask))
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[inter_mask] = constraint_multiplier
+            cost_matrix[above_mask] = 1.
+            inter_cost = (distances*cost_matrix).sum(dim=1)
+            above_cost = (distances*cost_matrix).sum(dim=1)
+            sum_dist = inter_cost + above_cost
+            sum_dist *= -1
+        else:
+            pos_mask = distances <= 0.
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[pos_mask] = 1.
+            above_cost = (distances * cost_matrix).sum(dim=1)
+            sum_dist = above_cost
+            sum_dist *= -1
 
-    return sum_dist
+    if perp_cost is not None:
+        sum_dist += perp_cost
+
+    if return_dict:
+        ret_dict = {
+            'perp_cost': to_numpy(perp_cost) if perp_cost is not None else None,
+            'inter_cost': to_numpy(inter_cost) if inter_cost is not None else None,
+            'above_cost': to_numpy(above_cost) if above_cost is not None else None,
+        }
+        return sum_dist, ret_dict
+    else:
+        return sum_dist, None
 
 
 ### vmap function signatures for simple batching
@@ -980,18 +1081,28 @@ def get_rows_cols(total_plots, max_cols = 4, max_plots = 12):
     return rows, cols
 
 def fill_plots(
-        axs,
-        forward_fn,
-        x_L: Tensor,
-        x_U: Tensor,
-        lA: Tensor,
-        lbias: Tensor,
-        volumes: Tensor,
-        plot_batches: int,
-        num_unverified,
-        num_spec,
-        i = 0
+        axs, forward_fn, x_L: Tensor, x_U: Tensor, lA: Tensor, lbias: Tensor, volumes: Tensor, plot_batches: int,
+        num_unverified, num_spec, bounds,
+        plane_constraints=None, plot_normal_vectors=False, i = 0
 ):
+    """
+
+    :param axs:
+    :param forward_fn:
+    :param x_L:
+    :param x_U:
+    :param lA:
+    :param lbias:
+    :param volumes:
+    :param plot_batches:
+    :param num_unverified:
+    :param num_spec:
+    :param bounds:
+    :param plane_constraints:
+    :param plot_normal_vectors:
+    :param i:
+    :return:
+    """
     faces = unit_cube_faces()
 
     for b in range(plot_batches):
@@ -1012,15 +1123,23 @@ def fill_plots(
 
         D = lbias.reshape(num_unverified, num_spec)[b].item()
         plot_cube(ax1, vertices, faces)
-        plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]])
+        plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]],
+                   plot_normal_vector=plot_normal_vectors, x_L=x_L[b], x_U=x_U[b])
         plot_intersection(ax1, vertices, normal, D)
+        if plane_constraints is not None:
+            c_normals, c_ds = to_numpy(plane_constraints[b, :, :3]), to_numpy(plane_constraints[b, :, 3])
+            for m in range(c_normals.shape[0]):
+                c_normal = c_normals[m]
+                c_d = c_ds[m].item()
+                plot_plane(ax1, c_normal, c_d, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]],
+                           label=f'Constraint Plane {m}', plot_normal_vector=plot_normal_vectors, x_L=x_L[b], x_U=x_U[b])
         ax1.set_xlim([x_L_np[0], x_U_np[0]])
         ax1.set_ylim([x_L_np[1], x_U_np[1]])
         ax1.set_zlim([x_L_np[2], x_U_np[2]])
         ax1.set_xlabel('X')
         ax1.set_ylabel('Y')
         ax1.set_zlabel('Z')
-        ax1.set_title(f"Iter. {i}\n(Volume {volumes[b].item():.3e})\nx_L: {x_L_np}\nx_U: {x_U_np}")
+        ax1.set_title(f"Iter. {i}\n(Volume {volumes[b].item():.3e})\nx_L: {x_L_np}\nx_U: {x_U_np}\ndm_lb {bounds[b].item():.2e}")
         # display the legend with the hyperplane coefficients
         handles, labels = ax1.get_legend_handles_labels()
         handles.extend([mpatches.Patch() for _ in range(4)])
@@ -1100,10 +1219,10 @@ def main():
     x_L = torch.zeros(3, **set_t)
     x_U = torch.ones(3, **set_t)
 
-    x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703], **set_t)
-    x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875], **set_t)
-    normal = torch.tensor([0.11218592, 0.8509685, -0.03051529], requires_grad=True, **set_t)
-    D = -0.10903698
+    # x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703], **set_t)
+    # x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875], **set_t)
+    # normal = torch.tensor([0.11218592, 0.8509685, -0.03051529], requires_grad=True, **set_t)
+    # D = -0.10903698
 
     iters = 50
     optimizer = OptimizerMethod.Adam
@@ -1360,24 +1479,116 @@ def heuristic_main():
     batches = 3
     x_L = torch.zeros((batches, 3), **set_t)
     x_U = torch.ones((batches, 3), **set_t)
-    normal = torch.ones((batches, 3), requires_grad=True, **set_t)
-    D = torch.ones(batches, **set_t) * -1.5
-
     lower_bound = True
+    use_plane_constraints = False
+    normal = torch.ones((batches, 3), **set_t)
+    normal[:, 0] = 1.8
+    D = torch.ones(batches, **set_t) * -1.5
+    if not lower_bound:
+        normal *= -1
+        D *= -1
+    normal.requires_grad_()
+    if use_plane_constraints:
+        plane_constraints = torch.tensor([
+            [1., 1., 1., -1.5]
+        ], **set_t).reshape(1, 1, 4).repeat(batches, 1, 1)
+        if not lower_bound:
+            plane_constraints *= -1
+    else:
+        plane_constraints = None
 
-    iters = 50
+    # for plotting
+    vertices = get_cube_vertices(x_L[0], x_U[1])
+    faces = unit_cube_faces()
+    vertices_np = to_numpy(vertices)
+    lim = to_numpy(torch.concatenate((x_L[0], x_U[0]), dim=0).reshape(2, -1))
+    x_lim = lim[:, 0]
+    y_lim = lim[:, 1]
+    z_lim = lim[:, 2]
+
+    show_plots = True
+
+    iters = 10
     grid_steps = 10
     optimizer = OptimizerMethod.Adam
     optimizer_class = optimizers_config[optimizer]["class"]
     optimizer_params = optimizers_config[optimizer]["params"]
     opt = optimizer_class([normal], maximize=False, **optimizer_params)
     losses = np.zeros(iters)
+    coeffs = np.zeros((iters, 3))
+
+    cost_fn_params = {
+        'lower_bound': True,
+        'plane_constraints': plane_constraints,
+        'grid_precision': grid_steps,
+        'constraint_multiplier': 2,
+        'perpendicular_multiplier': None,
+        'return_dict': True
+    }
+
     for i in range(iters):
+
+        if show_plots:
+            fig = plt.figure(figsize=(12, 8))
+            ax1 = fig.add_subplot(111, projection='3d')
+            f_normal = to_numpy(normal[0])
+            f_d = D[0].item()
+            plot_plane(ax1, f_normal, f_d, x_lim, y_lim, label='Opt Plane')
+            if plane_constraints is not None:
+                c_normals, c_ds = to_numpy(plane_constraints[0, :, :3]), to_numpy(plane_constraints[0, :, 3])
+                for m in range(c_normals.shape[0]):
+                    c_normal = c_normals[m]
+                    c_d = c_ds[m].item()
+                    plot_plane(ax1, c_normal, c_d, x_lim, y_lim, label=f'Constraint Plane {m}')
+            plot_cube(ax1, vertices_np, faces)
+            plot_intersection(ax1, vertices_np, f_normal, f_d)
+            ax1.set_title(f"Iter: {i}")
+            ax1.set_xlabel("x")
+            ax1.set_ylabel("y")
+            ax1.set_zlabel("z")
+            ax1.set_xlim(x_lim)
+            ax1.set_ylim(y_lim)
+            ax1.set_zlim(z_lim)
+            ax1.legend()
+            plt.show()
+
         opt.zero_grad()
-        loss = batch_estimate_volume(x_L, x_U, normal, D, lower_bound, grid_steps)
+        loss, cost_dict = batch_estimate_volume(x_L, x_U, normal, D, **cost_fn_params)
+        loss = loss.sum()
+        print(f"i {i} | {cost_dict}")
         losses[i] = loss.item()
+        coeffs[i] = to_numpy(normal[0])
         loss.backward()
         opt.step()
+
+    print(f"Initial coefficients: {coeffs[0, :]}")
+    print(f"Final coefficients: {coeffs[-1, :]}")
+
+    if show_plots:
+        plt.figure(figsize=(12, 8))
+        plt.subplot(2, 2, 1)
+        plt.plot(losses)
+        plt.title("Losses Over Iterations")
+        plt.xlabel("Iteration")
+        plt.ylabel("Loss (Volume)")
+        plt.grid()
+        plt.subplot(2, 2, 2)
+        plt.plot(coeffs[:, 0])
+        plt.title("Normal Coefficient a")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.subplot(2, 2, 3)
+        plt.plot(coeffs[:, 1])
+        plt.title("Normal Coefficient b")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.subplot(2, 2, 4)
+        plt.plot(coeffs[:, 2])
+        plt.title("Normal Coefficient c")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.savefig(out_path + "training_summary.png")
+        plt.show()
 
     print(f"Losses (volume): \n{losses}")
 

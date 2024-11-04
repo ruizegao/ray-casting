@@ -1102,7 +1102,9 @@ class BoundedModule(nn.Module):
             intermediate_constr=None, alpha_idx=None,
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
-            update_mask=None, ibp_nodes=None, cache_bounds=False, use_clip_domains=False, swap_loss=False):
+            update_mask=None, ibp_nodes=None, cache_bounds=False, use_clip_domains=False, swap_loss=False,
+            plane_constraints_lower: Optional[Tensor]=None, plane_constraints_upper: Optional[Tensor]=None
+    ):
         r"""Main function for computing bounds.
 
         Args:
@@ -1340,7 +1342,9 @@ class BoundedModule(nn.Module):
                 aux_reference_bounds=aux_reference_bounds,
                 needed_A_dict=needed_A_dict,
                 final_node_name=final_node_name,
-                cutter=cutter, decision_thresh=decision_thresh, use_clip_domains=use_clip_domains, swap_loss=swap_loss)
+                cutter=cutter, decision_thresh=decision_thresh, use_clip_domains=use_clip_domains, swap_loss=swap_loss,
+                plane_constraints_lower=plane_constraints_lower, plane_constraints_upper=plane_constraints_upper,
+                )
             if bound_lower:
                 ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
             else:
