@@ -840,14 +840,14 @@ def save_root_A(node, A_record, A_dict, roots, needed_A_dict, lb, ub,
                 if isinstance(roots[i].lA, Patches):
                     _lA = roots[i].lA
                 else:
-                    _lA = roots[i].lA.transpose(0, 1)  #.detach()
+                    _lA = roots[i].lA.transpose(0, 1).detach()
             else:
                 _lA = None
             if roots[i].uA is not None:
                 if isinstance(roots[i].uA, Patches):
                     _uA = roots[i].uA
                 else:
-                    _uA = roots[i].uA.transpose(0, 1)  #.detach()
+                    _uA = roots[i].uA.transpose(0, 1).detach()
             else:
                 _uA = None
 
@@ -860,8 +860,8 @@ def save_root_A(node, A_record, A_dict, roots, needed_A_dict, lb, ub,
                 "lA": _lA,
                 "uA": _uA,
                 # When not used, lb or ub is tensor(0). They have been transposed above.
-                "lbias": lb_ if lb_.ndim > 1 else None,
-                "ubias": ub_ if ub_.ndim > 1 else None,
+                "lbias": lb_.detach() if lb_.ndim > 1 else None,
+                "ubias": ub_.detach() if ub_.ndim > 1 else None,
                 "unstable_idx": unstable_idx
             }})
 

@@ -16,24 +16,15 @@
 #########################################################################
 import time
 import os
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from contextlib import ExitStack
 
 import torch
-from torch import optim, Tensor
-import numpy as np
-from typing import Tuple, Union, Optional, final
-from math import ceil
-
-from .perturbations import PerturbationLpNorm
-from .bounded_tensor import BoundedTensor
+from torch import optim
 from .beta_crown import print_optimized_beta
 from .cuda_utils import double2float
 from .utils import reduction_sum, multi_spec_keep_func_all
 from .opt_pruner import OptPruner
-from .clip_autoLiRPA import clip_domains
-from .hyperplane_volume_intersection import batch_cube_intersection_with_plane, finalize_plots, fill_plots, \
-    get_rows_cols
 ### preprocessor-hint: private-section-start
 from .adam_element_lr import AdamElementLR
 ### preprocessor-hint: private-section-end
@@ -42,13 +33,6 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .bound_general import BoundedModule
 
-# FIXME: This is here temporarily for debugging, be sure to remove later
-lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph = None, None, False, False, False
-ax_graph, fig_graph_lower, fig_graph_upper = None, None, None
-un_mask = None
-import matplotlib.pyplot as plt
-from .hyperplane_volume_intersection import get_cube_vertices, unit_cube_faces, to_numpy, plot_cube, plot_intersection, plot_plane
-out_path = "/home/jorgejc2/Documents/Research/ray-casting/alpha_crown_planes/"
 
 default_optimize_bound_args = {
     'enable_alpha_crown': True,  # Enable optimization of alpha.
@@ -113,9 +97,6 @@ default_optimize_bound_args = {
     # Try to ensure that the parameters always match with the optimized bounds.
     'deterministic': False,
     'max_time': 1e9,
-    # When using the total volume loss function, a batch of unverified nodes may be visually analzyed further for
-    # debugging and sanity checks
-    'save_loss_graphs': False
 }
 
 
@@ -207,10 +188,10 @@ def _to_default_dtype(self: 'BoundedModule', x, total_loss, full_ret, ret,
     self.to(torch.get_default_dtype())
     x[0].to(torch.get_default_dtype())
     full_ret = list(full_ret)
-    if isinstance(ret[0], Tensor):
+    if isinstance(ret[0], torch.Tensor):
         # round down lower bound
         full_ret[0] = double2float(full_ret[0], 'down')
-    if isinstance(ret[1], Tensor):
+    if isinstance(ret[1], torch.Tensor):
         # round up upper bound
         full_ret[1] = double2float(full_ret[1], 'up')
     for _k, _v in best_intermediate_bounds.items():
@@ -333,7 +314,7 @@ def _get_optimized_bounds(
         reuse_ibp=False, return_A=False, average_A=False, final_node_name=None,
         interm_bounds=None, reference_bounds=None,
         aux_reference_bounds=None, needed_A_dict=None, cutter=None,
-        decision_thresh=None, epsilon_over_decision_thresh=1e-4, use_clip_domains=False, swap_loss=False):
+        decision_thresh=None, epsilon_over_decision_thresh=1e-4):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -346,7 +327,6 @@ def _get_optimized_bounds(
     apply_output_constraints_to = opts['apply_output_constraints_to']
     opt_choice = opts['optimizer']
     keep_best = opts['keep_best']
-    save_loss_graphs = opts['save_loss_graphs']
     fix_interm_bounds = opts['fix_interm_bounds']
     loss_reduction_func = opts['loss_reduction_func']
     stop_criterion_func = opts['stop_criterion_func']
@@ -396,7 +376,7 @@ def _get_optimized_bounds(
 
     start = time.time()
 
-    if isinstance(decision_thresh, Tensor):
+    if isinstance(decision_thresh, torch.Tensor):
         if decision_thresh.dim() == 1:
             # add the spec dim to be aligned with compute_bounds return
             decision_thresh = decision_thresh.unsqueeze(-1)
@@ -456,32 +436,9 @@ def _get_optimized_bounds(
             apply_output_constraints_to
         )
 
-    global lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph, ax_graph, fig_graph_lower, fig_graph_upper
-    if swap_loss and (bound_lower or not bound_upper):
-        if lb_iter is None:
-            lb_iter = 0
-        else:
-            lb_iter += 1
-    if swap_loss and (bound_upper or not bound_lower):
-        if ub_iter is None:
-            ub_iter = 0
-        else:
-            ub_iter += 1
-
     need_grad = True
     patience = 0
     ret_0 = None
-    temp_return_A = return_A
-    if not return_A and use_clip_domains:
-        # clip domains needs lA and lbias
-        needed_A_dict = defaultdict(set)
-        needed_A_dict[self.output_name[0]].add(self.input_name[0])
-        temp_return_A = True
-    elif return_A and use_clip_domains:
-        # if A_dict was already required, also get lA and lbias of the whole network
-        extra_entries = defaultdict(set)
-        extra_entries[self.output_name[0]].add(self.input_name[0])
-        needed_A_dict.update(extra_entries)
     for i in range(iteration):
         if cutter:
             # cuts may be optimized by cutter
@@ -531,7 +488,7 @@ def _get_optimized_bounds(
             ret = self.compute_bounds(
                 x, aux, C, method=method, IBP=IBP, forward=forward,
                 bound_lower=bound_lower, bound_upper=bound_upper,
-                reuse_ibp=reuse_ibp, return_A=temp_return_A,
+                reuse_ibp=reuse_ibp, return_A=return_A,
                 final_node_name=final_node_name, average_A=average_A,
                 # When intermediate bounds are recomputed, we must set it
                 # to None
@@ -638,113 +595,6 @@ def _get_optimized_bounds(
                 self[directly_optimize_layer_name].upper.sum()
                 - self[directly_optimize_layer_name].lower.sum()
             )
-        # if swap_loss and bound_lower:
-        if swap_loss:
-            # parse to get lA and lbias
-            ret_A = ret[2]
-            if bound_lower:
-                dm_lb = ret_l
-                lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
-                lbias = ret_A[self.output_name[0]][self.input_name[0]]['lbias']
-            else:
-                dm_lb = ret_u
-                lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
-                lbias = ret_A[self.output_name[0]][self.input_name[0]]['ubias']
-
-
-            batch_lA = lA.flatten(2)
-            batches, num_spec, input_dim = batch_lA.shape
-
-            # Get the threshold in the proper format to use for edge case when calculating volume
-            if isinstance(decision_thresh, (float, int)):
-                threshold = torch.full_like(dm_lb, decision_thresh)
-            elif isinstance(decision_thresh, Tensor):
-                threshold = decision_thresh.clone()
-            else:
-                raise Exception("Make sure that 'decision_thresh' is specified.")
-
-            # def _concretize(xhat, eps, lA, lbias, sgn):
-            #     bound = lA.bmm(xhat) + sgn * lA.abs().bmm(eps) + lbias
-            #     return bound
-
-
-            # perform volume calculation for the loss function
-            x_L = x[0].ptb.x_L
-            x_U = x[0].ptb.x_U
-            # xhat = (x_U + x_L) / 2
-            # eps = (x_U - x_L) / 2
-            # sgn = -1 if bound_lower else +1
-            # xhat_vect = xhat.unsqueeze(2)  # to column vectors
-            # eps_vect = eps.unsqueeze(2)  # to column vectors
-
-            # reshape tensors to be compatible with the volume calculation in batches
-            lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
-            x_L_reshape = x_L.reshape(batches, input_dim)
-            x_U_reshape = x_U.reshape(batches, input_dim)
-            x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
-            x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
-            lbias_reshape = lbias.reshape(batches * num_spec, 1)
-            total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
-                                                      dm_lb.reshape(batches * num_spec, -1), threshold, lb_iter, bound_lower)
-
-            volumes = total_loss.detach().clone()  # for viewing
-            total_loss *= -1  # to maximize
-
-            # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
-            if save_loss_graphs and num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
-
-                ## graph set up
-
-                # get a set of fixed masks to analyze a set of unverified nodes
-                global un_mask
-                if un_mask is None:
-                    if bound_lower:
-                        un_mask = (dm_lb < 0).squeeze()
-                    elif bound_upper:
-                        un_mask = (dm_lb > 0).squeeze()
-                    un_mask_offset = 12 * 3  # start idx of nodes to plot
-                    un_mask[:un_mask_offset] = False
-                num_unverified = un_mask.to(dtype=torch.int).sum()
-                print(
-                    f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
-
-                [rows, cols] = get_rows_cols(num_unverified)
-
-                # create/retrieve list of figures that will be manipulated
-                if fig_graph_lower is None:
-                    fig_graph_lower = []
-
-                if fig_graph_upper is None:
-                    fig_graph_upper = []
-
-                if bound_lower:
-                    if len(fig_graph_lower) == i:
-                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                        axs = axs.flatten()
-                        fig_graph_lower.append((fig, axs))
-                    else:
-                        fig, axs = fig_graph_lower[i]
-                else:
-                    if len(fig_graph_upper) == i:
-                        fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                        axs = axs.flatten()
-                        fig_graph_upper.append((fig, axs))
-                    else:
-                        fig, axs = fig_graph_upper[i]
-
-                ## start of actual plotting
-
-                # keep entries that were unverified on the first iteration of alpha crown
-                nv_x_L = x_L[un_mask]  # nv for not verified
-                nv_x_U = x_U[un_mask]
-                nv_batch_lA = batch_lA[un_mask]
-                nv_lbias = lbias[un_mask]
-                nv_volumes = volumes[un_mask]
-                plot_batches = len(axs)   # number of plots
-
-                fill_plots(
-                    axs, self.forward,
-                    nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec, i)
 
         if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -753,7 +603,7 @@ def _get_optimized_bounds(
             loss = (total_loss * stop_criterion.logical_not()).sum()
 
         stop_criterion_final = isinstance(
-            stop_criterion, Tensor) and stop_criterion.all()
+            stop_criterion, torch.Tensor) and stop_criterion.all()
 
         if i == iteration - 1:
             best_ret = list(best_ret)
@@ -804,7 +654,7 @@ def _get_optimized_bounds(
             # (in case divergence) and second half iterations
             # or before early stop by either stop_criterion or
             # early_stop_patience reached
-            if True == False and (i < 1 or i > int(iteration * start_save_best) or deterministic
+            if (i < 1 or i > int(iteration * start_save_best) or deterministic
                     or stop_criterion_final or patience == early_stop_patience
                     or time_spent > max_time):
 
@@ -842,35 +692,6 @@ def _get_optimized_bounds(
                     if beta:
                         self.update_best_beta(enable_opt_interm_bounds, betas,
                                               best_betas, idx)
-
-        # udpate x_L, x_U
-        # with torch.no_grad():
-        #
-        #     # Now that we have the bounds, we can perform clipping and udpate the input bounds
-        #     if use_clip_domains and bound_lower:
-        #         if ret[2] is None:
-        #             raise Exception("Using clip domains requires A_dict but A_dict was not returned")
-        #
-        #         # FIXME: Now need to consider lb and ub, this is only correct for lb
-        #         clip_ret = clip_domains(
-        #             x_L,
-        #             x_U,
-        #             decision_thresh,
-        #             lA,
-        #             ret[0],
-        #             lbias,
-        #             False
-        #         )
-        #         [new_x_L, new_x_U] = clip_ret
-        #
-        #         # Form the new input bounded tensor
-        #         data = x[0].data.clone()
-        #         ptb = PerturbationLpNorm(
-        #             norm=x[0].ptb.norm, eps=x[0].ptb.eps, x_L=new_x_L, x_U=new_x_U)
-        #         new_x = BoundedTensor(data, ptb).to(data.device)  # the value of data doesn't matter, only ptb
-        #
-        #         x = (new_x,)  # input x must be a tuple
-
 
         if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
             print(f'****** iter [{i}]',
@@ -925,9 +746,6 @@ def _get_optimized_bounds(
                 opt.step(lr_scale=[loss_weight, loss_weight])
             else:
                 opt.step()
-
-        # Gradients have been computed, we can now clip the input x
-
 
         if beta:
             for b in betas:
@@ -1018,20 +836,6 @@ def _get_optimized_bounds(
 
     if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
         print()
-
-    if save_loss_graphs and not displayed_ub and bound_upper and swap_loss:
-        displayed_ub = True
-        figs = [fig for (fig, _) in fig_graph_upper]
-        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
-        titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
-        finalize_plots(figs, title, titles)
-
-    elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
-        displayed_lb = True
-        figs = [fig for (fig, _) in fig_graph_lower]
-        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
-        titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
-        finalize_plots(figs, title, titles)
 
     return best_ret
 

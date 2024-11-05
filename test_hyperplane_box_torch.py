@@ -1,6 +1,6 @@
 import numpy as np
 import torch
-from torch import Tensor, vmap
+from torch import Tensor
 from numpy import ndarray
 from scipy.spatial import Delaunay
 from typing import Tuple, Union, Optional
@@ -13,7 +13,7 @@ set_t = {
     "dtype": torch.float32,
     "device": torch.device("cuda"),
 }
-out_path = "/home/jorgejc2/Documents/Research/ray-casting/plane_training/"
+out_path = "plane_training/"
 
 def to_numpy(tensor: Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
@@ -225,16 +225,20 @@ def calculate_volume_above_plane(
     if verbose:
         print(f"Shape polyhedron vertices: {polyhedron_vertices.shape}")
         print("Tetrahedrons (vertex indices):")
-        print(tetrahedrons)
+        print(to_numpy(tetrahedrons))
         print(f"tetrahedron_vertices (shape {tetrahedron_vertices.shape}): \n{to_numpy(tetrahedron_vertices)}")
     ## stop check
 
-    b_a = tetrahedron_vertices[:, 0, :]
-    b_b = tetrahedron_vertices[:, 1, :]
-    b_c = tetrahedron_vertices[:, 2, :]
-    b_ref = tetrahedron_vertices[:, 3, :]
-    b_volume_of_tetrahedron = vmap(volume_of_tetrahedron)
-    total_volume = b_volume_of_tetrahedron(b_ref, b_a, b_b, b_c).sum(0)
+    total_volume = 0.0
+    for i in range(len(tetrahedron_vertices)):
+        a = tetrahedron_vertices[i, 0, :]
+        b = tetrahedron_vertices[i, 1, :]
+        c = tetrahedron_vertices[i, 2, :]
+        ref_point = tetrahedron_vertices[i, 3, :]
+        curr_volume = volume_of_tetrahedron(ref_point, a, b, c)
+        total_volume += curr_volume
+        if verbose:
+            print(f"i {i + 1} | {curr_volume:.3f} | {total_volume:.3f}")
 
     # Plot each tetrahedron
     for tet in tetrahedrons:
@@ -334,7 +338,7 @@ def visualize_cube_intersection_with_plane(
     ax1.set_ylabel('Y')
     ax1.set_zlabel('Z')
 
-    ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {iter})")
+    ax1.set_title(f"Bounding Box with Plane Intersection (Iter. {iter}")
 
     ax1.legend()
     plt.savefig(out_path + f"frame_{iter}.png")
@@ -371,7 +375,7 @@ def main():
 
     ## turns plots into a video clip
     with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
-        for i in range(iters):
+        for i in range(50):
             image = imageio.imread(out_path + f"frame_{i}.png")
             writer.append_data(image)
 
