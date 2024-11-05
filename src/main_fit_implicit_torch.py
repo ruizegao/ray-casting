@@ -162,7 +162,7 @@ class FitSurfaceModel(nn.Module):
 
         return loss.item()
 
-def load_netobject(pth_file: str) -> FitSurfaceModel:
+def load_net_object(pth_file: str) -> FitSurfaceModel:
     """
     A helper function that retrieves a torch network from a .pth file
     :param pth_file:    .pth file to load network parameters and weights from.
@@ -478,6 +478,7 @@ def main(args: dict):
     activation = args["activation"]
     n_layers = args["n_layers"]
     layer_width = args["layer_width"]
+    # TODO: Not a priority, but positional networks not supported as of yet
     positional_encoding = args["positional_encoding"]
     positional_count = args["positional_count"]
     positional_pow_start = args["positional_pow_start"]
