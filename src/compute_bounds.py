@@ -53,6 +53,7 @@ def main():
     parser.add_argument("--split_depth", type=int, default=21)
     parser.add_argument("--max_split_depth", type=int, default=36)
     parser.add_argument("--batch_size", type=int, default=256)
+    parser.add_argument("--alpha_pass", action='store_true')
     parser.add_argument("--use_cache", action='store_true')
     # Parse arguments
     args = parser.parse_args()
@@ -177,97 +178,109 @@ def main():
     first_stage_time = time.time() - start_time
     print("First pass time: ", first_stage_time)
 
-    ### second, we do a pass of alpha-CROWN with one plane constraint ###
     # concatenate the constraints into a single tensor
     plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
     plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
-    # update the implicit function
-    opt_bound_args = {
-        'iteration': 10,
-        'lr_alpha': 1e-1,
-        'keep_best': False,
-        'early_stop_patience': 1e6,
-        'lr_decay': 1,
-        'save_loss_graphs': False
-    }
-    if USE_CUSTOM_LOSS_OPTION:
-        opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})
-    alpha_bound_params = {'optimize_bound_args': opt_bound_args}
-    implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
-    for start_idx in range(0, num_valid, batch_size):
-        end_idx = min(start_idx + batch_size, num_valid)
-        i = start_idx // batch_size
-        print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
-        out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
-                                                         node_upper_valid[start_idx:end_idx], swap_loss=True,
-                                                         use_custom_loss=USE_CUSTOM_LOSS_OPTION,
-                                                         plane_constraints_lower=torch.from_numpy(
-                                                             plane_constraints_lower[start_idx:end_idx]),
-                                                         plane_constraints_upper=torch.from_numpy(
-                                                             plane_constraints_upper[start_idx:end_idx]),
-                                                         # plane_constraints_lower=None,
-                                                         # plane_constraints_upper=None,
-                                                         )
-        lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
-        lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
-        uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
-        ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
+    second_stage_time = None
+    if args.alpha_pass:
+        ### second, we do a pass of alpha-CROWN with one plane constraint ###
 
-    new_plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
-    new_plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
+        # update the implicit function
+        opt_bound_args = {
+            'iteration': 10,
+            'lr_alpha': 1e-1,
+            'keep_best': False,
+            'early_stop_patience': 1e6,
+            'lr_decay': 1,
+            'save_loss_graphs': False
+        }
+        if USE_CUSTOM_LOSS_OPTION:
+            opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})
+        alpha_bound_params = {'optimize_bound_args': opt_bound_args}
+        implicit_func.change_mode("alpha-crown", alpha_bound_params)
 
-    plane_constraints_lower = np.concatenate((plane_constraints_lower, new_plane_constraints_lower), axis=1)
-    plane_constraints_upper = np.concatenate((plane_constraints_upper, new_plane_constraints_upper), axis=1)
+        for start_idx in range(0, num_valid, batch_size):
+            end_idx = min(start_idx + batch_size, num_valid)
+            i = start_idx // batch_size
+            print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
+            out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
+                                                             node_upper_valid[start_idx:end_idx], swap_loss=True,
+                                                             use_custom_loss=USE_CUSTOM_LOSS_OPTION,
+                                                             plane_constraints_lower=torch.from_numpy(
+                                                                 plane_constraints_lower[start_idx:end_idx]),
+                                                             plane_constraints_upper=torch.from_numpy(
+                                                                 plane_constraints_upper[start_idx:end_idx]),
+                                                             # plane_constraints_lower=None,
+                                                             # plane_constraints_upper=None,
+                                                             )
+            lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
+            lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
+            uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
+            ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
 
-    second_stage_time = time.time() - start_time
-    print("Second pass time: ", second_stage_time)
+        new_plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
+        new_plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
 
-    ### third, we do a final pass of CROWN with two plane constraints ###
+        plane_constraints_lower = np.concatenate((plane_constraints_lower, new_plane_constraints_lower), axis=1)
+        plane_constraints_upper = np.concatenate((plane_constraints_upper, new_plane_constraints_upper), axis=1)
 
-    new_bound_opt_args = {
-            'save_loss_graphs': True,
-            'perpendicular_multiplier': 100,
-    }
-    opt_bound_args.update(new_bound_opt_args)
-    alpha_bound_params.update({'optimize_bound_args': opt_bound_args})
-    implicit_func.change_mode("alpha-crown", alpha_bound_params)
+        second_stage_time = time.time() - start_time
+        print("Second pass time: ", second_stage_time)
 
-    for start_idx in range(0, num_valid, batch_size):
-        end_idx = min(start_idx + batch_size, num_valid)
-        i = start_idx // batch_size
-        print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
-        out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
-                                                         node_upper_valid[start_idx:end_idx], swap_loss=True,
-                                                         use_custom_loss=USE_CUSTOM_LOSS_OPTION,
-                                                         plane_constraints_lower=torch.from_numpy(
-                                                             plane_constraints_lower[start_idx:end_idx]),
-                                                         plane_constraints_upper=torch.from_numpy(
-                                                             plane_constraints_upper[start_idx:end_idx]),
-                                                         # plane_constraints_lower=None,
-                                                         # plane_constraints_upper=None,
-                                                         )
-        lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
-        lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
-        uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
-        ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
+        # TODO: Potentially remove this third pass altogether. It does not seem to provide any meaningful benefit
+        ### third, we do a final pass of CROWN with two plane constraints ###
 
-    new_plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
-    new_plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
+        # new_bound_opt_args = {
+        #         'save_loss_graphs': True,
+        #         'perpendicular_multiplier': 100,
+        # }
+        # opt_bound_args.update(new_bound_opt_args)
+        # alpha_bound_params.update({'optimize_bound_args': opt_bound_args})
+        # implicit_func.change_mode("alpha-crown", alpha_bound_params)
+        #
+        # for start_idx in range(0, num_valid, batch_size):
+        #     end_idx = min(start_idx + batch_size, num_valid)
+        #     i = start_idx // batch_size
+        #     print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
+        #     out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
+        #                                                      node_upper_valid[start_idx:end_idx], swap_loss=True,
+        #                                                      use_custom_loss=USE_CUSTOM_LOSS_OPTION,
+        #                                                      plane_constraints_lower=torch.from_numpy(
+        #                                                          plane_constraints_lower[start_idx:end_idx]),
+        #                                                      plane_constraints_upper=torch.from_numpy(
+        #                                                          plane_constraints_upper[start_idx:end_idx]),
+        #                                                      # plane_constraints_lower=None,
+        #                                                      # plane_constraints_upper=None,
+        #                                                      )
+        #     lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
+        #     lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
+        #     uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
+        #     ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
+        #
+        # new_plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
+        # new_plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
+        #
+        # plane_constraints_lower = np.concatenate((plane_constraints_lower, new_plane_constraints_lower), axis=1)
+        # plane_constraints_upper = np.concatenate((plane_constraints_upper, new_plane_constraints_upper), axis=1)
 
-    plane_constraints_lower = np.concatenate((plane_constraints_lower, new_plane_constraints_lower), axis=1)
-    plane_constraints_upper = np.concatenate((plane_constraints_upper, new_plane_constraints_upper), axis=1)
+        # third_stage_time = time.time() - start_time
+        # print("Third pass time: ", third_stage_time)
 
+    # save all bounds and node bounds to .npz to later compute the mesh of the object
     out_valid = {
         'lower': to_numpy(node_lower_valid),
         'upper': to_numpy(node_upper_valid),
-         'plane_constraints_lower': plane_constraints_lower,
-         'plane_constraints_upper': plane_constraints_upper
+        'mA': to_numpy(0.5 * lAs + 0.5 * uAs),
+        'mb': to_numpy(0.5 * lbs + 0.5 * ubs),
+        'lA': to_numpy(lAs),
+        'lb': to_numpy(lbs),
+        'uA': to_numpy(uAs),
+        'ub': to_numpy(ubs),
+        'plane_constraints_lower': plane_constraints_lower[:, 1:, :],  # the first plane constraint is lA, lb so skip
+        'plane_constraints_upper': plane_constraints_upper[:, 1:, :],  # the first plane constraint is lA, lb so skip
     }
     np.savez(args.save_to, **out_valid)
-    third_stage_time = time.time() - start_time
-    print("Third pass time: ", third_stage_time)
-
     total_time = time.time() - start_time
 
     # Helper function to convert seconds to hours, minutes, seconds, milliseconds
@@ -283,8 +296,8 @@ def main():
     table.field_names = ["Stage", "Run Time (hh:mm:ss.ms)"]
     table.add_row(["Tree Building Time", format_time(first_stage_time)])
     table.add_row(["CROWN Pass", format_time(first_stage_time)])
-    table.add_row(["alpha-CROWN Pass 1", format_time(second_stage_time)])
-    table.add_row(["alpha-CROWN Pass 2", format_time(third_stage_time)])
+    table.add_row(["alpha-CROWN Pass 1", format_time(second_stage_time) if second_stage_time is not None else "N/A"])
+    # table.add_row(["alpha-CROWN Pass 2", format_time(third_stage_time)])
     table.add_row(["Total", format_time(total_time)])
 
     # Print the table

@@ -86,9 +86,16 @@ def main():
         # trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
         # trimesh_mesh.show()
 
-    node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs = [val for val in np.load(args.load_from).values()]
+    ret_val = [val for val in np.load(args.load_from).values()]
+    [node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs, plane_constraints_lower, plane_constraints_upper] = ret_val
 
     register_plane_and_cube_with_polyscope(lAs, lbs, node_lower, node_upper)
+    num_constraints = plane_constraints_lower.shape[1]
+    for m in range(num_constraints):
+        cAs = plane_constraints_lower[:, m, :3]
+        cbs = plane_constraints_lower[:, m, 3]
+        register_plane_and_cube_with_polyscope(cAs, cbs, node_lower, node_upper)
+
 
 if __name__ == '__main__':
     main()
