@@ -47,6 +47,8 @@ class FitSurfaceModel(nn.Module):
             activation_fn = nn.ReLU()
         elif activation_lower == 'elu':
             activation_fn = nn.ELU()
+        elif activation_lower == 'sigmoid':
+            activation_fn = nn.Sigmoid()
         else:
             raise ValueError("Activation not recognized. If you wish to use a new activation function, "
                              "feel free to add it to the list in the constructor.")
@@ -269,7 +271,7 @@ def fit_model(
 
 def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_path: Optional[str] = None, display: bool = False):
     """
-
+    Displays and/or saves the metrics recorded during the training of the implicit surface.
     :param losses:
     :param correct_fracs:
     :param save_path:
@@ -309,8 +311,7 @@ def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False
     :param verbose:     If true, prints additional logging information
     :return:
     """
-    # Iterate over model parameters
-    npz_dict = {}
+    npz_dict = {}  # holds network architecture
     if verbose:
         print("Adding optimizable parameters to the npz dictionary")
     for name, param in NetObject.named_parameters():
@@ -346,6 +347,12 @@ def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False
             print(f"Module Name: {name}")
             print(f"Module Value: {layer}")
             print("-" * 30)
+
+    squeeze_last_idx = len(NetObject.model._modules.keys())
+    if verbose:
+        print(f"Adding squeeze last as layer index {squeeze_last_idx}")
+    squeeze_last_idx_formatted = f"{squeeze_last_idx:04d}.squeeze_last._"
+    npz_dict[squeeze_last_idx_formatted] = np.empty(0)
 
     if verbose:
         print(f"Saving network in .npz format with path {npz_path} \nand dictionary with keys \n{npz_dict.keys()}")
@@ -393,6 +400,9 @@ def main(
     parser.add_argument("--debug-nans", action='store_true')
     parser.add_argument("--enable-double-precision", action='store_true')
 
+    # general options
+    parser.add_argument("--verbose", action='store_true')
+
     # Parse arguments
     args = parser.parse_args()
 
@@ -400,6 +410,7 @@ def main(
 
     input_file = args.input_file if input_file is None else input_file
     output_file = args.output_file if output_file is None else output_file
+    verbose = args.verbose
 
     # validate some inputs
     if args.activation not in ['relu', 'elu', 'cos']:
@@ -426,7 +437,7 @@ def main(
         'n_samples': args.n_samples,
         'sample_weight_beta': args.sample_weight_beta,
         'sample_ambient_range': args.sample_ambient_range,
-        'verbose': True
+        'verbose': verbose
     }
     train_dataset = SampleDataset(**dataset_pararms)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
@@ -448,9 +459,8 @@ def main(
     plt_file = output_file.replace('.npz', '.png')
     plot_training_metrics(losses, correct_fracs, plt_file, True)
 
-
     # save neural network in .npz format
-    save_to_npz(NetObject, output_file, True)
+    save_to_npz(NetObject, output_file, verbose)
 
 def load_netobject(pth_file: str) -> FitSurfaceModel:
     # load in parameters needed to initialize the model
@@ -471,8 +481,8 @@ def pth_to_npz():
     save_to_npz(NetObject, npz_file, True)
 
 if __name__ == '__main__':
-    main()
-    # pth_to_npz()
+    # main()
+    pth_to_npz()
     # use_predefined_files = True
     # input_directory = "/home/jorgejc2/Documents/Research/ray-casting/Thingi10K/raw_meshes/"
     # output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
