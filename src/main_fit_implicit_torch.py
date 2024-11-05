@@ -1,5 +1,3 @@
-from collections import OrderedDict
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,13 +7,15 @@ from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
+from collections import OrderedDict
+from enum import Enum
 import numpy as np
 import os
 
 # imports specific to sdf
 import igl, geometry
 
-print(plt.style.available)
+# print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = True
 plt.style.use("seaborn-white")
 
@@ -24,12 +24,37 @@ set_t = {
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
-available_activations = [nn.ReLU, nn.ELU, nn.Sigmoid]
+available_activations = [nn.ReLU, nn.ELU, nn.Sigmoid]  # list of currently supported activation functions
 
 to_numpy = lambda x : x.detach().cpu().numpy()  # converts tensors to numpy arrays
 
+class MainApplicationMethod(Enum):
+    """
+    1) Default manner of training an implicit surface for a single .obj file
+    2) Trains implicit surface for all available .obj files in the Thingi10K dataset
+    3) Trains implicit surface for all .obj files in the Meshes Master dataset
+    """
+    Default = 1
+    TrainThingi10K = 2
+    TrainMeshesMaster = 3
+
+    @classmethod
+    def get(cls, identifier, default=None):
+        # Check if the identifier is a valid name
+        if isinstance(identifier, str):
+            return cls.__members__.get(identifier, default)
+        # Check if the identifier is a valid value
+        elif isinstance(identifier, int):
+            for member in cls:
+                if member.value == identifier:
+                    return member
+            return default
+        else:
+            raise TypeError("Identifier must be a string (name) or an integer (value)")
+
 class FitSurfaceModel(nn.Module):
-    def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8, layer_width:int=32):
+    def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8, layer_width:int=32,
+                 step_size: Optional[int] = None, gamma: Optional[float] = None):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
@@ -54,11 +79,14 @@ class FitSurfaceModel(nn.Module):
                              "feel free to add it to the list in the constructor.")
         activation_fn_name = activation_fn.__class__.__name__.lower()
 
-        # create the network based on the specifications
+        ## create the network based on the specifications
+
+        # first layers
         layers = [
             ('0000_dense', nn.Linear(3, layer_width)),
             (f'0001_{activation_fn_name}', activation_fn)
         ]
+        # hidden layers
         for i in range(n_layers - 2):
             layer_count = len(layers)
             layer_count_formatted = f"{layer_count:04d}_"
@@ -67,6 +95,7 @@ class FitSurfaceModel(nn.Module):
                 (layer_count_formatted + 'dense', nn.Linear(layer_width, layer_width)),
                 (f'{layer_count_formatted_plus_one}{activation_fn_name}', activation_fn)
             ])
+        # last layer
         if fit_mode == 'occupancy':
             # binary classification, should be a probability in range (0, 1)
             layer_count = len(layers)
@@ -90,12 +119,18 @@ class FitSurfaceModel(nn.Module):
             self.loss_fn = nn.L1Loss()
         else:
             raise ValueError("fit_mode must be either 'occupancy' or 'sdf'")
-        # convert layers to OrderedDict
+        # convert layers to OrderedDict to retain custom layer names
         layer_dict = OrderedDict(layers)
         self.model = nn.Sequential(layer_dict)
 
         # set optimizer
+        self.lr = lrate
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
+
+        # set LR scheduler
+        self.scheduler = None
+        if step_size is not None and gamma is not None:
+            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
 
     def forward(self, x: Tensor) -> Tensor:
         """
@@ -126,6 +161,21 @@ class FitSurfaceModel(nn.Module):
         self.optimizer.step()
 
         return loss.item()
+
+def load_netobject(pth_file: str) -> FitSurfaceModel:
+    """
+    A helper function that retrieves a torch network from a .pth file
+    :param pth_file:    .pth file to load network parameters and weights from.
+    :return:    Network object
+    """
+    pth_dict = torch.load(pth_file)
+    state_dict = pth_dict["state_dict"]  # weights and biases
+    model_params = pth_dict["model_params"]  # rest of the parameters
+    NetObject = FitSurfaceModel(**model_params)  # initialize object
+    NetObject.load_state_dict(state_dict)  # load in weights and biases
+    NetObject.eval()  # set to evaluation mode
+
+    return NetObject
 
 class SampleDataset(Dataset):
     def __init__(
@@ -182,7 +232,7 @@ class SampleDataset(Dataset):
         # save inputs and labels
         if verbose:
             print(f"Saving samples and labels to the dataset")
-        self.x = torch.from_numpy(samp)
+        self.x = torch.from_numpy(samp)  # shape (n_samples, 3)
         self.y = torch.from_numpy(samp_target).reshape(n_samples, 1)
 
     def __len__(self) -> int:
@@ -249,33 +299,42 @@ def fit_model(
             n_total += len(batch_x)
             curr_epoch_loss = NetObject.step(batch_x, batch_y)
             epoch_loss += curr_epoch_loss
-            losses.append(curr_epoch_loss)
             with torch.no_grad():
                 correct_count = batch_count_correct(NetObject, batch_x, batch_y, fit_mode).item()
                 n_correct += correct_count
                 correct_counts.append(correct_count)
 
+        # get the current learning rate
+        if NetObject.scheduler is not None:
+            NetObject.scheduler.step()
+            current_lr = NetObject.scheduler.get_last_lr()[0]
+        else:
+            current_lr = NetObject.lr
+        # calculate the fraction of correctly predicted signs
         frac_correct= n_correct / n_total
         correct_fracs.append(frac_correct)
+        # calculate the epoch loss and update progress bar
         epoch_loss /= len(train_loader)
+        losses.append(epoch_loss)
         epoch_progress_bar.update(1)
         epoch_progress_bar.set_postfix(
             {
                 'Epoch Loss': epoch_loss,
-                'Correct Sign': f'{100*frac_correct:.2f}%'
+                'Correct Sign': f'{100*frac_correct:.2f}%',
+                'Learning Rate': current_lr,
             }
         )
 
-    # return losses and trained network
+    # return metrics and trained network
     return losses, correct_counts, correct_fracs, NetObject
 
 def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_path: Optional[str] = None, display: bool = False):
     """
     Displays and/or saves the metrics recorded during the training of the implicit surface.
-    :param losses:
-    :param correct_fracs:
-    :param save_path:
-    :param display:
+    :param losses:          List of losses over epochs
+    :param correct_fracs:   List of fraction of correct sign predictions of epochs
+    :param save_path:       Path to save the plot to
+    :param display:         If true, displays the plot
     :return:
     """
     if save_path is None and not display:
@@ -305,7 +364,12 @@ def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_
 
 def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False):
     """
-    Saves the Torch model as a .npz file that can be loaded in by the other ray tracing scripts.
+    Saves the Torch model as a .npz file that can be loaded in by the other ray tracing scripts. Runs in 3 stages:
+
+    1) Get all the optimizable layers which are simply the linear layers and format them
+    2) Get all the activation functions and add them to the npz dictionary as well
+    3) Finally, add a 'squeeze_last' parameter as the ray-tracing scripts rely on this parameter.
+
     :param NetObject:   Neural network object to save
     :param npz_path:    .npz file path to save the network to
     :param verbose:     If true, prints additional logging information
@@ -350,7 +414,7 @@ def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False
 
     squeeze_last_idx = len(NetObject.model._modules.keys())
     if verbose:
-        print(f"Adding squeeze last as layer index {squeeze_last_idx}")
+        print(f"Adding squeeze_last at layer index {squeeze_last_idx}")
     squeeze_last_idx_formatted = f"{squeeze_last_idx:04d}.squeeze_last._"
     npz_dict[squeeze_last_idx_formatted] = np.empty(0)
 
@@ -358,20 +422,15 @@ def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False
         print(f"Saving network in .npz format with path {npz_path} \nand dictionary with keys \n{npz_dict.keys()}")
     np.savez(npz_path, **npz_dict)
 
-def main(
-        input_file: Optional[str] = None,
-        output_file: Optional[str] = None
-):
-    assert (input_file is None and output_file is None) or (
-                isinstance(input_file, str) and isinstance(output_file, str))
-
-    print(f"Torch Settings: {set_t}")
-
+def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
+    # Program mode
+    parser.add_argument("--program_mode", type=str, default=MainApplicationMethod.Default.name)
+
     # Build arguments
-    parser.add_argument("input_file", type=str)
-    parser.add_argument("output_file", type=str)
+    parser.add_argument("--input_file", type=str, default=None)
+    parser.add_argument("--output_file", type=str, default=None)
 
     # network
     parser.add_argument("--activation", type=str, default='elu')
@@ -394,56 +453,85 @@ def main(
     parser.add_argument("--lr_decay_every", type=int, default=99999)
     parser.add_argument("--lr_decay_frac", type=float, default=.5)
 
-    # jax options
-    parser.add_argument("--log-compiles", action='store_true')
-    parser.add_argument("--disable-jit", action='store_true')
-    parser.add_argument("--debug-nans", action='store_true')
-    parser.add_argument("--enable-double-precision", action='store_true')
-
     # general options
     parser.add_argument("--verbose", action='store_true')
+    parser.add_argument("--display_plots", action='store_true')
 
     # Parse arguments
     args = parser.parse_args()
+    args_dict = vars(args)
+
+    return args_dict
+
+def main(args: dict):
+
+    print(f"Torch Settings: {set_t}")
+
+    ##  unpack arguments
+
+    # Build arguments
+    input_file = args["input_file"]
+    output_file = args["output_file"]
+    if input_file is None or output_file is None:
+        raise ValueError("input_file and/or output_file is None")
+    # network
+    activation = args["activation"]
+    n_layers = args["n_layers"]
+    layer_width = args["layer_width"]
+    positional_encoding = args["positional_encoding"]
+    positional_count = args["positional_count"]
+    positional_pow_start = args["positional_pow_start"]
+    # loss / data
+    fit_mode = args["fit_mode"]
+    n_epochs = args["n_epochs"]
+    n_samples = args["n_samples"]
+    sample_ambient_range = args["sample_ambient_range"]
+    sample_weight_beta = args["sample_weight_beta"]
+    # training
+    lr = args["lr"]
+    batch_size = args["batch_size"]
+    lr_decay_every = args["lr_decay_every"]
+    lr_decay_frac = args["lr_decay_frac"]
+    # general options
+    verbose = args["verbose"]
+    display_plots = args["display_plots"]
 
     print(f"Program Configuration: {args}")
 
-    input_file = args.input_file if input_file is None else input_file
-    output_file = args.output_file if output_file is None else output_file
-    verbose = args.verbose
-
     # validate some inputs
-    if args.activation not in ['relu', 'elu', 'cos']:
+    if activation not in ['relu', 'elu', 'cos']:
         raise ValueError("unrecognized activation")
-    if args.fit_mode not in ['occupancy', 'sdf']:
+    if fit_mode not in ['occupancy', 'sdf']:
         raise ValueError("unrecognized activation")
     if not output_file.endswith('.npz'):
         raise ValueError("output file should end with .npz")
 
     # initialize the network
     model_params = {
-        'lrate': args.lr,
-        'fit_mode': args.fit_mode,
-        'activation': args.activation,
-        'n_layers': args.n_layers,
-        'layer_width': args.layer_width,
+        'lrate': lr,
+        'fit_mode': fit_mode,
+        'activation': activation,
+        'n_layers': n_layers,
+        'layer_width': layer_width,
+        'step_size': lr_decay_every,
+        'gamma': lr_decay_frac,
     }
     NetObject = FitSurfaceModel(**model_params)
 
     # initialize the dataset
     dataset_pararms = {
         'mesh_input_file': input_file,
-        'fit_mode': args.fit_mode,
-        'n_samples': args.n_samples,
-        'sample_weight_beta': args.sample_weight_beta,
-        'sample_ambient_range': args.sample_ambient_range,
+        'fit_mode': fit_mode,
+        'n_samples': n_samples,
+        'sample_weight_beta': sample_weight_beta,
+        'sample_ambient_range': sample_ambient_range,
         'verbose': verbose
     }
     train_dataset = SampleDataset(**dataset_pararms)
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, drop_last=True)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     # train the neural network
-    losses, correct_counts, correct_fracs, NetObject = fit_model(NetObject, train_loader, args.fit_mode, args.n_epochs)
+    losses, correct_counts, correct_fracs, NetObject = fit_model(NetObject, train_loader, fit_mode, n_epochs)
     NetObject.eval()  # set to evaluation mode
 
     # save the neural network in Torch format
@@ -457,45 +545,64 @@ def main(
 
     # display results
     plt_file = output_file.replace('.npz', '.png')
-    plot_training_metrics(losses, correct_fracs, plt_file, True)
+    plot_training_metrics(losses, correct_fracs, plt_file, display_plots)
 
-    # save neural network in .npz format
+    # save the neural network in .npz format
     save_to_npz(NetObject, output_file, verbose)
 
-def load_netobject(pth_file: str) -> FitSurfaceModel:
-    # load in parameters needed to initialize the model
-    pth_dict = torch.load(pth_file)
-    state_dict = pth_dict["state_dict"]
-    model_params = pth_dict["model_params"]
-    NetObject = FitSurfaceModel(**model_params)
-    NetObject.load_state_dict(state_dict)
-    NetObject.eval()
+def TrainThingi10K_main(args: dict):
+    """
+    Main program for training implicit surfaces on the entire Thingi10K dataset
+    :param args: Default main program arguments/configurations
+    :return:
+    """
+    input_directory = "/home/jorgejc2/Documents/Research/ray-casting/Thingi10K/raw_meshes/"
+    output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
+    file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
+    os.makedirs(output_directory, exist_ok=True)
+    input_files = [input_directory + f for f in file_names]
+    output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
+    for in_file, out_file in zip(input_files, output_files):
+        args.update({
+            'input_file': in_file,
+            'output_file': out_file,
+        })
+        main(args)
 
-    return NetObject
-
-def pth_to_npz():
-    pth_file = '/home/jorgejc2/Documents/Research/ray-casting/Thingi10K_Meshes/59340.pth'
-    NetObject = load_netobject(pth_file)
-
-    npz_file = pth_file.replace('.pth', '.npz')
-    save_to_npz(NetObject, npz_file, True)
+def TrainMeshesMaster_main(args: dict):
+    """
+    Main program for training implicit surfaces on the entire Meshes Master dataset
+    :param args: Default main program arguments/configurations
+    :return:
+    """
+    input_directory = "/home/jorgejc2/Documents/Research/ray-casting/meshes-master/objects/"
+    subdirectories = [input_directory + name + '/' for name in os.listdir(input_directory)
+                      if os.path.isdir(os.path.join(input_directory, name))]
+    output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/meshes-master_inputs/"
+    os.makedirs(output_directory, exist_ok=True)
+    for sub in subdirectories:
+        file_names = [f for f in os.listdir(sub) if f.endswith('.obj')]
+        input_files = [sub + f for f in file_names]
+        output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
+        for in_file, out_file in zip(input_files, output_files):
+            args.update({
+                'input_file': in_file,
+                'output_file': out_file,
+            })
+            main(args)
 
 if __name__ == '__main__':
-    # main()
-    pth_to_npz()
-    # use_predefined_files = True
-    # input_directory = "/home/jorgejc2/Documents/Research/ray-casting/Thingi10K/raw_meshes/"
-    # output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
-    # os.makedirs(output_directory, exist_ok=True)
-    # file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
-    # input_files = [input_directory + f for f in file_names]
-    # output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
-    # main_args = {
-    #     "input_files": input_files,
-    #     "output_files": output_files
-    # }
-    # if use_predefined_files:
-    #     for in_file, out_file in zip(input_files, output_files):
-    #         main(in_file, out_file)
-    # else:
-    #     main()
+    # parse user arguments
+    args_dict = parse_args()
+    program_mode_name = args_dict.pop('program_mode')
+    program_mode = MainApplicationMethod.get(program_mode_name, None)
+
+    # run the specified program
+    if program_mode == MainApplicationMethod.Default:
+        main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainThingi10K:
+        TrainThingi10K_main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainMeshesMaster:
+        TrainMeshesMaster_main(args_dict)
+    else:
+        raise ValueError(f"Invalid program_mode of {program_mode_name}")
