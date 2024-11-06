@@ -24,7 +24,7 @@ set_t = {
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
-available_activations = [nn.ReLU, nn.ELU, nn.Sigmoid]  # list of currently supported activation functions
+available_activations = [nn.ReLU, nn.ELU, nn.GELU, nn.Sigmoid]  # list of currently supported activation functions
 
 to_numpy = lambda x : x.detach().cpu().numpy()  # converts tensors to numpy arrays
 
@@ -72,6 +72,8 @@ class FitSurfaceModel(nn.Module):
             activation_fn = nn.ReLU()
         elif activation_lower == 'elu':
             activation_fn = nn.ELU()
+        elif activation_lower == 'gelu':
+            activation_fn = nn.GELU()
         elif activation_lower == 'sigmoid':
             activation_fn = nn.Sigmoid()
         else:
@@ -500,7 +502,7 @@ def main(args: dict):
     print(f"Program Configuration: {args}")
 
     # validate some inputs
-    if activation not in ['relu', 'elu', 'cos']:
+    if activation not in ['relu', 'elu', 'gelu', 'cos']:
         raise ValueError("unrecognized activation")
     if fit_mode not in ['occupancy', 'sdf']:
         raise ValueError("unrecognized activation")
@@ -561,14 +563,20 @@ def TrainThingi10K_main(args: dict):
     output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
     file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
     os.makedirs(output_directory, exist_ok=True)
+    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
     input_files = [input_directory + f for f in file_names]
-    output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
+    output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
     for in_file, out_file in zip(input_files, output_files):
         args.update({
             'input_file': in_file,
             'output_file': out_file,
         })
-        main(args)
+        try:
+            main(args)
+        except Exception as e:
+            print(f"Could not fit implicit surface to {in_file}. Received exception:")
+            print(e)
 
 def TrainMeshesMaster_main(args: dict):
     """
@@ -581,16 +589,22 @@ def TrainMeshesMaster_main(args: dict):
                       if os.path.isdir(os.path.join(input_directory, name))]
     output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/meshes-master_inputs/"
     os.makedirs(output_directory, exist_ok=True)
+    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
     for sub in subdirectories:
         file_names = [f for f in os.listdir(sub) if f.endswith('.obj')]
         input_files = [sub + f for f in file_names]
-        output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
+        output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
         for in_file, out_file in zip(input_files, output_files):
             args.update({
                 'input_file': in_file,
                 'output_file': out_file,
             })
-            main(args)
+            try:
+                main(args)
+            except Exception as e:
+                print(f"Could not fit implicit surface to {in_file}. Received exception:")
+                print(e)
 
 if __name__ == '__main__':
     # parse user arguments
