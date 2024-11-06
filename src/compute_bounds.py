@@ -188,12 +188,13 @@ def main():
 
         # update the implicit function
         opt_bound_args = {
-            'iteration': 10,
+            'iteration': 20,
             'lr_alpha': 1e-1,
             'keep_best': False,
             'early_stop_patience': 1e6,
             'lr_decay': 1,
-            'save_loss_graphs': True
+            'save_loss_graphs': True,
+            'swap_loss_iter': 10
         }
         if USE_CUSTOM_LOSS_OPTION:
             opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})

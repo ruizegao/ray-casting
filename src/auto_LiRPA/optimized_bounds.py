@@ -122,6 +122,8 @@ default_optimize_bound_args = {
     # Use custom loss function instead of default -l (or u).
     # This is not supported by "keep_best" yet.
     'use_custom_loss': False,
+    # use original loss function for some number of iterations then use custom loss function
+    'swap_loss_iter': 0,
     # When both bound_upepr and bound_lower are set to True, instead of computing
     # optimized bounds one by one, we jointly optimize on both sides.
     # This is useful for some custom optimization objectives.
@@ -373,6 +375,7 @@ def _get_optimized_bounds(
     verbosity = self.bound_opts['verbosity']
     use_custom_loss = opts['use_custom_loss']
     custom_loss_func = opts.get('custom_loss_func', None)
+    swap_loss_iter = opts.get('swap_loss_iter')
     if custom_loss_func_params is None:
         custom_loss_func_params = defaultdict(set)
 
@@ -665,7 +668,7 @@ def _get_optimized_bounds(
 
             return _batch_lA, _batches, _num_spec, _input_dim, _x_L, _x_U
 
-        if use_custom_loss:
+        if use_custom_loss and i >= swap_loss_iter:
             try:
                 sig = inspect.signature(custom_loss_func)
                 param_names = list(sig.parameters.keys())
@@ -708,7 +711,7 @@ def _get_optimized_bounds(
             if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
                     (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
                 plot_args = {
-                    'i': i, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'i': i - swap_loss_iter, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
                     'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
                     'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
                     'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
@@ -717,7 +720,7 @@ def _get_optimized_bounds(
                 fig_graph_lower, fig_graph_upper, un_mask = plot_domains(**plot_args)
 
         # if swap_loss and bound_lower:
-        elif swap_loss:
+        elif swap_loss and i >= swap_loss_iter:
             # parse to get lA and lbias
             ret_A = ret[2]
             if bound_lower:
@@ -788,7 +791,7 @@ def _get_optimized_bounds(
             if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
                     (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
                 plot_args = {
-                    'i': i, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'i': i - swap_loss_iter, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
                     'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
                     'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
                     'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
@@ -1106,14 +1109,14 @@ def _get_optimized_bounds(
         figs = [fig for (fig, _) in fig_graph_upper]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
-        finalize_plots(figs, title, titles, pickle_data=True)
+        finalize_plots(figs, title, titles, pickle_data=False)
 
     elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
         displayed_lb = True
         figs = [fig for (fig, _) in fig_graph_lower]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
-        finalize_plots(figs, title, titles, pickle_data=True)
+        finalize_plots(figs, title, titles, pickle_data=False)
 
     return best_ret
 
