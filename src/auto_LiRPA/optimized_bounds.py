@@ -488,7 +488,7 @@ def _get_optimized_bounds(
             apply_output_constraints_to
         )
 
-    global lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph, ax_graph, fig_graph_lower, fig_graph_upper
+    global lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph, ax_graph, fig_graph_lower, fig_graph_upper, un_mask
     if swap_loss and (bound_lower or not bound_upper):
         if lb_iter is None:
             lb_iter = 0
@@ -647,6 +647,24 @@ def _get_optimized_bounds(
                     # bounds.
                     aux_reference_bounds[node.inputs[0].name] = new_intermediate
 
+        def _reformat_batches(_x: tuple, _dm_lb: Tensor, _lA: Tensor, _lbias: Tensor
+                              ) -> Tuple[Tensor, int, int, int, Tensor, Tensor]:
+            """
+            Returns reformatted lA with other necessary parameters
+            :param _x:
+            :param _dm_lb:
+            :param _lA:
+            :param _lbias:
+            :return:
+            """
+            _batch_lA = _lA.flatten(2)
+            _batches, _num_spec, _input_dim = _batch_lA.shape
+
+            _x_L = _x[0].ptb.x_L
+            _x_U = _x[0].ptb.x_U
+
+            return _batch_lA, _batches, _num_spec, _input_dim, _x_L, _x_U
+
         if use_custom_loss:
             try:
                 sig = inspect.signature(custom_loss_func)
@@ -670,6 +688,34 @@ def _get_optimized_bounds(
                 warn("An error occurred. Please make sure that the implementation of the loss function is correct and")
                 warn("pass it to BoundedModule using the key bound_opts['optimize_bound_args']['custom_loss_func']\n")
                 raise Exception(e)
+
+            # display the results:
+            # parse to get lA and lbias
+            ret_A = ret[2]
+            if bound_lower:
+                dm_lb = ret_l
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['lbias']
+            else:
+                dm_lb = ret_u
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['ubias']
+
+            form_ret = _reformat_batches(x, dm_lb, lA, lbias)
+            [batch_lA, batches, num_spec, input_dim, x_L, x_U] = form_ret
+            volumes = total_loss.detach().clone()  # for viewing
+
+            if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
+                    (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                plot_args = {
+                    'i': i, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
+                    'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
+                    'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
+                    'plane_constraints': plane_constraints, 'bev_dict': None,
+                }
+                fig_graph_lower, fig_graph_upper, un_mask = plot_domains(**plot_args)
+
         # if swap_loss and bound_lower:
         elif swap_loss:
             # parse to get lA and lbias
@@ -685,8 +731,8 @@ def _get_optimized_bounds(
             stop_criterion = False
             full_ret = ret
 
-            batch_lA = lA.flatten(2)
-            batches, num_spec, input_dim = batch_lA.shape
+            form_ret = _reformat_batches(x, dm_lb, lA, lbias)
+            [batch_lA, batches, num_spec, input_dim, x_L, x_U] = form_ret
 
             # Get the threshold in the proper format to use for edge case when calculating volume
             if isinstance(decision_thresh, (float, int)):
@@ -701,9 +747,6 @@ def _get_optimized_bounds(
             #     return bound
 
 
-            # perform volume calculation for the loss function
-            x_L = x[0].ptb.x_L
-            x_U = x[0].ptb.x_U
             # xhat = (x_U + x_L) / 2
             # eps = (x_U - x_L) / 2
             # sgn = -1 if bound_lower else +1
@@ -742,69 +785,16 @@ def _get_optimized_bounds(
             # total_loss *= -1  # to maximize (maximize for exact volume, minimize for heuristic)
 
             # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
-            if save_loss_graphs and num_spec == 1 and input_dim == 3 and ((not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
-                with torch.no_grad(): # to be safe that gradients do not get affected
-                    ## graph set up
-                    print(f"i {i} bev_dict: {bev_dict}")
-
-                    # get a set of fixed masks to analyze a set of unverified nodes
-                    global un_mask
-                    if un_mask is None:
-                        if bound_lower:
-                            un_mask = (dm_lb < 0).squeeze()
-                        elif bound_upper:
-                            un_mask = (dm_lb > 0).squeeze()
-                        un_mask_offset = 12 * 3  # start idx of nodes to plot
-                        un_mask[:un_mask_offset] = False
-                    num_unverified = un_mask.to(dtype=torch.int).sum()
-                    print(
-                        f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
-
-                    [rows, cols] = get_rows_cols(num_unverified)
-
-                    # create/retrieve list of figures that will be manipulated
-                    if fig_graph_lower is None:
-                        fig_graph_lower = []
-
-                    if fig_graph_upper is None:
-                        fig_graph_upper = []
-
-                    if bound_lower:
-                        if len(fig_graph_lower) == i:
-                            fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                            axs = axs.flatten()
-                            fig_graph_lower.append((fig, axs))
-                        else:
-                            fig, axs = fig_graph_lower[i]
-                    else:
-                        if len(fig_graph_upper) == i:
-                            fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
-                            axs = axs.flatten()
-                            fig_graph_upper.append((fig, axs))
-                        else:
-                            fig, axs = fig_graph_upper[i]
-
-                    ## start of actual plotting
-
-                    # keep entries that were unverified on the first iteration of alpha crown
-                    nv_x_L = x_L[un_mask]  # nv for not verified
-                    nv_x_U = x_U[un_mask]
-                    # nv_batch_lA = -1 * batch_lA[un_mask] if bound_lower else batch_lA[un_mask]
-                    # nv_lbias = -1 * lbias[un_mask] if bound_lower else lbias[un_mask]
-                    nv_batch_lA = batch_lA[un_mask]
-                    nv_lbias = lbias[un_mask]
-                    nv_volumes = volumes[un_mask]
-                    nv_dm_lb = dm_lb[un_mask]
-                    plot_batches = len(axs)   # number of plots
-                    nv_plane_constraints = None
-                    if plane_constraints is not None:
-                        # nv_plane_constraints = -1 * plane_constraints[un_mask] if bound_lower else plane_constraints[un_mask]
-                        nv_plane_constraints = plane_constraints[un_mask]
-
-                    fill_plots(
-                        axs, self.forward,
-                        nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec,
-                        nv_dm_lb, nv_plane_constraints, True, i)
+            if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
+                    (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                plot_args = {
+                    'i': i, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
+                    'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
+                    'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
+                    'plane_constraints': plane_constraints, 'bev_dict': bev_dict,
+                }
+                fig_graph_lower, fig_graph_upper, un_mask = plot_domains(**plot_args)
         else:
             l = ret_l
             # Reduction over the spec dimension.
@@ -1245,3 +1235,96 @@ def init_alpha(self: 'BoundedModule', x, share_alphas=False, method='backward',
         return init_intermediate_bounds
     else:
         return l, u, init_intermediate_bounds
+
+def plot_domains(i: int, bound_lower: bool, bound_upper: bool, x_L: Tensor, x_U: Tensor, dm_lb: Tensor, batches: int,
+                 num_spec: int, input_dim: int, volumes: Tensor, batch_lA: Tensor, lbias: Tensor, forward_fn,
+                 fig_graph_lower: list, fig_graph_upper: list, un_mask: Tensor,
+                 plane_constraints: Optional[Tensor], bev_dict: Optional[dict] = None
+                 ) -> Tuple[list, list, Tensor]:
+    """
+    Helper function to fill in plots in verification problems that can be visually shown.
+    :param i:                   Epoch iteration
+    :param bound_lower:         If the current bound is a lower bound
+    :param bound_upper:         If the current bound is an upper bound
+    :param x_L:                 Domain input lower bound
+    :param x_U:                 Domain input upper bound
+    :param dm_lb:               Network specification lower bound (or upper bound)
+    :param batches:             Number of batches
+    :param num_spec:            Specification dimension
+    :param input_dim:           Input dimension
+    :param volumes:             Volume results from loss function
+    :param batch_lA:            lA matrix with shape (batches, num_spec, input_dim)
+    :param lbias:               lbias with shape (batches, num_spec)
+    :param forward_fn:          Forward pass function of the original network
+    :param fig_graph_lower:     List of figures holding the plots for the lower bound
+    :param fig_graph_upper:     List of figures holding the plots for the lower bound
+    :param un_mask:             Mask to pull out the unverified instances
+    :param plane_constraints:   If given, the plane constraints used in the optimization
+    :param bev_dict:            If given, displays more detailed info from the loss function
+    :return:
+    """
+    assert num_spec == 1 and input_dim == 3, "Dimensions don't fit, cannot plot these nodes"
+    # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
+    with torch.no_grad(): # to be safe that gradients do not get affected
+        ## graph set up
+        print(f"i {i} bev_dict: {bev_dict if bev_dict is not None else 'N/A'}")
+
+        # get a set of fixed masks to analyze a set of unverified nodes
+        if un_mask is None:
+            if bound_lower:
+                un_mask = (dm_lb < 0).squeeze()
+            elif bound_upper:
+                un_mask = (dm_lb > 0).squeeze()
+            un_mask_offset = 12 * 3  # start idx of nodes to plot
+            un_mask[:un_mask_offset] = False
+        num_unverified = un_mask.to(dtype=torch.int).sum()
+        print(
+            f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
+
+        [rows, cols] = get_rows_cols(num_unverified)
+
+        # create/retrieve list of figures that will be manipulated
+        if fig_graph_lower is None:
+            fig_graph_lower = []
+
+        if fig_graph_upper is None:
+            fig_graph_upper = []
+
+        if bound_lower:
+            if len(fig_graph_lower) == i:
+                fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                axs = axs.flatten()
+                fig_graph_lower.append((fig, axs))
+            else:
+                fig, axs = fig_graph_lower[i]
+        else:
+            if len(fig_graph_upper) == i:
+                fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                axs = axs.flatten()
+                fig_graph_upper.append((fig, axs))
+            else:
+                fig, axs = fig_graph_upper[i]
+
+        ## start of actual plotting
+
+        # keep entries that were unverified on the first iteration of alpha crown
+        nv_x_L = x_L[un_mask]  # nv for not verified
+        nv_x_U = x_U[un_mask]
+        # nv_batch_lA = -1 * batch_lA[un_mask] if bound_lower else batch_lA[un_mask]
+        # nv_lbias = -1 * lbias[un_mask] if bound_lower else lbias[un_mask]
+        nv_batch_lA = batch_lA[un_mask]
+        nv_lbias = lbias[un_mask]
+        nv_volumes = volumes[un_mask]
+        nv_dm_lb = dm_lb[un_mask]
+        plot_batches = len(axs)   # number of plots
+        nv_plane_constraints = None
+        if plane_constraints is not None:
+            # nv_plane_constraints = -1 * plane_constraints[un_mask] if bound_lower else plane_constraints[un_mask]
+            nv_plane_constraints = plane_constraints[un_mask]
+
+        fill_plots(
+            axs, forward_fn,
+            nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec,
+            nv_dm_lb, nv_plane_constraints, True, i)
+
+        return fig_graph_lower, fig_graph_upper, un_mask
