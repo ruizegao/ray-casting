@@ -59,18 +59,18 @@ def triangulate(verts):
 
 if __name__ == '__main__':
     import trimesh
-    bounds = np.array([[-1., -1., -1.], [2., 2., 2.]])
+    bounds = np.array([[-0.10644531,  0.140625,   -0.04345703], [-0.10620117,  0.14111328, -0.04296875]])
     lower = bounds[0]
     upper = bounds[1]
     cube = trimesh.creation.box(bounds=bounds)
     cube_verts = np.array(cube.vertices)
     # origin = [0.5, 0.5, 0.5]
-    offset = -10
-    normal = np.array([1, 1, 1])
+    offset = -0.10903698
+    normal = np.array([0.11218592,  0.8509685,  -0.03051529])
     origin = np.array([0., 0., - offset / normal[2]])
-    neg_mask = (np.matmul(cube_verts, normal) + offset) < 0
-    print(neg_mask)
-    print(cube_verts[neg_mask])
+    # neg_mask = (np.matmul(cube_verts, normal) + offset) < 0
+    # print(neg_mask)
+    # print(cube_verts[neg_mask])
     # Slice the cube mesh with the plane
     # slice_mesh = cube.section(plane_origin=origin, plane_normal=normal)
     # vertices = slice_mesh.vertices
@@ -81,8 +81,8 @@ if __name__ == '__main__':
     # mesh = trimesh.Trimesh(vertices=vertices.numpy(), faces=tri, process=False)
     # mesh.show()
 
-    mesh_pos = cube.slice_plane(origin, normal, cap=True)
-    print(mesh_pos.faces)
-    # mesh_pos.show()
+    mesh_pos = cube.slice_plane(origin, normal, cap=False)
+    # print(mesh_pos.faces)
+    mesh_pos.show()
     # print(len(mesh_pos.vertices))
 

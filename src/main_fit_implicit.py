@@ -3,11 +3,14 @@ import igl
 import sys
 from functools import partial
 import argparse
+from typing import Union, Tuple, Optional
 
 import numpy as np
 import jax
+import jax.numpy as jnp
 from jax.example_libraries import optimizers
 
+from src.render import device
 # Imports from this project
 from utils import *
 import mlp
@@ -15,11 +18,18 @@ import geometry
 import render
 import queries
 import affine
+import os
 
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))
 ROOT_DIR = os.path.join(SRC_DIR, "..")
 
-def main():
+to_numpy = lambda x : x.detach().cpu().numpy()
+
+def main(
+        input_file: Optional[str] = None,
+        output_file: Optional[str] = None
+):
+    assert (input_file is None and output_file is None) or (isinstance(input_file, str) and isinstance(output_file, str))
 
     parser = argparse.ArgumentParser()
 
@@ -57,12 +67,15 @@ def main():
     # Parse arguments
     args = parser.parse_args()
 
+    input_file = args.input_file if input_file is None else input_file
+    output_file = args.output_file if output_file is None else output_file
+
     # validate some inputs
     if args.activation not in ['relu', 'elu', 'cos']:
         raise ValueError("unrecognized activation")
     if args.fit_mode not in ['occupancy', 'sdf']:
         raise ValueError("unrecognized activation")
-    if not args.output_file.endswith('.npz'):
+    if not output_file.endswith('.npz'):
         raise ValueError("output file should end with .npz")
 
     # Force jax to initialize itself so errors get thrown early
@@ -79,10 +92,16 @@ def main():
         jax.config.update("jax_enable_x64", True)
    
     # load the input
-    print(f"Loading mesh {args.input_file}")
-    V, F = igl.read_triangle_mesh(args.input_file)
+    print(f"Loading mesh {input_file}")
+    V, F = igl.read_triangle_mesh(input_file)
+
+    # turn to numpy
     V = np.array(V)
     F = np.array(F)
+
+    # now Tensor
+    V = torch.from_numpy(V)
+    F = torch.from_numpy(F)
     print(f"  ...done")
 
     # preprocess (center and scale)
@@ -128,7 +147,9 @@ def main():
 
     # test eval to ensure the function isn't broken
     print(f"Network test evaluation...")
-    implicit_func(orig_params, np.array((0.1, 0.2, 0.3)))
+    test_arr = torch.tensor([0.1, 0.2, 0.3], device=device)
+    test_arr = to_numpy(test_arr)
+    implicit_func(orig_params, test_arr)
     print(f"...done")
 
     # Create an optimizer
@@ -170,7 +191,7 @@ def main():
     def generate_batch(rngkey, samples_in, samples_out, samples_weight):
 
         # concatenate to make processing easier
-        samples = np.concatenate((samples_in, samples_out[:,None], samples_weight[:,None]), axis=-1)
+        samples = jnp.concatenate((samples_in, samples_out[:,None], samples_weight[:,None]), axis=-1)
 
         # shuffle
         samples = jax.random.permutation(rngkey, samples, axis=0)
@@ -251,7 +272,10 @@ def main():
 
         for i_b in range(n_batches):
 
-            loss, opt_state, correct_count = train_step(i_epoch, i_step, opt_state, batches_in[i_b,...], batches_out[i_b,...], batches_weight[i_b,...])
+            loss, opt_state, correct_count = train_step(i_epoch, i_step, opt_state,
+                                                        jnp.expand_dims(batches_in[i_b,...], axis=0),
+                                                        jnp.expand_dims(batches_out[i_b,...], axis=0),
+                                                        jnp.expand_dims(batches_weight[i_b,...], axis=0))
 
             loss = float(loss)
             correct_count = int(correct_count)
@@ -271,16 +295,31 @@ def main():
             add_full_params(best_params)
             print("  --> new best")
 
-            print(f"Saving result to {args.output_file}")
-            mlp.save(args.output_file, best_params)
+            print(f"Saving result to {output_file}")
+            mlp.save(output_file, best_params)
             print(f"  ...done")
 
     
     # save the result
-    print(f"Saving result to {args.output_file}")
-    mlp.save(args.output_file, best_params)
+    print(f"Saving result to {output_file}")
+    mlp.save(output_file, best_params)
     print(f"  ...done")
 
 
 if __name__ == '__main__':
-    main()
+    use_predefined_files = True
+    input_directory = "/home/jorgejc2/Documents/Research/ray-casting/Thingi10K/raw_meshes/"
+    output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
+    os.makedirs(output_directory, exist_ok=True)
+    file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
+    input_files = [input_directory + f for f in file_names]
+    output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
+    main_args = {
+        "input_files": input_files,
+        "output_files": output_files
+    }
+    if use_predefined_files:
+        for in_file, out_file in zip(input_files, output_files):
+            main(in_file, out_file)
+    else:
+        main()

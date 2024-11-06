@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import sys, os, time, math
 # os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 
-# from triro.ray.ray_optix import RayMeshIntersector
+# from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -98,7 +98,7 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
     return grad_out
 
 
-def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='finite_differences'):
+def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='autodiff'):
     this_normal_one = lambda p, id: outward_normal(funcs_tuple, params_tuple, p, id, eps, method=method)
     if method == 'autodiff':
         N = int(hit_pos.shape[0]/3)

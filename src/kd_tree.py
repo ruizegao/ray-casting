@@ -438,7 +438,7 @@ def construct_adaptive_tree_iter(
         worst_dim = torch.argmax(upper - lower, dim=-1)
         # to_check = ((~planes_intersect_cubes(crown_ret['lA'].squeeze(1), crown_ret['lbias'].squeeze(1), lower, upper)) |
         #             (~planes_intersect_cubes(crown_ret['uA'].squeeze(1), crown_ret['ubias'].squeeze(1), lower, upper)))
-        to_check = get_distance(lower, upper, crown_ret['lA'].transpose(1, 2), crown_ret['lbias'], crown_ret['uA'].transpose(1, 2), crown_ret['ubias']) > 0.002
+        to_check = get_distance(lower, upper, crown_ret['lA'].transpose(1, 2), crown_ret['lbias'], crown_ret['uA'].transpose(1, 2), crown_ret['ubias']) > 0.001
         to_check = to_check | (~planes_intersect_cubes(crown_ret['lA'].squeeze(1), crown_ret['lbias'].squeeze(1), lower, upper))
         to_check = to_check | (~planes_intersect_cubes(crown_ret['uA'].squeeze(1), crown_ret['ubias'].squeeze(1), lower, upper))
         return node_type, worst_dim, to_check
@@ -661,6 +661,179 @@ def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=No
 
     return out_dict
 
+def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256):
+    def eval_batch_of_nodes(lower, upper):
+        types, crown_ret = func.classify_box(params, lower, upper)
+        types = types.squeeze(-1)
+        lAs = crown_ret['lA'].squeeze(1)
+        lbs = crown_ret['lbias'].squeeze(1)
+        uAs = crown_ret['uA'].squeeze(1)
+        ubs = crown_ret['ubias'].squeeze(1)
+        return types, lAs, lbs, uAs, ubs
+
+    total_samples = node_lower.shape[0]
+    node_type = torch.empty((total_samples,))
+    node_lA = torch.empty((total_samples, 3))
+    node_lb = torch.empty((total_samples,))
+    node_uA = torch.empty((total_samples, 3))
+    node_ub = torch.empty((total_samples,))
+
+    for start_idx in range(0, total_samples, batch_size):
+        end_idx = min(start_idx + batch_size, total_samples)
+        (node_type[start_idx:end_idx],
+         node_lA[start_idx:end_idx], node_lb[start_idx:end_idx],
+         node_uA[start_idx:end_idx], node_ub[start_idx:end_idx]) = (
+            eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx]))
+
+
+    neg_mask = node_type == SIGN_NEGATIVE
+    unk_mask = node_type == SIGN_UNKNOWN
+
+    if continue_splitting:
+        split_mask = unk_mask
+        split_node_lower = node_lower[split_mask]
+        split_node_upper = node_upper[split_mask]
+        node_split_dim = torch.argmax(split_node_upper - split_node_lower, dim=-1)
+        new_lower = split_node_lower
+        new_upper = split_node_upper
+        new_mid = 0.5 * (new_lower + new_upper)
+        new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
+        newA_lower = new_lower
+        newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
+        newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
+        newB_upper = new_upper
+
+        # concatenate the new children to form output arrays
+        split_node_lower = torch.cat((newA_lower, newB_lower))
+        split_node_upper = torch.cat((newA_upper, newB_upper))
+
+        finished_mask = neg_mask
+    else:
+        split_node_lower, split_node_upper = None, None
+        finished_mask = neg_mask | unk_mask
+
+    finished_node_lower = node_lower[finished_mask]
+    finished_node_upper = node_upper[finished_mask]
+    finished_node_lA = node_lA[finished_mask]
+    finished_node_lb = node_lb[finished_mask]
+    finished_node_uA = node_uA[finished_mask]
+    finished_node_ub = node_ub[finished_mask]
+
+    return (
+    finished_node_lower, finished_node_upper, finished_node_lA, finished_node_lb, finished_node_uA, finished_node_ub,
+    split_node_lower, split_node_upper)
+
+
+def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256):
+    def eval_batch_of_nodes(lower, upper):
+        types, crown_ret = func.classify_box(params, lower, upper)
+        types = types.squeeze(-1)
+        lAs = crown_ret['lA'].squeeze(1)
+        lbs = crown_ret['lbias'].squeeze(1)
+        uAs = crown_ret['uA'].squeeze(1)
+        ubs = crown_ret['ubias'].squeeze(1)
+        return types, lAs, lbs, uAs, ubs
+
+    total_samples = node_lower.shape[0]
+    node_type = torch.empty((total_samples,))
+    node_lA = torch.empty((total_samples, 3))
+    node_lb = torch.empty((total_samples,))
+    node_uA = torch.empty((total_samples, 3))
+    node_ub = torch.empty((total_samples,))
+
+    for start_idx in range(0, total_samples, batch_size):
+        end_idx = min(start_idx + batch_size, total_samples)
+        (node_type[start_idx:end_idx],
+         node_lA[start_idx:end_idx], node_lb[start_idx:end_idx],
+         node_uA[start_idx:end_idx], node_ub[start_idx:end_idx]) = (
+            eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx]))
+
+
+
+    neg_mask = node_type == SIGN_NEGATIVE
+    unk_mask = node_type == SIGN_UNKNOWN
+    large_dist_mask = get_distance(node_lower, node_upper, node_lA.unsqueeze(-1), node_lb.unsqueeze(-1),
+                            node_uA.unsqueeze(-1), node_ub.unsqueeze(-1)) > 0.001
+    bad_plane_mask = ((~planes_intersect_cubes(node_lA, node_lb, node_lower, node_upper)) |
+                      (~planes_intersect_cubes(node_uA, node_ub, node_lower, node_upper)))
+    if continue_splitting:
+        split_mask = unk_mask & (large_dist_mask | bad_plane_mask)
+        split_node_lower = node_lower[split_mask]
+        split_node_upper = node_upper[split_mask]
+        node_split_dim = torch.argmax(split_node_upper - split_node_lower, dim=-1)
+        new_lower = split_node_lower
+        new_upper = split_node_upper
+        new_mid = 0.5 * (new_lower + new_upper)
+        new_coord_mask = torch.arange(3)[None, :] == node_split_dim[:, None]
+        newA_lower = new_lower
+        newA_upper = torch.where(new_coord_mask, new_mid, new_upper)
+        newB_lower = torch.where(new_coord_mask, new_mid, new_lower)
+        newB_upper = new_upper
+
+        # concatenate the new children to form output arrays
+        split_node_lower = torch.cat((newA_lower, newB_lower))
+        split_node_upper = torch.cat((newA_upper, newB_upper))
+
+        finished_mask = neg_mask | (unk_mask & (~large_dist_mask & ~bad_plane_mask))
+    else:
+        split_node_lower, split_node_upper = None, None
+        finished_mask = neg_mask | unk_mask
+
+    finished_node_lower = node_lower[finished_mask]
+    finished_node_upper = node_upper[finished_mask]
+    finished_node_lA = node_lA[finished_mask]
+    finished_node_lb = node_lb[finished_mask]
+    finished_node_uA = node_uA[finished_mask]
+    finished_node_ub = node_ub[finished_mask]
+
+    return (finished_node_lower, finished_node_upper, finished_node_lA, finished_node_lb, finished_node_uA, finished_node_ub,
+            split_node_lower, split_node_upper)
+
+def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max_depth=36, delta=0.001, batch_size=256):
+    out_lower = []
+    out_upper = []
+    out_lA = []
+    out_lb = []
+    out_uA = []
+    out_ub = []
+    i_depth = 0
+    to_split_lower = lower.unsqueeze(0)
+    to_split_upper = upper.unsqueeze(0)
+    continue_splitting = True
+    while i_depth < base_depth:
+        ret = construct_static_unknown_tree_iter(func, params, to_split_lower, to_split_upper, continue_splitting, batch_size)
+        out_lower.append(ret[0])
+        out_upper.append(ret[1])
+        out_lA.append(ret[2])
+        out_lb.append(ret[3])
+        out_uA.append(ret[4])
+        out_ub.append(ret[5])
+        to_split_lower = ret[6]
+        to_split_upper = ret[7]
+        i_depth += 1
+
+    while i_depth < max_depth:
+        if i_depth + 1 == max_depth:
+            continue_splitting = False
+        ret = construct_dynamic_unknown_tree_iter(func, params, to_split_lower, to_split_upper, continue_splitting,
+                                                 batch_size)
+        out_lower.append(ret[0])
+        out_upper.append(ret[1])
+        out_lA.append(ret[2])
+        out_lb.append(ret[3])
+        out_uA.append(ret[4])
+        out_ub.append(ret[5])
+        to_split_lower = ret[6]
+        to_split_upper = ret[7]
+        i_depth += 1
+
+    out_lower = torch.cat(out_lower)
+    out_upper = torch.cat(out_upper)
+    out_lA = torch.cat(out_lA)
+    out_lb = torch.cat(out_lb)
+    out_uA = torch.cat(out_uA)
+    out_ub = torch.cat(out_ub)
+    return out_lower, out_upper, out_lA, out_lb, out_uA, out_ub
 
 
 def construct_full_uniform_unknown_levelset_tree_iter(
@@ -836,14 +1009,6 @@ def construct_full_uniform_unknown_levelset_tree(
     # for key in out_dict:
     #     print(key, out_dict[key][:10])
     print("Total number of nodes evaluated: ", N_total_nodes)
-    # if save_to:
-    #     tree = {}
-    #     tree['node_lower'] = node_lower.detach().cpu().numpy()
-    #     tree['node_upper'] = node_upper.detach().cpu().numpy()
-    #     tree['node_type'] = node_type.detach().cpu().numpy()
-    #     tree['split_dim'] = split_dim.detach().cpu().numpy()
-    #     tree['split_val'] = split_val.detach().cpu().numpy()
-    #     np.savez(save_to, **tree)
     return node_lower, node_upper, node_type, split_dim, split_val
 
 
