@@ -18,7 +18,7 @@ from scipy.spatial import Delaunay
 import polyscope as ps
 from skimage import measure
 from mesh_utils import *
-import trimesh
+# import trimesh
 from auto_LiRPA.hyperplane_volume_intersection import custom_loss_batch_estimate_volume
 
 # Config
@@ -271,12 +271,12 @@ def main():
     out_valid = {
         'lower': to_numpy(node_lower_valid),
         'upper': to_numpy(node_upper_valid),
-        'mA': to_numpy(0.5 * lAs + 0.5 * uAs),
-        'mb': to_numpy(0.5 * lbs + 0.5 * ubs),
-        'lA': to_numpy(lAs),
-        'lb': to_numpy(lbs),
-        'uA': to_numpy(uAs),
-        'ub': to_numpy(ubs),
+        'mA': 0.5 * lAs + 0.5 * uAs,
+        'mb': 0.5 * lbs + 0.5 * ubs,
+        'lA': lAs,
+        'lb': lbs,
+        'uA': uAs,
+        'ub': ubs,
         'plane_constraints_lower': plane_constraints_lower[:, 1:, :],  # the first plane constraint is lA, lb so skip
         'plane_constraints_upper': plane_constraints_upper[:, 1:, :],  # the first plane constraint is lA, lb so skip
     }

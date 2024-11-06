@@ -28,7 +28,7 @@ from mlp import func_as_torch
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree, construct_full_non_uniform_unknown_levelset_tree
-import trimesh
+# import trimesh
 import os
 from typing import Tuple, Callable
 
