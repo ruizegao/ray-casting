@@ -1,6 +1,3 @@
-from email.policy import default
-from tabnanny import check
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -22,7 +19,7 @@ import igl, geometry
 from src.utils import enumerate_mask
 
 # print(plt.style.available)  # uncomment to view the available plot styles
-plt.rcParams['text.usetex'] = True
+plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
 plt.style.use("seaborn-v0_8-white")
 
 set_t = {
@@ -47,21 +44,18 @@ class MainApplicationMethod(Enum):
     ShapeNetCore = 4
 
     @classmethod
-    def get(cls, identifier, default=None):
+    def get(cls, identifier, default_ret=None):
         # Check if the identifier is a valid name
         if isinstance(identifier, str):
-            return cls.__members__.get(identifier, default)
+            return cls.__members__.get(identifier, default_ret)
         # Check if the identifier is a valid value
         elif isinstance(identifier, int):
             for member in cls:
                 if member.value == identifier:
                     return member
-            return default
+            return default_ret
         else:
             raise TypeError("Identifier must be a string (name) or an integer (value)")
-
-def makehash():
-    return defaultdict(makehash)
 
 class FitSurfaceModel(nn.Module):
     def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8, layer_width:int=32,
@@ -572,22 +566,24 @@ def TrainThingi10K_main(args: dict):
     :return:
     """
 
-    check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
-    prior_directory_dict = makehash()
     row_names = ['Obj Filename', 'Training Success, Training Failure']
-    if check_csv_table is not None:
-        with open(check_csv_table, mode='r') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                row_entries = [row[i] for i in row_names]
-                filename, success, error = row_entries
-                if success == 'y' and error == 'n':
-                    exists = True
-                elif success == 'n' and error == 'y':
-                    exists = False
-                else:
-                    raise ValueError("File cannot have been trained successfully AND had an error.")
-                prior_directory_dict[filename]['exists'] = exists
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[filename]['exists'] = exists
 
     input_directory = "Thingi10K/raw_meshes/"
     output_directory = "sample_inputs/Thingi10K_inputs/"
@@ -609,13 +605,14 @@ def TrainThingi10K_main(args: dict):
         # update table
         csv_file.append(file_names[i])
 
-        # if has been trained before, continue
-        if check_csv_table:
-            exists = prior_directory_dict[file_names[i]].get('exists', False)
-            if exists:
-                success.append('y')
-                error.append('n')
-                continue
+        # See above TODO
+        # # if has been trained before, continue
+        # if check_csv_table:
+        #     exists = prior_directory_dict[file_names[i]].get('exists', False)
+        #     if exists:
+        #         success.append('y')
+        #         error.append('n')
+        #         continue
 
         try:
             main(args)
@@ -644,22 +641,24 @@ def TrainMeshesMaster_main(args: dict):
     :return:
     """
 
-    check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
-    prior_directory_dict = makehash()
     row_names = ['Directory', 'Obj Filename', 'Training Success, Training Failure']
-    if check_csv_table is not None:
-        with open(check_csv_table, mode='r') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                row_entries = [row[i] for i in row_names]
-                directory, filename, success, error = row_entries
-                if success == 'y' and error == 'n':
-                    exists = True
-                elif success == 'n' and error == 'y':
-                    exists = False
-                else:
-                    raise ValueError("File cannot have been trained successfully AND had an error.")
-                prior_directory_dict[directory][filename]['exists'] = exists
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             directory, filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[directory][filename]['exists'] = exists
 
     input_directory = "meshes-master/objects/"
     sub_names = [name + '/' for name in os.listdir(input_directory)
@@ -687,13 +686,14 @@ def TrainMeshesMaster_main(args: dict):
             csv_subdir.append(sub_names[i])
             csv_file.append(file_names[j])
 
-            # if has been trained before, continue
-            if check_csv_table:
-                exists = prior_directory_dict[sub_names[i]][file_names[j]].get('exists', False)
-                if exists:
-                    success.append('y')
-                    error.append('n')
-                    continue
+            # See above TODO
+            # # if has been trained before, continue
+            # if check_csv_table:
+            #     exists = prior_directory_dict[sub_names[i]][file_names[j]].get('exists', False)
+            #     if exists:
+            #         success.append('y')
+            #         error.append('n')
+            #         continue
 
             try:
                 main(args)
@@ -726,22 +726,25 @@ def ShapeNetCore_main(args: dict):
     :return:
     """
 
-    check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
-    prior_directory_dict = makehash()
     row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success, Training Failure']
-    if check_csv_table is not None:
-        with open(check_csv_table, mode='r') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                row_entries = [row[i] for i in row_names]
-                directory, subdirectory, filename, success, error = row_entries
-                if success == 'y' and error == 'n':
-                    exists = True
-                elif success == 'n' and error == 'y':
-                    exists = False
-                else:
-                    raise ValueError("File cannot have been trained successfully AND had an error.")
-                prior_directory_dict[directory][subdirectory][filename]['exists'] = exists
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # been rendered in the data successfully/unsuccessfully
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             directory, subdirectory, filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[directory][subdirectory][filename]['exists'] = exists
 
     input_directory = "ShapeNetCore/"
     sub_names = [name + '/' for name in os.listdir(input_directory)
@@ -780,13 +783,14 @@ def ShapeNetCore_main(args: dict):
                 csv_subbdir.append(subb_names[j])
                 csv_file.append(file_names[k])
 
-                # if has been trained before, continue
-                if check_csv_table:
-                    exists = prior_directory_dict[sub_names[i]][subb_names[j]][file_names[k]].get('exists', False)
-                    if exists:
-                        success.append('y')
-                        error.append('n')
-                        continue
+                # See above TODO
+                # # if has been trained before, continue
+                # if check_csv_table:
+                #     exists = prior_directory_dict[sub_names[i]][subb_names[j]][file_names[k]].get('exists', False)
+                #     if exists:
+                #         success.append('y')
+                #         error.append('n')
+                #         continue
 
                 try:
                     main(args)
