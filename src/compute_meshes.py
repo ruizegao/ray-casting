@@ -5,6 +5,7 @@ import time
 import argparse
 import warnings
 import numpy as np
+import torch
 import imageio
 import polyscope.imgui as psim
 # Imports from this project
