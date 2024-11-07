@@ -2,7 +2,7 @@ import torch
 import trimesh
 import matplotlib.pyplot as plt
 import os
-os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
+# os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 from triro.ray.ray_optix import RayMeshIntersector
 
 # creating mesh and intersector

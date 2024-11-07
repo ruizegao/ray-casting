@@ -4,6 +4,7 @@ import sys, os, time, math
 import time
 import argparse
 import warnings
+from enum import Enum
 
 import torch
 import imageio
@@ -23,8 +24,32 @@ CROWN_MODES = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-o
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
+class MainApplicationMethod(Enum):
+    """
+    1) Default manner of raycasting
+    2) Runs ray-casting on the Thingi10K dataset
+    3) Runs ray-casting on the Meshes Master dataset
+    """
+    Default = 1
+    TrainThingi10K = 2
+    TrainMeshesMaster = 3
 
-def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
+    @classmethod
+    def get(cls, identifier, default=None):
+        # Check if the identifier is a valid name
+        if isinstance(identifier, str):
+            return cls.__members__.get(identifier, default)
+        # Check if the identifier is a valid value
+        elif isinstance(identifier, int):
+            for member in cls:
+                if member.value == identifier:
+                    return member
+            return default
+        else:
+            raise TypeError("Identifier must be a string (name) or an integer (value)")
+
+
+def save_render_current_view(args: dict, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
                              cast_tree_based=False, shell_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
     # root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
     # look = torch.tensor([-1., 0., 0.])
@@ -35,7 +60,7 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     look = torch.tensor([0., 1., 0.])
     up = torch.tensor([0., 0., 1.])
     fov_deg = 30
-    res = args.res // opts['res_scale']
+    res = args['res'] // opts['res_scale']
 
     surf_color = tuple(surf_color)
 
@@ -55,15 +80,17 @@ def save_render_current_view(args, implicit_func, params, cast_frustum, opts, ma
     img_alpha = torch.concatenate((img, alpha_channel[:, :, None]), dim=-1)
     img_alpha = torch.clip(img_alpha, min=0., max=1.)
     img_alpha = (img_alpha * 255.).byte()
-    print(f"Saving image to {args.image_write_path}")
-    imageio.imwrite(args.image_write_path, img_alpha.cpu().detach().numpy())
+    print(f"Saving image to {args['image_write_path']}")
+    imageio.imwrite(args['image_write_path'], img_alpha.cpu().detach().numpy())
 
-
-def main():
+def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
+    # Program mode
+    parser.add_argument("--program_mode", type=str, default=MainApplicationMethod.Default.name)
+
     # Build arguments
-    parser.add_argument("input", type=str)
+    parser.add_argument("--input", type=str, default=None)
     parser.add_argument("--mode", type=str, default='affine_fixed')
     parser.add_argument("--cast_frustum", action='store_true')
     parser.add_argument("--cast_tree_based", action='store_true')
@@ -85,17 +112,21 @@ def main():
     # Parse arguments
     args = parser.parse_args()
 
+    return vars(args)
+
+def main(args: dict):
+
     opts = queries.get_default_cast_opts()
     opts['data_bound'] = 1
     opts['res_scale'] = 1
     opts['tree_max_depth'] = 12
     opts['tree_split_aff'] = False
-    cast_frustum = args.cast_frustum
-    cast_tree_based = args.cast_tree_based
-    cast_shell_based = args.cast_shell_based
-    mode = args.mode
-    batch_size = args.batch_size
-    enable_clipping = args.enable_clipping
+    cast_frustum = args['cast_frustum']
+    cast_tree_based = args['cast_tree_based']
+    cast_shell_based = args['cast_shell_based']
+    mode = args['mode']
+    batch_size = args['batch_size']
+    enable_clipping = args['enable_clipping']
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'slope_interval',
              'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
              'dynamic_forward+backward', 'affine+backward', 'affine_quad']
@@ -113,14 +144,67 @@ def main():
     if mode not in CROWN_MODES and enable_clipping:
         warnings.warn("'enable_clipping' was set to True but will be ignored since it is currently only supported for CROWN modes")
 
-    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
+    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args['input'], mode=mode, **affine_opts)
 
     # load the matcaps
     matcaps = render.load_matcap(os.path.join(ROOT_DIR, "assets", "matcaps", "wax_{}.png"))
 
     save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color,
-                             cast_tree_based=cast_tree_based, shell_based=cast_shell_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args.load_from, save_to=args.save_to)
+                             cast_tree_based=cast_tree_based, shell_based=cast_shell_based, batch_size=batch_size, enable_clipping=enable_clipping, load_from=args['load_from'], save_to=args['save_to'])
 
+
+def TrainThingi10K_main(args: dict):
+    """
+    Main program for training implicit surfaces on the entire Thingi10K dataset
+    :param args: Default main program arguments/configurations
+    :return:
+    """
+    input_directory = "sample_inputs/Thingi10K_inputs/"
+    output_directory = "sample_outputs/Thingi10K_outputs/" + args['mode'] + '/'
+    os.makedirs(output_directory, exist_ok=True)
+
+    file_names = [f for f in os.listdir(input_directory) if f.endswith('.npz')]
+    input_files = [input_directory + f for f in file_names]
+    output_files = [output_directory + f.replace(".npz", ".png") for f in file_names]
+    for in_file, out_file in zip(input_files, output_files):
+        args.update({
+            'input': in_file,
+            'image_write_path': out_file,
+        })
+        main(args)
+
+def TrainMeshesMaster_main(args: dict):
+    """
+    Main program for training implicit surfaces on the entire Meshes Master dataset
+    :param args: Default main program arguments/configurations
+    :return:
+    """
+    input_directory = "sample_inputs/meshes-master_inputs/"
+    output_directory = "sample_outputs/meshes-master_outputs/" + args['mode'] + '/'
+    os.makedirs(output_directory, exist_ok=True)
+
+    file_names = [f for f in os.listdir(input_directory) if f.endswith('.npz')]
+    input_files = [input_directory + f for f in file_names]
+    output_files = [output_directory + f.replace(".npz", ".png") for f in file_names]
+    for in_file, out_file in zip(input_files, output_files):
+        args.update({
+            'input': in_file,
+            'image_write_path': out_file,
+        })
+        main(args)
 
 if __name__ == '__main__':
-    main()
+    # parse user arguments
+    args_dict = parse_args()
+    program_mode_name = args_dict.pop('program_mode')
+    program_mode = MainApplicationMethod.get(program_mode_name, None)
+
+    # run the specified program
+    if program_mode == MainApplicationMethod.Default:
+        main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainThingi10K:
+        TrainThingi10K_main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainMeshesMaster:
+        TrainMeshesMaster_main(args_dict)
+    else:
+        raise ValueError(f"Invalid program_mode of {program_mode_name}")

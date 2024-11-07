@@ -1,6 +1,10 @@
 import numpy as np
 import torch
 
+from typing import Union, Tuple, Optional
+from torch import Tensor
+from numpy import ndarray
+
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
 def split_generator(generator, num_splits=2):
@@ -32,14 +36,14 @@ def normalize_positions(pos, method='bbox'):
         pos = pos - torch.mean(pos, axis=-2, keepdims=True)
     elif method == 'bbox': 
         # center via the middle of the axis-aligned bounding box
-        bbox_min = torch.min(pos, axis=-2)
-        bbox_max = torch.max(pos, axis=-2)
+        bbox_min = torch.min(pos, axis=-2).values
+        bbox_max = torch.max(pos, axis=-2).values
         center = (bbox_max + bbox_min) / 2.
         pos -= center[None,:]
     else:
         raise ValueError("unrecognized method")
 
-    scale = torch.max(norm(pos), axis=-1, keepdims=True)[:,None]
+    scale = torch.max(norm(pos), axis=-1, keepdims=True).values[:,None]
     pos = pos / scale
     return pos
 
@@ -86,28 +90,52 @@ def sample_mesh_sdf(V, F, n_sample, surface_frac=0.5, surface_perturb_sigma=0.01
     return Q, sdf_vals
 
 
-def sample_mesh_importance(V, F, n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25):
+def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
+                           n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25
+                           ) -> Tuple[ndarray, ndarray]:
     import igl
 
-    V = torch.tensor(V)
-    F = torch.tensor(F)
+    to_numpy = lambda x : x.detach().cpu().numpy()
+
+    if isinstance(V, Tensor):
+        V_torch = V
+        V_np = to_numpy(V_torch)
+    else:
+        V_np = V
+        V_torch = torch.from_numpy(V_np)
+
+    if isinstance(F, Tensor):
+        F_torch = F
+        F_np = to_numpy(F_torch)
+    else:
+        F_np = F
+        F_torch = torch.from_numpy(F_np)
+
     n_sample_full = int(n_sample * n_sample_full_mult)
 
     # Sample ambient points
-    Q_ambient = torch.random.uniform(size=(n_sample_full, 3), low=-ambient_range, high=ambient_range)
+    # Q_ambient = torch.random.uniform(size=(n_sample_full, 3), low=-ambient_range, high=ambient_range)
+    Q_ambient = torch.empty(n_sample_full, 3).uniform_(-ambient_range, ambient_range)
+    Q_ambient_np = to_numpy(Q_ambient)
 
-    # Assign weights 
-    dist_sq, _, _ = igl.point_mesh_squared_distance(Q_ambient, torch.tensor(V), torch.tensor(F))
-    weight = torch.exp(-beta * torch.sqrt(dist_sq))
+    # Assign weights
+    dist_sq, _, _ = igl.point_mesh_squared_distance(Q_ambient_np, V_np, F_np)
+    dist_sq_torch = torch.from_numpy(dist_sq)
+    weight = torch.exp(-beta * torch.sqrt(dist_sq_torch))
     weight = weight / torch.sum(weight)
+    weight_np = to_numpy(weight)
 
     # Sample
-    samp_inds = np.random.choice(n_sample_full, size=n_sample, p=weight)
+    samp_inds = np.random.choice(n_sample_full, size=n_sample, p=weight_np)
     Q = Q_ambient[samp_inds,:]
+    Q_np = to_numpy(Q)
 
     # Get SDF value via distance & winding number
-    sdf_vals, _, closest = igl.signed_distance(Q, V, F)
+    sdf_vals, _, closest = igl.signed_distance(Q_np, V_np, F_np)
     sdf_vals = torch.tensor(sdf_vals)
-    Q = torch.tensor(Q)
 
-    return Q, sdf_vals
+    # convert to numpy arrays
+    Q_np = to_numpy(Q)
+    sdf_vals_np = to_numpy(sdf_vals)
+
+    return Q_np, sdf_vals_np
