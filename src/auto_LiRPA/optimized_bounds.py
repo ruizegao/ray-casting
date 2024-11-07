@@ -16,15 +16,26 @@
 #########################################################################
 import time
 import os
-from collections import OrderedDict
+import inspect
+from collections import OrderedDict, defaultdict
 from contextlib import ExitStack
 
 import torch
-from torch import optim
+from torch import optim, Tensor
+import numpy as np
+from typing import Tuple, Union, Optional, final
+from math import ceil
+from warnings import warn
+
+from .perturbations import PerturbationLpNorm
+from .bounded_tensor import BoundedTensor
 from .beta_crown import print_optimized_beta
 from .cuda_utils import double2float
 from .utils import reduction_sum, multi_spec_keep_func_all
 from .opt_pruner import OptPruner
+from .clip_autoLiRPA import clip_domains
+from .hyperplane_volume_intersection import batch_cube_intersection_with_plane, finalize_plots, fill_plots, \
+    get_rows_cols, batch_cube_intersection_with_plane_with_constraints, batch_estimate_volume
 ### preprocessor-hint: private-section-start
 from .adam_element_lr import AdamElementLR
 ### preprocessor-hint: private-section-end
@@ -33,6 +44,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .bound_general import BoundedModule
 
+# FIXME: This is here temporarily for debugging, be sure to remove later
+lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph = None, None, False, False, False
+ax_graph, fig_graph_lower, fig_graph_upper = None, None, None
+un_mask = None
+import matplotlib.pyplot as plt
+from .hyperplane_volume_intersection import get_cube_vertices, unit_cube_faces, to_numpy, plot_cube, plot_intersection, plot_plane
+out_path = "/home/jorgejc2/Documents/Research/ray-casting/alpha_crown_planes/"
 
 default_optimize_bound_args = {
     'enable_alpha_crown': True,  # Enable optimization of alpha.
@@ -97,6 +115,19 @@ default_optimize_bound_args = {
     # Try to ensure that the parameters always match with the optimized bounds.
     'deterministic': False,
     'max_time': 1e9,
+    # When using the total volume loss function, a batch of unverified nodes may be visually analzyed further for
+    # debugging and sanity checks
+    'save_loss_graphs': False,
+    'perpendicular_multiplier': None,
+    # Use custom loss function instead of default -l (or u).
+    # This is not supported by "keep_best" yet.
+    'use_custom_loss': False,
+    # use original loss function for some number of iterations then use custom loss function
+    'swap_loss_iter': 0,
+    # When both bound_upepr and bound_lower are set to True, instead of computing
+    # optimized bounds one by one, we jointly optimize on both sides.
+    # This is useful for some custom optimization objectives.
+    'joint_optimization': False
 }
 
 
@@ -150,12 +181,9 @@ def _save_ret_first_time(bounds, fill_value, x, best_ret):
     if bounds is not None:
         best_bounds = torch.full_like(
             bounds, fill_value=fill_value, device=x[0].device, dtype=x[0].dtype)
-    else:
-        best_bounds = None
-
-    if bounds is not None:
         best_ret.append(bounds.detach().clone())
     else:
+        best_bounds = None
         best_ret.append(None)
 
     return best_bounds
@@ -188,10 +216,10 @@ def _to_default_dtype(self: 'BoundedModule', x, total_loss, full_ret, ret,
     self.to(torch.get_default_dtype())
     x[0].to(torch.get_default_dtype())
     full_ret = list(full_ret)
-    if isinstance(ret[0], torch.Tensor):
+    if isinstance(ret[0], Tensor):
         # round down lower bound
         full_ret[0] = double2float(full_ret[0], 'down')
-    if isinstance(ret[1], torch.Tensor):
+    if isinstance(ret[1], Tensor):
         # round up upper bound
         full_ret[1] = double2float(full_ret[1], 'up')
     for _k, _v in best_intermediate_bounds.items():
@@ -314,7 +342,10 @@ def _get_optimized_bounds(
         reuse_ibp=False, return_A=False, average_A=False, final_node_name=None,
         interm_bounds=None, reference_bounds=None,
         aux_reference_bounds=None, needed_A_dict=None, cutter=None,
-        decision_thresh=None, epsilon_over_decision_thresh=1e-4):
+        decision_thresh=None, epsilon_over_decision_thresh=1e-4, use_clip_domains=False, swap_loss=False,
+        plane_constraints_lower:Optional[Tensor]=None, plane_constraints_upper:Optional[Tensor]=None,
+        custom_loss_func_params:Optional[dict]=None
+):
     """
     Optimize CROWN lower/upper bounds by alpha and/or beta.
     """
@@ -327,6 +358,8 @@ def _get_optimized_bounds(
     apply_output_constraints_to = opts['apply_output_constraints_to']
     opt_choice = opts['optimizer']
     keep_best = opts['keep_best']
+    save_loss_graphs = opts['save_loss_graphs']
+    perpendicular_multiplier = opts['perpendicular_multiplier']
     fix_interm_bounds = opts['fix_interm_bounds']
     loss_reduction_func = opts['loss_reduction_func']
     stop_criterion_func = opts['stop_criterion_func']
@@ -340,11 +373,29 @@ def _get_optimized_bounds(
     sparse_intermediate_bounds = self.bound_opts.get(
         'sparse_intermediate_bounds', False)
     verbosity = self.bound_opts['verbosity']
+    use_custom_loss = opts['use_custom_loss']
+    custom_loss_func = opts.get('custom_loss_func', None)
+    swap_loss_iter = opts.get('swap_loss_iter')
+    if custom_loss_func_params is None:
+        custom_loss_func_params = defaultdict(set)
 
-    if bound_side not in ['lower', 'upper']:
+    if bound_side not in ['lower', 'upper', 'both']:
         raise ValueError(bound_side)
     bound_lower = bound_side == 'lower'
     bound_upper = bound_side == 'upper'
+    if bound_side == 'both':
+        if keep_best:
+            raise NotImplementedError(
+                'Keeping the best results is only supported for the default optimization objective!')
+        bound_lower = True
+        bound_upper = True
+
+    if bound_lower and plane_constraints_lower is not None:
+        plane_constraints = plane_constraints_lower.to(x[0])
+    elif bound_upper and plane_constraints_upper is not None:
+        plane_constraints = plane_constraints_upper.to(x[0])
+    else:
+        plane_constraints = None
 
     assert alpha or beta, (
         'nothing to optimize, use compute bound instead!')
@@ -376,7 +427,7 @@ def _get_optimized_bounds(
 
     start = time.time()
 
-    if isinstance(decision_thresh, torch.Tensor):
+    if isinstance(decision_thresh, Tensor):
         if decision_thresh.dim() == 1:
             # add the spec dim to be aligned with compute_bounds return
             decision_thresh = decision_thresh.unsqueeze(-1)
@@ -389,6 +440,10 @@ def _get_optimized_bounds(
                 'Please fix or discard this optimization by setting '
                 '--disable_pruning_in_iteration '
                 'or bab: pruning_in_iteration: false')
+        if bound_side != 'lower':
+            raise NotImplementedError(
+                'Pruning in iteration optimization only supports computing lower bounds.'
+            )
         pruner = OptPruner(
             x, threshold=opts['pruning_in_iteration_threshold'],
             multi_spec_keep_func=multi_spec_keep_func,
@@ -436,9 +491,40 @@ def _get_optimized_bounds(
             apply_output_constraints_to
         )
 
+    global lb_iter, ub_iter, displayed_lb, displayed_ub, displayed_graph, ax_graph, fig_graph_lower, fig_graph_upper, un_mask
+    if swap_loss and (bound_lower or not bound_upper):
+        if lb_iter is None:
+            lb_iter = 0
+        else:
+            lb_iter += 1
+    if swap_loss and (bound_upper or not bound_lower):
+        if ub_iter is None:
+            ub_iter = 0
+        else:
+            ub_iter += 1
+
     need_grad = True
     patience = 0
     ret_0 = None
+
+    # When using a custom loss function, we may need the A-matrix depending on
+    # the implementation of the loss function. So return A anyway.
+    # (Perhaps add one more option to specify this choice?)
+    if use_custom_loss or use_clip_domains:
+        actual_return_A = return_A
+        actual_needed_A_dict = needed_A_dict.copy()
+        output_name = self.output_name[0]
+        input_name = self.input_name[0]
+        if not return_A:
+            needed_A_dict = defaultdict(set)
+            needed_A_dict[output_name].add(input_name)
+            return_A = True
+        else:
+            # Even if return_A is already true, we must make sure that A_matrix of the whole network is returned
+            extra_entries = defaultdict(set)
+            extra_entries[output_name].add(input_name)
+            needed_A_dict.update(extra_entries)
+
     for i in range(iteration):
         if cutter:
             # cuts may be optimized by cutter
@@ -564,37 +650,185 @@ def _get_optimized_bounds(
                     # bounds.
                     aux_reference_bounds[node.inputs[0].name] = new_intermediate
 
-        l = ret_l
-        # Reduction over the spec dimension.
-        if ret_l is not None and ret_l.shape[1] != 1:
-            l = loss_reduction_func(ret_l)
-        u = ret_u
-        if ret_u is not None and ret_u.shape[1] != 1:
-            u = loss_reduction_func(ret_u)
+        def _reformat_batches(_x: tuple, _dm_lb: Tensor, _lA: Tensor, _lbias: Tensor
+                              ) -> Tuple[Tensor, int, int, int, Tensor, Tensor]:
+            """
+            Returns reformatted lA with other necessary parameters
+            :param _x:
+            :param _dm_lb:
+            :param _lA:
+            :param _lbias:
+            :return:
+            """
+            _batch_lA = _lA.flatten(2)
+            _batches, _num_spec, _input_dim = _batch_lA.shape
 
-        # full_l, full_ret_l and full_u, full_ret_u is used for update the best
-        full_ret_l, full_ret_u = ret_l, ret_u
-        full_l = l
-        full_ret = ret
+            _x_L = _x[0].ptb.x_L
+            _x_U = _x[0].ptb.x_U
 
-        if pruner:
-            (x, C, full_l, full_ret_l, full_ret_u,
-             full_ret, stop_criterion) = pruner.prune(
-                x, C, ret_l, ret_u, ret, full_l, full_ret_l, full_ret_u,
-                full_ret, interm_bounds, aux_reference_bounds, reference_bounds,
-                stop_criterion_func, bound_lower)
-        else:
-            stop_criterion = (stop_criterion_func(full_ret_l) if bound_lower
-                              else stop_criterion_func(-full_ret_u))
+            return _batch_lA, _batches, _num_spec, _input_dim, _x_L, _x_U
 
-        loss_ = l if bound_lower else -u
-        total_loss = -1 * loss_
-        directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
-        for directly_optimize_layer_name in directly_optimize_layers:
-            total_loss += (
-                self[directly_optimize_layer_name].upper.sum()
-                - self[directly_optimize_layer_name].lower.sum()
+        if use_custom_loss and i >= swap_loss_iter:
+            try:
+                sig = inspect.signature(custom_loss_func)
+                param_names = list(sig.parameters.keys())
+                # We assume the keys of the functions are the names of local variables
+                variables = {}
+                for name in param_names:
+
+                    if name in custom_loss_func_params:
+                        # safer to check parameters here first
+                        variables[name] = custom_loss_func_params[name]
+                    elif name in locals():
+                        variables[name] = locals()[name]
+                    else:
+                        raise ValueError(f"Cannot find {name} in local variables or custom_loss_func_params.")
+                total_loss = custom_loss_func(**variables)
+                # print(total_loss[0].item())
+                stop_criterion = False
+                full_ret = ret
+            except Exception as e:
+                warn("An error occurred. Please make sure that the implementation of the loss function is correct and")
+                warn("pass it to BoundedModule using the key bound_opts['optimize_bound_args']['custom_loss_func']\n")
+                raise Exception(e)
+
+            # display the results:
+            # parse to get lA and lbias
+            ret_A = ret[2]
+            if bound_lower:
+                dm_lb = ret_l
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['lbias']
+            else:
+                dm_lb = ret_u
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['ubias']
+
+            form_ret = _reformat_batches(x, dm_lb, lA, lbias)
+            [batch_lA, batches, num_spec, input_dim, x_L, x_U] = form_ret
+            volumes = total_loss.detach().clone()  # for viewing
+
+            if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
+                    (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                plot_args = {
+                    'i': i - swap_loss_iter, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
+                    'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
+                    'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
+                    'plane_constraints': plane_constraints, 'bev_dict': None,
+                }
+                fig_graph_lower, fig_graph_upper, un_mask = plot_domains(**plot_args)
+
+        # if swap_loss and bound_lower:
+        elif swap_loss and i >= swap_loss_iter:
+            # parse to get lA and lbias
+            ret_A = ret[2]
+            if bound_lower:
+                dm_lb = ret_l
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['lA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['lbias']
+            else:
+                dm_lb = ret_u
+                lA = ret_A[self.output_name[0]][self.input_name[0]]['uA']
+                lbias = ret_A[self.output_name[0]][self.input_name[0]]['ubias']
+            stop_criterion = False
+            full_ret = ret
+
+            form_ret = _reformat_batches(x, dm_lb, lA, lbias)
+            [batch_lA, batches, num_spec, input_dim, x_L, x_U] = form_ret
+
+            # Get the threshold in the proper format to use for edge case when calculating volume
+            if isinstance(decision_thresh, (float, int)):
+                threshold = torch.full_like(dm_lb, decision_thresh)
+            elif isinstance(decision_thresh, Tensor):
+                threshold = decision_thresh.clone()
+            else:
+                raise Exception("Make sure that 'decision_thresh' is specified.")
+
+            # def _concretize(xhat, eps, lA, lbias, sgn):
+            #     bound = lA.bmm(xhat) + sgn * lA.abs().bmm(eps) + lbias
+            #     return bound
+
+
+            # xhat = (x_U + x_L) / 2
+            # eps = (x_U - x_L) / 2
+            # sgn = -1 if bound_lower else +1
+            # xhat_vect = xhat.unsqueeze(2)  # to column vectors
+            # eps_vect = eps.unsqueeze(2)  # to column vectors
+
+            # reshape tensors to be compatible with the volume calculation in batches
+            # lA_reshape = -1 * batch_lA.reshape(batches * num_spec, input_dim) if bound_lower else batch_lA.reshape(batches * num_spec, input_dim)
+            lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
+            x_L_reshape = x_L.reshape(batches, input_dim)
+            x_U_reshape = x_U.reshape(batches, input_dim)
+            x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
+            x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
+            # lbias_reshape = -1 * lbias.reshape(batches * num_spec, 1) if bound_lower else lbias.reshape(batches * num_spec, 1)
+            lbias_reshape = lbias.reshape(batches * num_spec, 1)
+
+            # try out heuristic volume loss
+            total_loss, bev_dict = batch_estimate_volume(
+                x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape, not bound_lower, plane_constraints,
+                perpendicular_multiplier=perpendicular_multiplier, return_dict=True
             )
+
+            # try out exact volume loss
+            # if plane_constraints is not None:
+            #     plane_constraints = plane_constraints.to(x_L_reshape)
+            #     total_loss = batch_cube_intersection_with_plane_with_constraints(x_L_reshape, x_U_reshape, lA_reshape,
+            #                                                                      lbias_reshape, plane_constraints,
+            #                                                                      bound_lower, False)
+            # else:
+            #     total_loss = batch_cube_intersection_with_plane(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape,
+            #                                                     dm_lb.reshape(batches * num_spec, -1), threshold,
+            #                                                     lb_iter,
+            #                                                     bound_lower)
+
+            volumes = total_loss.detach().clone()  # for viewing
+            # total_loss *= -1  # to maximize (maximize for exact volume, minimize for heuristic)
+
+            # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
+            if save_loss_graphs and num_spec == 1 and input_dim == 3 and (
+                    (not displayed_lb and bound_lower) or (not displayed_ub and bound_upper)):
+                plot_args = {
+                    'i': i - swap_loss_iter, 'bound_lower': bound_lower, 'bound_upper': bound_upper, 'x_L': x_L, 'x_U': x_U,
+                    'dm_lb': dm_lb, 'batches': batches, 'num_spec': num_spec, 'input_dim': input_dim,
+                    'volumes': volumes, 'batch_lA': batch_lA, 'lbias': lbias, 'forward_fn': self.forward,
+                    'fig_graph_lower': fig_graph_lower, 'fig_graph_upper': fig_graph_upper, 'un_mask': un_mask,
+                    'plane_constraints': plane_constraints, 'bev_dict': bev_dict,
+                }
+                fig_graph_lower, fig_graph_upper, un_mask = plot_domains(**plot_args)
+        else:
+            l = ret_l
+            # Reduction over the spec dimension.
+            if ret_l is not None and ret_l.shape[1] != 1:
+                l = loss_reduction_func(ret_l)
+            u = ret_u
+            if ret_u is not None and ret_u.shape[1] != 1:
+                u = loss_reduction_func(ret_u)
+
+            # full_l, full_ret_l and full_u, full_ret_u is used for update the best
+            full_ret_l, full_ret_u = ret_l, ret_u
+            full_l = l
+            full_ret = ret
+
+            if pruner:
+                (x, C, full_l, full_ret_l, full_ret_u,
+                full_ret, stop_criterion) = pruner.prune(
+                    x, C, ret_l, ret_u, ret, full_l, full_ret_l, full_ret_u,
+                    full_ret, interm_bounds, aux_reference_bounds, reference_bounds,
+                    stop_criterion_func, bound_lower)
+            else:
+                stop_criterion = (stop_criterion_func(full_ret_l) if bound_lower
+                                else stop_criterion_func(-full_ret_u))
+
+            total_loss = -l if bound_lower else u
+            directly_optimize_layers = self.bound_opts['optimize_bound_args']['directly_optimize']
+            for directly_optimize_layer_name in directly_optimize_layers:
+                total_loss += (
+                    self[directly_optimize_layer_name].upper.sum()
+                    - self[directly_optimize_layer_name].lower.sum()
+                )
 
         if type(stop_criterion) == bool:
             loss = total_loss.sum() * (not stop_criterion)
@@ -603,7 +837,7 @@ def _get_optimized_bounds(
             loss = (total_loss * stop_criterion.logical_not()).sum()
 
         stop_criterion_final = isinstance(
-            stop_criterion, torch.Tensor) and stop_criterion.all()
+            stop_criterion, Tensor) and stop_criterion.all()
 
         if i == iteration - 1:
             best_ret = list(best_ret)
@@ -639,59 +873,92 @@ def _get_optimized_bounds(
                 if full_ret[1] is not None:
                     best_ret[1] = full_ret[1]
             if return_A:
-                # FIXME: A should also be updated by idx.
-                best_ret = [best_ret[0], best_ret[1], full_ret[2]]
+                if not use_custom_loss or actual_return_A:
+                    # FIXME: A should also be updated by idx.
+                    # FIXME: When using custom loss and actual return_A is True,
+                    # we might return more entries than those in actual_needed_A_dict
+                    best_ret = [best_ret[0], best_ret[1], full_ret[2]]
 
-            if need_update:
+            if need_update or not keep_best:
                 patience = 0  # bounds improved, reset patience
             else:
                 patience += 1
 
             time_spent = time.time() - start
 
-            # Save variables if this is the best iteration.
-            # To save computational cost, we only check keep_best at the first
-            # (in case divergence) and second half iterations
-            # or before early stop by either stop_criterion or
-            # early_stop_patience reached
-            if (i < 1 or i > int(iteration * start_save_best) or deterministic
-                    or stop_criterion_final or patience == early_stop_patience
-                    or time_spent > max_time):
+            if keep_best:
+                # Save variables if this is the best iteration.
+                # To save computational cost, we only check keep_best at the first
+                # (in case divergence) and second half iterations
+                # or before early stop by either stop_criterion or
+                # early_stop_patience reached
+                if (i < 1 or i > int(iteration * start_save_best) or deterministic
+                        or stop_criterion_final or patience == early_stop_patience
+                        or time_spent > max_time):
 
-                # compare with the first iteration results and get improved indexes
-                if bound_lower:
-                    if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
+                    # compare with the first iteration results and get improved indexes
+                    if bound_lower:
+                        if deterministic:
+                            idx = improved_idx
+                            idx_mask = None
+                        else:
+                            idx_mask, idx = _get_idx_mask(
+                                0, full_ret_l, ret_0, loss_reduction_func)
+                        ret_0[idx] = full_ret_l[idx]
                     else:
-                        idx_mask, idx = _get_idx_mask(
-                            0, full_ret_l, ret_0, loss_reduction_func)
-                    ret_0[idx] = full_ret_l[idx]
-                else:
-                    if deterministic:
-                        idx = improved_idx
-                        idx_mask = None
-                    else:
-                        idx_mask, idx = _get_idx_mask(
-                            1, full_ret_u, ret_0, loss_reduction_func)
-                    ret_0[idx] = full_ret_u[idx]
+                        if deterministic:
+                            idx = improved_idx
+                            idx_mask = None
+                        else:
+                            idx_mask, idx = _get_idx_mask(
+                                1, full_ret_u, ret_0, loss_reduction_func)
+                        ret_0[idx] = full_ret_u[idx]
 
-                if idx is not None:
-                    # for update propose, we condition the idx to update only
-                    # on domains preserved
-                    if pruner:
-                        reference_idx, idx = pruner.prune_idx(idx_mask, idx, x)
-                    else:
-                        reference_idx = idx
+                    if idx is not None:
+                        # for update propose, we condition the idx to update only
+                        # on domains preserved
+                        if pruner:
+                            reference_idx, idx = pruner.prune_idx(idx_mask, idx, x)
+                        else:
+                            reference_idx = idx
 
-                    _update_optimizable_activations(
-                        optimizable_activations, interm_bounds,
-                        fix_interm_bounds, best_intermediate_bounds,
-                        reference_idx, idx, alpha, best_alphas, deterministic)
+                        _update_optimizable_activations(
+                            optimizable_activations, interm_bounds,
+                            fix_interm_bounds, best_intermediate_bounds,
+                            reference_idx, idx, alpha, best_alphas, deterministic)
 
-                    if beta:
-                        self.update_best_beta(enable_opt_interm_bounds, betas,
-                                              best_betas, idx)
+                        if beta:
+                            self.update_best_beta(enable_opt_interm_bounds, betas,
+                                                best_betas, idx)
+
+        # udpate x_L, x_U
+        # with torch.no_grad():
+        #
+        #     # Now that we have the bounds, we can perform clipping and udpate the input bounds
+        #     if use_clip_domains and bound_lower:
+        #         if ret[2] is None:
+        #             raise Exception("Using clip domains requires A_dict but A_dict was not returned")
+        #
+        #         # FIXME: Now need to consider lb and ub, this is only correct for lb
+        #         clip_ret = clip_domains(
+        #             x_L,
+        #             x_U,
+        #             decision_thresh,
+        #             lA,
+        #             ret[0],
+        #             lbias,
+        #             False
+        #         )
+        #         [new_x_L, new_x_U] = clip_ret
+        #
+        #         # Form the new input bounded tensor
+        #         data = x[0].data.clone()
+        #         ptb = PerturbationLpNorm(
+        #             norm=x[0].ptb.norm, eps=x[0].ptb.eps, x_L=new_x_L, x_U=new_x_U)
+        #         new_x = BoundedTensor(data, ptb).to(data.device)  # the value of data doesn't matter, only ptb
+        #
+        #         x = (new_x,)  # input x must be a tuple
+
 
         if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
             print(f'****** iter [{i}]',
@@ -837,6 +1104,20 @@ def _get_optimized_bounds(
     if os.environ.get('AUTOLIRPA_DEBUG_OPT', False):
         print()
 
+    if save_loss_graphs and not displayed_ub and bound_upper and swap_loss:
+        displayed_ub = True
+        figs = [fig for (fig, _) in fig_graph_upper]
+        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
+        titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
+        finalize_plots(figs, title, titles, pickle_data=True)
+
+    elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
+        displayed_lb = True
+        figs = [fig for (fig, _) in fig_graph_lower]
+        title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
+        titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
+        finalize_plots(figs, title, titles, pickle_data=True)
+
     return best_ret
 
 
@@ -957,3 +1238,96 @@ def init_alpha(self: 'BoundedModule', x, share_alphas=False, method='backward',
         return init_intermediate_bounds
     else:
         return l, u, init_intermediate_bounds
+
+def plot_domains(i: int, bound_lower: bool, bound_upper: bool, x_L: Tensor, x_U: Tensor, dm_lb: Tensor, batches: int,
+                 num_spec: int, input_dim: int, volumes: Tensor, batch_lA: Tensor, lbias: Tensor, forward_fn,
+                 fig_graph_lower: list, fig_graph_upper: list, un_mask: Tensor,
+                 plane_constraints: Optional[Tensor], bev_dict: Optional[dict] = None
+                 ) -> Tuple[list, list, Tensor]:
+    """
+    Helper function to fill in plots in verification problems that can be visually shown.
+    :param i:                   Epoch iteration
+    :param bound_lower:         If the current bound is a lower bound
+    :param bound_upper:         If the current bound is an upper bound
+    :param x_L:                 Domain input lower bound
+    :param x_U:                 Domain input upper bound
+    :param dm_lb:               Network specification lower bound (or upper bound)
+    :param batches:             Number of batches
+    :param num_spec:            Specification dimension
+    :param input_dim:           Input dimension
+    :param volumes:             Volume results from loss function
+    :param batch_lA:            lA matrix with shape (batches, num_spec, input_dim)
+    :param lbias:               lbias with shape (batches, num_spec)
+    :param forward_fn:          Forward pass function of the original network
+    :param fig_graph_lower:     List of figures holding the plots for the lower bound
+    :param fig_graph_upper:     List of figures holding the plots for the lower bound
+    :param un_mask:             Mask to pull out the unverified instances
+    :param plane_constraints:   If given, the plane constraints used in the optimization
+    :param bev_dict:            If given, displays more detailed info from the loss function
+    :return:
+    """
+    assert num_spec == 1 and input_dim == 3, "Dimensions don't fit, cannot plot these nodes"
+    # for specific scenarios (1 specification 3D input space) it is possible to graph the inputs and planes
+    with torch.no_grad(): # to be safe that gradients do not get affected
+        ## graph set up
+        print(f"i {i} bev_dict: {bev_dict if bev_dict is not None else 'N/A'}")
+
+        # get a set of fixed masks to analyze a set of unverified nodes
+        if un_mask is None:
+            if bound_lower:
+                un_mask = (dm_lb < 0).squeeze()
+            elif bound_upper:
+                un_mask = (dm_lb > 0).squeeze()
+            un_mask_offset = 12 * 3  # start idx of nodes to plot
+            un_mask[:un_mask_offset] = False
+        num_unverified = un_mask.to(dtype=torch.int).sum()
+        print(
+            f"{num_unverified} unverified nodes out of {batches} nodes | lb_iter {lb_iter}, ub_iter {ub_iter}")
+
+        [rows, cols] = get_rows_cols(num_unverified)
+
+        # create/retrieve list of figures that will be manipulated
+        if fig_graph_lower is None:
+            fig_graph_lower = []
+
+        if fig_graph_upper is None:
+            fig_graph_upper = []
+
+        if bound_lower:
+            if len(fig_graph_lower) == i:
+                fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                axs = axs.flatten()
+                fig_graph_lower.append((fig, axs))
+            else:
+                fig, axs = fig_graph_lower[i]
+        else:
+            if len(fig_graph_upper) == i:
+                fig, axs = plt.subplots(rows, cols, figsize=(12, 8), subplot_kw={'projection': '3d'})
+                axs = axs.flatten()
+                fig_graph_upper.append((fig, axs))
+            else:
+                fig, axs = fig_graph_upper[i]
+
+        ## start of actual plotting
+
+        # keep entries that were unverified on the first iteration of alpha crown
+        nv_x_L = x_L[un_mask]  # nv for not verified
+        nv_x_U = x_U[un_mask]
+        # nv_batch_lA = -1 * batch_lA[un_mask] if bound_lower else batch_lA[un_mask]
+        # nv_lbias = -1 * lbias[un_mask] if bound_lower else lbias[un_mask]
+        nv_batch_lA = batch_lA[un_mask]
+        nv_lbias = lbias[un_mask]
+        nv_volumes = volumes[un_mask]
+        nv_dm_lb = dm_lb[un_mask]
+        plot_batches = len(axs)   # number of plots
+        nv_plane_constraints = None
+        if plane_constraints is not None:
+            # nv_plane_constraints = -1 * plane_constraints[un_mask] if bound_lower else plane_constraints[un_mask]
+            nv_plane_constraints = plane_constraints[un_mask]
+
+        fill_plots(
+            axs, forward_fn,
+            nv_x_L, nv_x_U, nv_batch_lA, nv_lbias, nv_volumes, plot_batches, num_unverified, num_spec,
+            nv_dm_lb, nv_plane_constraints, True, i)
+
+        return fig_graph_lower, fig_graph_upper, un_mask

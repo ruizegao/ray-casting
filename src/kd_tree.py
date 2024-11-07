@@ -523,7 +523,7 @@ def construct_adaptive_tree_iter(
 
 def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=None, split_depth=None,
                                             compress_after=False, with_childern=False, with_interior_nodes=False,
-                                            with_exterior_nodes=False, offset=0., batch_process_size=2048):
+                                            with_exterior_nodes=False, offset=0., batch_process_size=2048, max_split_depth=36):
     # Validate input
     # ASSUMPTION: all of our bucket sizes larger than batch_process_size must be divisible by batch_process_size
     for b in bucket_sizes:
@@ -558,7 +558,7 @@ def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=No
     n_splits = 99999999 if split_depth is None else split_depth + 1  # 1 extra because last round doesn't split
     do_continue_splitting = True
     while do_continue_splitting:
-        if i_split > 36:
+        if i_split > max_split_depth:
             break
         # Reshape in to batches of size <= B
         init_bucket_size = node_lower.shape[0]
@@ -840,7 +840,7 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         func, params, continue_splitting,
         node_lower, node_upper,
         split_level,
-        offset=0., batch_size=None
+        offset=0., batch_size=None, swap_loss=False
 ):
     """
 
@@ -875,7 +875,7 @@ def construct_full_uniform_unknown_levelset_tree_iter(
         return node_type.float(), worst_dim.float()
 
     def eval_batch_of_nodes(lower, upper):
-        node_type, _ = func.classify_box(params, lower, upper, offset=offset)
+        node_type, _ = func.classify_box(params, lower, upper, offset=offset, swap_loss=swap_loss)
         node_type = node_type.squeeze(-1)
         worst_dim = torch.argmax(upper - lower, dim=-1)
         return node_type.float(), worst_dim.float()
@@ -988,7 +988,7 @@ def construct_full_uniform_unknown_levelset_tree(
         total_n_valid = 0
         lower, upper, out_node_type, out_split_dim, out_split_val = construct_full_uniform_unknown_levelset_tree_iter(
             func, params, do_continue_splitting,
-            lower, upper, i_split, offset=offset, batch_size=batch_size)
+            lower, upper, i_split, offset=offset, batch_size=batch_size, swap_loss=quit_next)
         node_lower.append(lower)
         node_upper.append(upper)
         node_type.append(out_node_type)

@@ -1102,7 +1102,10 @@ class BoundedModule(nn.Module):
             intermediate_constr=None, alpha_idx=None,
             aux_reference_bounds=None, need_A_only=False,
             cutter=None, decision_thresh=None,
-            update_mask=None, ibp_nodes=None, cache_bounds=False):
+            update_mask=None, ibp_nodes=None, cache_bounds=False, use_clip_domains=False, swap_loss=False,
+            plane_constraints_lower: Optional[Tensor]=None, plane_constraints_upper: Optional[Tensor]=None,
+            custom_loss_func_params: Optional[dict]=None
+    ):
         r"""Main function for computing bounds.
 
         Args:
@@ -1340,15 +1343,22 @@ class BoundedModule(nn.Module):
                 aux_reference_bounds=aux_reference_bounds,
                 needed_A_dict=needed_A_dict,
                 final_node_name=final_node_name,
-                cutter=cutter, decision_thresh=decision_thresh)
-            if bound_upper:
-                ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
+                cutter=cutter, decision_thresh=decision_thresh, use_clip_domains=use_clip_domains, swap_loss=swap_loss,
+                plane_constraints_lower=plane_constraints_lower, plane_constraints_upper=plane_constraints_upper,
+                custom_loss_func_params=custom_loss_func_params
+                )
+            if self.bound_opts['optimize_bound_args']['joint_optimization'] and bound_upper and bound_lower:
+                # This is not supported by default. It's only used for custom loss functions.
+                ret1 = ret2 = self._get_optimized_bounds(bound_side='both', **kwargs)
             else:
-                ret2 = None
-            if bound_lower:
-                ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
-            else:
-                ret1 = None
+                if bound_upper:
+                    ret2 = self._get_optimized_bounds(bound_side='upper', **kwargs)
+                else:
+                    ret2 = None
+                if bound_lower:
+                    ret1 = self._get_optimized_bounds(bound_side='lower', **kwargs)
+                else:
+                    ret1 = None
             if bound_lower and bound_upper:
                 if return_A:
                     # Needs to merge the A dictionary.

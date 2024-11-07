@@ -7,24 +7,27 @@ from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
-from collections import OrderedDict
+from collections import OrderedDict, defaultdict
 from enum import Enum
 import numpy as np
-import os
+import os, csv
+from prettytable import from_csv
 
 # imports specific to sdf
 import igl, geometry
 
+from src.utils import enumerate_mask
+
 # print(plt.style.available)  # uncomment to view the available plot styles
-plt.rcParams['text.usetex'] = True
-plt.style.use("seaborn-white")
+plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
+plt.style.use("seaborn-v0_8-white")
 
 set_t = {
     'dtype': torch.float32,
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
-available_activations = [nn.ReLU, nn.ELU, nn.Sigmoid]  # list of currently supported activation functions
+available_activations = [nn.ReLU, nn.ELU, nn.GELU, nn.Sigmoid]  # list of currently supported activation functions
 
 to_numpy = lambda x : x.detach().cpu().numpy()  # converts tensors to numpy arrays
 
@@ -33,22 +36,24 @@ class MainApplicationMethod(Enum):
     1) Default manner of training an implicit surface for a single .obj file
     2) Trains implicit surface for all available .obj files in the Thingi10K dataset
     3) Trains implicit surface for all .obj files in the Meshes Master dataset
+    4) Trains implicit surface for all .obj files in the ShapeNetCore dataset; This is the largest dataset of them all
     """
     Default = 1
     TrainThingi10K = 2
     TrainMeshesMaster = 3
+    ShapeNetCore = 4
 
     @classmethod
-    def get(cls, identifier, default=None):
+    def get(cls, identifier, default_ret=None):
         # Check if the identifier is a valid name
         if isinstance(identifier, str):
-            return cls.__members__.get(identifier, default)
+            return cls.__members__.get(identifier, default_ret)
         # Check if the identifier is a valid value
         elif isinstance(identifier, int):
             for member in cls:
                 if member.value == identifier:
                     return member
-            return default
+            return default_ret
         else:
             raise TypeError("Identifier must be a string (name) or an integer (value)")
 
@@ -72,6 +77,8 @@ class FitSurfaceModel(nn.Module):
             activation_fn = nn.ReLU()
         elif activation_lower == 'elu':
             activation_fn = nn.ELU()
+        elif activation_lower == 'gelu':
+            activation_fn = nn.GELU()
         elif activation_lower == 'sigmoid':
             activation_fn = nn.Sigmoid()
         else:
@@ -456,6 +463,7 @@ def parse_args() -> dict:
     # general options
     parser.add_argument("--verbose", action='store_true')
     parser.add_argument("--display_plots", action='store_true')
+    parser.add_argument('--check_csv_table', type=str, default=None)
 
     # Parse arguments
     args = parser.parse_args()
@@ -500,7 +508,7 @@ def main(args: dict):
     print(f"Program Configuration: {args}")
 
     # validate some inputs
-    if activation not in ['relu', 'elu', 'cos']:
+    if activation not in ['relu', 'elu', 'gelu', 'cos']:
         raise ValueError("unrecognized activation")
     if fit_mode not in ['occupancy', 'sdf']:
         raise ValueError("unrecognized activation")
@@ -557,18 +565,74 @@ def TrainThingi10K_main(args: dict):
     :param args: Default main program arguments/configurations
     :return:
     """
-    input_directory = "/home/jorgejc2/Documents/Research/ray-casting/Thingi10K/raw_meshes/"
-    output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/Thingi10K_inputs/"
+
+    row_names = ['Obj Filename', 'Training Success, Training Failure']
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[filename]['exists'] = exists
+
+    input_directory = "Thingi10K/raw_meshes/"
+    output_directory = "sample_inputs/Thingi10K_inputs/"
     file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
     os.makedirs(output_directory, exist_ok=True)
+    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
     input_files = [input_directory + f for f in file_names]
-    output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
-    for in_file, out_file in zip(input_files, output_files):
+    output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
+
+    csv_file, success, error = [], [], []
+
+    for i, in_file, out_file in zip([p for p in range(len(input_files))], input_files, output_files):
         args.update({
             'input_file': in_file,
             'output_file': out_file,
         })
-        main(args)
+
+        # update table
+        csv_file.append(file_names[i])
+
+        # See above TODO
+        # # if has been trained before, continue
+        # if check_csv_table:
+        #     exists = prior_directory_dict[file_names[i]].get('exists', False)
+        #     if exists:
+        #         success.append('y')
+        #         error.append('n')
+        #         continue
+
+        try:
+            main(args)
+        except Exception as e:
+            print(f"Could not fit implicit surface to {in_file}. Received exception:")
+            print(e)
+
+    csv_path = output_directory + 'summary.csv'
+    with open(csv_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(row_names)
+
+        for row in zip(csv_file, success, error):
+            writer.writerow(row)
+
+    # read the csv and print to the console
+    with open(csv_path, mode='r') as file:
+        table = from_csv(file)  # renders the table in pretty print format
+        print(table)
+
 
 def TrainMeshesMaster_main(args: dict):
     """
@@ -576,21 +640,181 @@ def TrainMeshesMaster_main(args: dict):
     :param args: Default main program arguments/configurations
     :return:
     """
-    input_directory = "/home/jorgejc2/Documents/Research/ray-casting/meshes-master/objects/"
-    subdirectories = [input_directory + name + '/' for name in os.listdir(input_directory)
+
+    row_names = ['Directory', 'Obj Filename', 'Training Success, Training Failure']
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             directory, filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[directory][filename]['exists'] = exists
+
+    input_directory = "meshes-master/objects/"
+    sub_names = [name + '/' for name in os.listdir(input_directory)
                       if os.path.isdir(os.path.join(input_directory, name))]
-    output_directory = "/home/jorgejc2/Documents/Research/ray-casting/sample_inputs/meshes-master_inputs/"
+    subdirectories = [input_directory + name for name in sub_names]
+    output_directory = "sample_inputs/meshes-master_inputs/"
     os.makedirs(output_directory, exist_ok=True)
-    for sub in subdirectories:
+    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+
+    # create a table that views the output
+    csv_subdir, csv_file, success, error = [], [], [], []
+
+    for i, sub in enumerate(subdirectories):
         file_names = [f for f in os.listdir(sub) if f.endswith('.obj')]
         input_files = [sub + f for f in file_names]
-        output_files = [output_directory + f.replace(".obj", ".npz") for f in file_names]
-        for in_file, out_file in zip(input_files, output_files):
+        output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
+        for j, in_file, out_file in zip([p for p in range(len(input_files))], input_files, output_files):
             args.update({
                 'input_file': in_file,
                 'output_file': out_file,
             })
-            main(args)
+
+            # update table
+            csv_subdir.append(sub_names[i])
+            csv_file.append(file_names[j])
+
+            # See above TODO
+            # # if has been trained before, continue
+            # if check_csv_table:
+            #     exists = prior_directory_dict[sub_names[i]][file_names[j]].get('exists', False)
+            #     if exists:
+            #         success.append('y')
+            #         error.append('n')
+            #         continue
+
+            try:
+                main(args)
+                success.append('y')
+                error.append('n')
+            except Exception as e:
+                print(f"Could not fit implicit surface to {in_file}. Received exception:")
+                print(e)
+                success.append('n')
+                error.append('y')
+
+    csv_path = output_directory + 'summary.csv'
+    with open(csv_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(row_names)
+
+        for row in zip(csv_subdir, csv_file, success, error):
+            writer.writerow(row)
+
+    # read the csv and print to the console
+    with open(csv_path, mode='r') as file:
+        table = from_csv(file)  # renders the table in pretty print format
+        print(table)
+
+
+def ShapeNetCore_main(args: dict):
+    """
+    Main program for training implicit surfaces on the entire ShapeNetCore dataset
+    :param args: Default main program arguments/configurations
+    :return:
+    """
+
+    row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success, Training Failure']
+
+    # TODO: Would be nice to load in a csv file that describes what objects have previously
+    # been rendered in the data successfully/unsuccessfully
+    # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
+    # prior_directory_dict = makehash()
+    # if check_csv_table is not None:
+    #     with open(check_csv_table, mode='r') as csvfile:
+    #         reader = csv.DictReader(csvfile)
+    #         for row in reader:
+    #             row_entries = [row[i] for i in row_names]
+    #             directory, subdirectory, filename, success, error = row_entries
+    #             if success == 'y' and error == 'n':
+    #                 exists = True
+    #             elif success == 'n' and error == 'y':
+    #                 exists = False
+    #             else:
+    #                 raise ValueError("File cannot have been trained successfully AND had an error.")
+    #             prior_directory_dict[directory][subdirectory][filename]['exists'] = exists
+
+    input_directory = "ShapeNetCore/"
+    sub_names = [name + '/' for name in os.listdir(input_directory)
+                      if os.path.isdir(os.path.join(input_directory, name))]
+    subdirectories = [input_directory + name for name in sub_names]
+    output_directory = "sample_inputs/ShapeNetCore_inputs/"
+    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+
+    # create a table that views the output
+    csv_subdir, csv_subbdir, csv_file, success, error = [], [], [], [], []
+
+    for i, sub in enumerate(subdirectories):
+
+        subb_names = [name + '/models/' for name in os.listdir(sub)
+                      if os.path.isdir(os.path.join(sub, name))]
+        subbdirectories = [sub + name for name in subb_names]
+
+        for j, subb in enumerate(subbdirectories):
+
+            # ShapeNet has too many objects, organize the output into directories
+            curr_output_dir = output_directory + sub_names[i] + subb_names[j]
+            os.makedirs(curr_output_dir, exist_ok=True)
+
+            file_names = [f for f in os.listdir(subb) if f.endswith('.obj')]
+            input_files = [subb + f for f in file_names]
+            output_files = [curr_output_dir + f.replace(".obj", descriptor + ".npz") for f in file_names]
+            for k, in_file, out_file in zip([p for p in range(len(input_files))], input_files, output_files):
+                args.update({
+                    'input_file': in_file,
+                    'output_file': out_file,
+                })
+
+                # update table
+                csv_subdir.append(sub_names[i])
+                csv_subbdir.append(subb_names[j])
+                csv_file.append(file_names[k])
+
+                # See above TODO
+                # # if has been trained before, continue
+                # if check_csv_table:
+                #     exists = prior_directory_dict[sub_names[i]][subb_names[j]][file_names[k]].get('exists', False)
+                #     if exists:
+                #         success.append('y')
+                #         error.append('n')
+                #         continue
+
+                try:
+                    main(args)
+                    success.append('y')
+                    error.append('n')
+                except Exception as e:
+                    print(f"Could not fit implicit surface to {in_file}. Received exception:")
+                    print(e)
+                    success.append('n')
+                    error.append('y')
+
+    csv_path = output_directory + 'summary.csv'
+    with open(csv_path, mode='w', newline='') as file:
+        writer = csv.writer(file)
+        writer.writerow(row_names)
+
+        for row in zip(csv_subdir, csv_subbdir, csv_file, success, error):
+            writer.writerow(row)
+
+    # read the csv and print to the console
+    with open(csv_path, mode='r') as file:
+        table = from_csv(file)  # renders the table in pretty print format
+        print(table)
+
 
 if __name__ == '__main__':
     # parse user arguments
@@ -605,5 +829,7 @@ if __name__ == '__main__':
         TrainThingi10K_main(args_dict)
     elif program_mode == MainApplicationMethod.TrainMeshesMaster:
         TrainMeshesMaster_main(args_dict)
+    elif program_mode == MainApplicationMethod.ShapeNetCore:
+        ShapeNetCore_main(args_dict)
     else:
         raise ValueError(f"Invalid program_mode of {program_mode_name}")

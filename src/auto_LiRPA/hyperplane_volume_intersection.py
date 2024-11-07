@@ -1,20 +1,20 @@
 import numpy as np
-import torch
 from torch import Tensor
 from torch import vmap
 from functools import partial
 from numpy import ndarray
-from scipy.spatial import Delaunay as SciDelaunay
+from scipy.spatial import Delaunay
 from scipy.spatial import ConvexHull
 from enum import Enum
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Poly3DCollection
+from datetime import datetime
 import matplotlib.patches as mpatches
 from math import ceil
-import imageio
-import pickle
+import imageio, pickle, logging, torch, os
 
 set_t = {
     "dtype": torch.float32,
@@ -22,12 +22,54 @@ set_t = {
 }
 out_path = "/home/jorgejc2/Documents/Research/ray-casting/plane_training/"
 
+delaunay_logging_file = os.getenv('DELAUNAY_LOGGING', None)
+if delaunay_logging_file is not None:
+    logger = logging.getLogger('delaunay_logger')
+    logger.setLevel(logging.DEBUG)
+    # create file handler which logs even debug messages
+    fh = logging.FileHandler(delaunay_logging_file)
+    fh.setLevel(logging.ERROR)
+    # create console handler with a higher log level
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.ERROR)
+    # create formatter and add it to the handlers
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    ch.setFormatter(formatter)
+    fh.setFormatter(formatter)
+    # add the handlers to logger
+    logger.addHandler(ch)
+    logger.addHandler(fh)
+    print(f"Printing log handlers: {logger.handlers}")
+else:
+    logger = None
+
 class VolumeCalculationMethod(Enum):
     SinglePlaneSingleVolume = 1
     SinglePlaneBatchVolume = 2
     MultiPlaneSingleVolume = 3
     MultiPlaneBatchVolume = 4
+    HeuristicVolume = 5
+    MiscMain = 6
 
+class OptimizerMethod(Enum):
+    Adam = 1
+    SGD = 2
+
+optimizers_config = {
+    OptimizerMethod.Adam: {
+        "class": torch.optim.Adam,
+        "params": {
+            "lr": 0.1
+        }
+    },
+    OptimizerMethod.SGD: {
+        "class": torch.optim.SGD,
+        "params": {
+            "lr": 0.01,
+            "momentum": 0.9
+        }
+    }
+}
 
 def to_numpy(tensor: Tensor) -> np.ndarray:
     return tensor.detach().cpu().numpy()
@@ -64,7 +106,11 @@ def plot_plane(
         D: float,
         xlim: list[Union[float, int]],
         ylim: list[Union[float, int]],
-        samples: int = 1000
+        samples: int = 1000,
+        label: Optional[str] = None,
+        plot_normal_vector: bool = False,
+        x_L: Tensor = None,
+        x_U: Tensor = None,
 ):
     """
 
@@ -73,13 +119,38 @@ def plot_plane(
     :param D:       Plane offset
     :param xlim:    Graph x limits
     :param ylim:    Graph y limits
+    :param samples: Number of samples for the plane
+    :param label:   Label to give the plane in the plot
     :return:
     """
+    if plot_normal_vector:
+        assert x_L is not None and x_U is not None, "Cannot plot normal vector without x_L and x_U"
     [A, B, C] = normal
     xx, yy = np.meshgrid(np.linspace(xlim[0], xlim[1], samples), np.linspace(ylim[0], ylim[1], samples))
     zz = (-D - A * xx - B * yy) / C
     ax.plot_surface(xx, yy, zz, alpha=0.5)
+    if label is not None:
+        handles, labels = ax.get_legend_handles_labels()
+        surface_handle = Line2D([0], [0], color='blue', lw=4, label='My Surface')
+        handles.append(surface_handle)
+        labels.append(label)
+        ax.legend(handles=handles, labels=labels)
 
+    # plot the normal of the plane
+    if plot_normal_vector:
+        vertices = get_cube_vertices(x_L, x_U)
+        edge_masks = generate_cube_edges()
+        edges = vertices[edge_masks, :]
+        _, intersection_mask, intersection_pts = calculate_intersection(edges, torch.from_numpy(normal).to(edges), D, False)
+        intersection_pts = to_numpy(intersection_pts[intersection_mask])
+        inter_x = intersection_pts[:, 0]
+        inter_y = intersection_pts[:, 1]
+        normal_length = np.linalg.norm(normal)
+        unit_normal = normal / normal_length
+        x0, y0 = (np.mean(inter_x), np.mean(inter_y))  # Take the midpoint of x and y limits
+        z0 = (-D - A * x0 - B * y0) / C  # Calculate the corresponding z coordinate
+        ax.quiver(x0, y0, z0, unit_normal[0], unit_normal[1], unit_normal[2],
+                  color='red', length=1.0, normalize=True)
 
 def plot_cube(ax: Axes, vertices: ndarray, faces: ndarray):
     """
@@ -151,14 +222,20 @@ def calculate_intersection(edges: Tensor, normal: Tensor, D: float, verbose=Fals
     Vis = edges[:, 0, :].reshape(batches, 3, 1)
     Vjs = edges[:, 1, :].reshape(batches, 3, 1)
     e_ij = Vjs - Vis  # (batch x 3 x 1)
-    normal_exp = normal.reshape(1, 1, -1).expand(batches, -1, -1)
+
+    # convert to Hessian Normal Form
+    mag = torch.linalg.norm(normal)
+    hn_normal = normal / mag
+    d = -D / mag
+
+    normal_exp = hn_normal.reshape(1, 1, -1).expand(batches, -1, -1)
     if verbose:
         print(f"Shape Vis: {Vis.shape}")
         print(f"Shape Vjs: {Vjs.shape}")
         print(f"Shape Eij: {e_ij.shape}")
         print(f"Shape Normal Expanded: {normal_exp.shape}")
 
-    lambdas = -(D + normal_exp.bmm(Vis)) / normal_exp.bmm(e_ij)
+    lambdas = (d - normal_exp.bmm(Vis)) / normal_exp.bmm(e_ij)
     lambdas = lambdas.squeeze()  # squeeze out singleton dimensions
 
     if verbose:
@@ -195,18 +272,67 @@ def volume_of_tetrahedron(a: Tensor, b: Tensor, c: Tensor, d: Tensor) -> Tensor:
     """
     return torch.abs(torch.dot(a - d, torch.cross(b - d, c - d))) / 6.0
 
+def distance_to_plane(normal: Tensor, D: float, vertex: Tensor) -> Tensor:
+    """
+    Calculates the perpendicular distance from a point to the plane
+    :param normal:
+    :param D:
+    :param vertex:
+    :return:
+    """
+    if normal.shape == vertex.shape:
+        # Only a single vertex was given
+        dist = (torch.dot(normal, vertex) + D) / torch.norm(normal)
+    else:
+        # A set of vertices were given, calculate distances for all vertices
+        num_vertices = vertex.shape[0]
+        normal = normal.unsqueeze(0)
+        normal = normal.expand(num_vertices, 1, -1)
+        vertices = vertex.reshape(num_vertices, -1, 1)
+        dist = (normal.bmm(vertices) + D) / torch.norm(normal)
+    return dist.abs()
+
+
+def get_edges_from_hull(points: ndarray) -> Tuple[ndarray, ndarray, ndarray, ndarray]:
+    """
+    Given an array of 3D points, calculates the convex hull of these points as well. The return contains:
+
+    * edge_idx: The indices into the points that form the edges of the polyhedron
+    * edges: The pairs of points that form the edges of the polyhedron
+    * vertices: The points responsible for forming the outer convex hull
+    * points: The original points
+
+    :param points:
+    :return: edge_idx, edges, vertices, points
+    """
+    curr_hull = ConvexHull(points)
+    edge_idx = set()
+    for simplex in curr_hull.simplices:
+        # Each simplex has three edges, we add each edge as a sorted tuple to the set
+        edge_idx.add(tuple(sorted([simplex[0], simplex[1]])))
+        edge_idx.add(tuple(sorted([simplex[1], simplex[2]])))
+        edge_idx.add(tuple(sorted([simplex[0], simplex[2]])))
+
+    edge_idx = np.array(list(edge_idx))
+    edges = points[edge_idx]  # get edges
+    vertices = points[curr_hull.vertices]  # filter out interior points
+    return edge_idx, edges, vertices, points
 
 def calculate_volume_above_plane(
+        x_L: Tensor,
+        x_U: Tensor,
         vertices: Tensor,
         intersection_pts: Tensor,
         i_mask: Tensor,
         normal: Tensor,
-        D: float,
+        D: Union[Tensor, float],
         lower_bound = False,
         ax: Optional[Axes] = None,
         verbose = False):
     """
     Calculate the volume above the plane inside the cube.
+    :param x_L:
+    :param x_U:
     :param vertices:            Cube vertex coordinates
     :param intersection_pts:    Points of intersection between cube edges and plane
     :param i_mask:              Intersection mask. True if element in intersection_pts is not infinity.
@@ -242,7 +368,37 @@ def calculate_volume_above_plane(
     polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
     # Perform Delaunay tetrahedralization
-    delaunay = SciDelaunay(polyhedron_vertices_np)
+    try:
+        delaunay = Delaunay(polyhedron_vertices_np)
+    except Exception as e:
+        # save the hyperplane if desired
+        if logger is not None:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            npz_filename = delaunay_logging_file.replace('.log', '.npz')
+            normal_np = to_numpy(normal)
+            if isinstance(D, float):
+                d_np = np.array([D]).reshape(1)
+            elif isinstance(D, Tensor):
+                d_np = to_numpy(D).reshape(1)
+            else:
+                raise ValueError(f"Plane offset D is not a float or Tensor, D type: {type(D)}")
+            full_np = np.concatenate((normal_np, d_np))
+            x_L_np = to_numpy(x_L)
+            x_U_np = to_numpy(x_U)
+            logger.error(
+                f"{timestamp}: Saving to {npz_filename} with timestamp {timestamp}\nHyperplane: {full_np}\nx_L: {x_L_np}\nx_U: {x_U_np}\n{e}")
+            if os.path.isfile(npz_filename):
+                data = dict(np.load(npz_filename, allow_pickle=True))
+            else:
+                data = {}
+            data[f"hyperplane_{timestamp}"] = full_np
+            data[f"x_L_{timestamp}"] = x_L_np
+            data[f"x_U_{timestamp}"] = x_U_np
+            np.savez(npz_filename, **data)
+
+        # set volume to be 0 to satisfy gradient dependency
+        total_volume = 0 * (normal.sum() + D)
+        return total_volume
 
     # Extract the tetrahedrons (each row represents the indices of 4 vertices forming a tetrahedron)
     tetrahedrons = delaunay.simplices
@@ -267,8 +423,10 @@ def calculate_volume_above_plane(
             print(f"i {i + 1} | {curr_volume:.3f} | {total_volume:.3f}")
 
     if i_mask.to(dtype=torch.int).sum() == 0:
+        # Hyperplane does not intersect the polyhedron. The polyhedron's volume at this point is calculated independent
+        # of the plane. Include this calculation to track the gradient.
         # FIXME: Redundant calculation to include gradient. Much faster to precompute volumes instead
-        total_volume += 0 * (normal.sum() + D)
+        total_volume += (0 * (normal.sum() + D)).squeeze()
 
     if ax is not None:
         # Plot each tetrahedron
@@ -353,7 +511,7 @@ def cube_intersection_with_plane(
         if verbose and num_i_pts > 0:
             print(f"Intersection Points: \n{intersection_pts_np}")
 
-    intersection_volume = calculate_volume_above_plane(vertices, intersection_pts, intersection_mask,
+    intersection_volume = calculate_volume_above_plane(x_L, x_U, vertices, intersection_pts, intersection_mask,
                                                        normal, D, lower_bound, ax2, verbose)
     if verbose:
         print(f"Volume intersection: {to_numpy(intersection_volume)}")
@@ -437,28 +595,19 @@ def cube_intersection_with_plane_with_constraints(
         print(f"Vertices (num {len(vertices)}): \n{to_numpy(vertices)}")
         print(f"Edges (num {len(edges)}): \n{edges}")
 
-    def _get_edges_from_hull(_points: ndarray) -> Tuple[ndarray, ndarray, ndarray, ndarray]:
-        curr_hull = ConvexHull(_points)
-        _edge_idx = set()
-        for simplex in curr_hull.simplices:
-            # Each simplex has three edges, we add each edge as a sorted tuple to the set
-            _edge_idx.add(tuple(sorted([simplex[0], simplex[1]])))
-            _edge_idx.add(tuple(sorted([simplex[1], simplex[2]])))
-            _edge_idx.add(tuple(sorted([simplex[0], simplex[2]])))
-
-        _edge_idx = np.array(list(_edge_idx))
-        _edges = _points[_edge_idx]  # get edges
-        _vertices = _points[curr_hull.vertices]  # filter out interior points
-        return _edge_idx, _edges, _vertices, _points
-
     # initialize the hull to be the bounding box
-    hull_ret = _get_edges_from_hull(vertices_np)
+    hull_ret = get_edges_from_hull(vertices_np)
     [curr_edges_idx_np, curr_edges_np, curr_vertices_np, curr_points_np] = hull_ret
     [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+    is_constrained = False  # initially assume that no constraint hyperplanes intersect the bbox
     for c_normal, c_D in plane_constraints:
         [A, B, C] = c_normal
         c_ret = calculate_intersection(curr_edges_torch, c_normal, c_D, verbose)
         [_, c_i_mask, c_inter_pts] = c_ret
+        if c_i_mask.to(dtype=int).sum() == 0:
+            continue
+
+        is_constrained = True
         distances = A * curr_vertices_torch[:, 0] + B * curr_vertices_torch[:, 1] + C * curr_vertices_torch[:, 2] + c_D
         # Separate vertices above the plane
         if not lower_bound:
@@ -466,7 +615,7 @@ def cube_intersection_with_plane_with_constraints(
         else:
             above_vertices = curr_vertices_torch[distances <= 0]
         total_vertices = to_numpy(torch.vstack((above_vertices, c_inter_pts[c_i_mask])))
-        hull_ret = _get_edges_from_hull(total_vertices)
+        hull_ret = get_edges_from_hull(total_vertices)
         [curr_edges_idx_np, curr_edges_np, curr_vertices_np, curr_points_np] = hull_ret
         [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
 
@@ -489,12 +638,12 @@ def cube_intersection_with_plane_with_constraints(
         for i, point in enumerate(curr_vertices_np):
             ax3.text(point[0], point[1], point[2], str(i))
 
-        ax3.set_title("Constrained Polyhedron")
+        ax3.set_title(f"Input Polyhedron\nIs Constrained: {is_constrained}")
 
     # Now calculate the intersection between the polyhedron and the optimizable plane as well as the volume
     lambdas, intersection_mask, intersection_pts = calculate_intersection(curr_edges_torch, normal, D, verbose)
-    intersection_volume = calculate_volume_above_plane(curr_vertices_torch, intersection_pts, intersection_mask,
-                                                       normal, D, lower_bound, ax2, verbose)
+    intersection_volume = calculate_volume_above_plane(x_L, x_U, curr_vertices_torch, intersection_pts,
+                                                       intersection_mask, normal, D, lower_bound, ax2, verbose)
     if verbose:
         print(f"Volume intersection: {to_numpy(intersection_volume)}")
         print(f"Total volume: {(x_U - x_L).prod()}")
@@ -583,30 +732,10 @@ def batch_cube_intersection_with_plane(
 
     # Using these intersection points, triangulate the volume above the hyperplane and below the bounding box
     # into tetrahedrons and calculate this volume
-    total_volumes = batch_calculate_volume_above_plane(vertices, intersection_pts, intersection_mask,
-                                                       normal, D, dm_lb, threshold, debug_i, lower_bound)
+    total_volumes = batch_calculate_volume_above_plane(x_L, x_U, vertices, intersection_pts, intersection_mask,
+                                                       normal, D, dm_lb, threshold, x_L, x_U, debug_i, lower_bound)
 
     return total_volumes
-
-def distance_to_plane(normal: Tensor, D: float, vertex: Tensor) -> Tensor:
-    """
-    Calculates the perpendicular distance from a point to the plane
-    :param normal:
-    :param D:
-    :param vertex:
-    :return:
-    """
-    if normal.shape == vertex.shape:
-        # Only a single vertex was given
-        dist = (torch.dot(normal, vertex) + D) / torch.norm(normal)
-    else:
-        # A set of vertices were given, calculate distances for all vertices
-        num_vertices = vertex.shape[0]
-        normal = normal.unsqueeze(0)
-        normal = normal.expand(num_vertices, 1, -1)
-        vertices = vertex.reshape(num_vertices, -1, 1)
-        dist = (normal.bmm(vertices) + D) / torch.norm(normal)
-    return dist.abs()
 
 def batch_calculate_volume_above_plane(
         vertices: Tensor,
@@ -616,6 +745,8 @@ def batch_calculate_volume_above_plane(
         D: Tensor,
         dm_lb: Tensor,
         threshold: Tensor,
+        x_L: Tensor,
+        x_U: Tensor,
         debug_i: Optional[int] = None,
         lower_bound = True
 ) -> Tensor:
@@ -630,6 +761,8 @@ def batch_calculate_volume_above_plane(
     :param D:                   Plane offset
     :param dm_lb:
     :param threshold:
+    :param x_L:                 Only need x_L for debugging in the logger
+    :param x_U:                 Only need x_U for debugging in the logger
     :param debug_i:
     :param lower_bound:
     :return:                    Volume above the plane inside the cube
@@ -669,7 +802,30 @@ def batch_calculate_volume_above_plane(
         polyhedron_vertices_np = to_numpy(polyhedron_vertices)
 
         # Perform Delaunay tetrahedralization
-        delaunay = SciDelaunay(polyhedron_vertices_np)
+        try:
+            delaunay = Delaunay(polyhedron_vertices_np)
+        except Exception as e:
+            # set volume to be 0 to satisfy gradient dependency
+            total_volumes[i] += 0 * (normal[i].sum() + curr_D)
+            # save the hyperplane if desired
+            if logger is not None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                npz_filename = delaunay_logging_file.replace('.log', '.npz')
+                normal_np = to_numpy(normal[i])
+                d_np = to_numpy(curr_D).reshape(1)
+                full_np = np.concatenate((normal_np, d_np))
+                x_L_np = to_numpy(x_L[i])
+                x_U_np = to_numpy(x_U[i])
+                logger.error(f"{timestamp}: Saving to {npz_filename} with timestamp {timestamp}\nHyperplane: {full_np}\nx_L: {x_L_np}\nx_U: {x_U_np}\n{e}")
+                if os.path.isfile(npz_filename):
+                    data = dict(np.load(npz_filename, allow_pickle=True))
+                else:
+                    data = {}
+                data[f"hyperplane_{timestamp}"] = full_np
+                data[f"x_L_{timestamp}"] = x_L_np
+                data[f"x_U_{timestamp}"] = x_U_np
+                np.savez(npz_filename, **data)
+            continue
 
         # Extract the tetrahedrons (each row represents the indices of 4 vertices forming a tetrahedron)
         tetrahedrons = delaunay.simplices
@@ -687,6 +843,275 @@ def batch_calculate_volume_above_plane(
             total_volumes[i] += 0 * (normal[i].sum() + curr_D)
 
     return total_volumes
+
+def batch_cube_intersection_with_plane_with_constraints(
+        x_L: Tensor,
+        x_U: Tensor,
+        normal: Tensor,
+        D: Tensor,
+        plane_constraints: Tensor,
+        lower_bound = True,
+        verbose=False
+) -> Tensor:
+    """
+    Calculate the volume above some hyperplane and polyhedron. The polyhedron is defined by the intersection of the
+    plane constraints with input bounding box (bbox). This polyhedron separates the verified and unverified region
+    in the bbox. If no constraints are given, acts like `batch_cube_intersection` (which is preferred in this case).
+    :param x_L:                 Input lower bounds
+    :param x_U:                 Input upper bounds
+    :param normal:              Plane normal coefficients
+    :param D:                   Plane offset
+    :param plane_constraints:   Input constraints that form a polyhedron inside the bbox
+                                regions
+    :param lower_bound:
+    :param verbose:             Print debugging logs
+    :return:
+    """
+
+    # Define cube vertices
+    box_vertices = b_get_cube_vertices(x_L, x_U)
+    box_edge_masks = generate_cube_edges()
+    box_edges = box_vertices[:, box_edge_masks, :]
+
+    batches = normal.shape[0]
+    total_volumes = torch.zeros((batches,), dtype=normal.dtype, device=normal.device)
+
+    for i in range(batches):
+        # At this point, we lose all parallelism. Everything must be done sequentially
+
+        # Define cube vertices and faces
+        vertices = box_vertices[i]
+        edges = box_edges[i]
+
+        # Get batch parameters
+        curr_plane_constraints = plane_constraints[i]
+        curr_normal = normal[i]
+        curr_D = D[i]
+
+        # respective numpy vectors
+        vertices_np = to_numpy(vertices)
+
+        if verbose:
+            print(f"Vertices (num {len(vertices)}): \n{to_numpy(vertices)}")
+            print(f"Edges (num {len(edges)}): \n{edges}")
+
+        # initialize the hull to be the bounding box
+        hull_ret = get_edges_from_hull(vertices_np)
+        [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+        for j in range(len(curr_plane_constraints)):
+            c_normal = curr_plane_constraints[j, :3].flatten()
+            c_D = curr_plane_constraints[j, 3]
+            [A, B, C] = c_normal
+            c_ret = calculate_intersection(curr_edges_torch, c_normal, c_D, verbose)
+            [_, c_i_mask, c_inter_pts] = c_ret
+            if c_i_mask.to(dtype=int).sum() == 0:
+                continue
+
+            distances = A * curr_vertices_torch[:, 0] + B * curr_vertices_torch[:, 1] + C * curr_vertices_torch[:, 2] + c_D
+            # Separate vertices above the plane
+            if not lower_bound:
+                above_vertices = curr_vertices_torch[distances >= 0]
+            else:
+                above_vertices = curr_vertices_torch[distances <= 0]
+            total_vertices = to_numpy(torch.vstack((above_vertices, c_inter_pts[c_i_mask])))
+            hull_ret = get_edges_from_hull(total_vertices)
+            [_, curr_edges_torch, curr_vertices_torch, _] = [torch.tensor(ret, **set_t) for ret in hull_ret]
+
+        # Now calculate the intersection between the polyhedron and the optimizable plane as well as the volume
+        lambdas, intersection_mask, intersection_pts = calculate_intersection(curr_edges_torch, curr_normal, curr_D, verbose)
+        intersection_volume = calculate_volume_above_plane(x_L, x_U, curr_vertices_torch, intersection_pts,
+                                                           intersection_mask,
+                                                           curr_normal, curr_D, lower_bound, None, verbose)
+        total_volumes[i] = intersection_volume
+        if verbose:
+            print(f"Batches {i}")
+            print(f"Volume intersection: {to_numpy(intersection_volume)}")
+            print(f"Total volume: {(x_U - x_L).prod()}")
+
+    return total_volumes
+
+def custom_loss_batch_estimate_volume(x: tuple, ret: dict, bound_lower: bool, output_name: str, input_name: str,
+                                      params: dict) -> Tensor:
+    """
+    This is a wrapper for `batch_estimate_volume` to be compatible with the `custom_loss_func` API in alpha crown.
+    :param x:           Perturbed input
+    :param ret:         CROWN return tuple (has bounds and A dictionary
+    :param bound_lower: If the lower or upper bound is being computed in CROWN
+    :param output_name: Name of output layer of the network
+    :param input_name:  Name of input layer of the network
+    :param params:      Additional parameters to be passed to the loss function
+    :return:            Total loss from the custom loss function
+    """
+
+    # unpack arguments
+    x_L = x[0].ptb.x_L
+    x_U = x[0].ptb.x_U
+    A = ret[2][output_name][input_name]
+
+    if bound_lower:
+        # dm_lb = ret[0]  # set lb as dm_lb
+        lA = A['lA']
+        lbias = A['lbias']
+    else:
+        # dm_lb = ret[1]  # set ub as dm_lb
+        lA = A['uA']
+        lbias = A['ubias']
+
+    batch_lA = lA.flatten(2)
+    batches, num_spec, input_dim = batch_lA.shape
+
+    # if specified, handle plane constraints
+    if bound_lower:
+        plane_constraints=params.pop('plane_constraints_lower', None)
+        params.pop('plane_constraints_lower', None)
+    else:
+        plane_constraints=params.pop('plane_constraints_upper', None)
+        params.pop('plane_constraints_lower', None)
+    if isinstance(plane_constraints, Tensor):
+        # ensure it is the right data type and on the right device
+        plane_constraints = plane_constraints.to(x_L)
+
+    # reshape tensors to be compatible with the volume calculation in batches
+    # in our case, we expect num_spec = 1; if num_spec != 1, results may be unexpected and/or cause errors
+    # lA_reshape = -1 * batch_lA.reshape(batches * num_spec, input_dim) if bound_lower else batch_lA.reshape(batches * num_spec, input_dim)
+    lA_reshape = batch_lA.reshape(batches * num_spec, input_dim)
+    x_L_reshape = x_L.reshape(batches, input_dim)
+    x_U_reshape = x_U.reshape(batches, input_dim)
+    x_L_reshape = x_L_reshape.expand(batches * num_spec, input_dim)
+    x_U_reshape = x_U_reshape.expand(batches * num_spec, input_dim)
+    # lbias_reshape = -1 * lbias.reshape(batches * num_spec, 1) if bound_lower else lbias.reshape(batches * num_spec, 1)
+    lbias_reshape = lbias.reshape(batches * num_spec, 1)
+
+    # with formatted inputs, perform calculation
+    total_loss, bev_dict = batch_estimate_volume(x_L_reshape, x_U_reshape, lA_reshape, lbias_reshape, not bound_lower,
+                                                 plane_constraints=plane_constraints, **params)
+
+    return total_loss
+
+def batch_estimate_volume(
+        x_L: Tensor, x_U: Tensor, normal: Tensor, D: Tensor,
+        lower_bound: float = True, plane_constraints: Optional[Tensor] = None, grid_precision: int = 10,
+        constraint_multiplier: float = 2., perpendicular_multiplier: Optional[float] = None, return_dict = False
+) -> Tuple[Tensor, Optional[dict]]:
+    """
+
+    Rather than computing the exact volume that is formed by the intersection of a plane and some bounding box (bbox), a
+    heuristic is put into place that calculates the distance between the plane and sample points in the box.
+    The objective is to move the plane to be completely above the bbox (all sample points fall below the plane).
+
+    More detailed, the bbox becomes a discretized voxel grid where the corner point of each voxel is recorded.
+    All corner points of each voxel are the sample points (IOW, the bbox is uniformly sampled). The distance between
+    each sample point that is above the bbox is calculated, and the total distance is summed. The objective should be
+    to minimize this total distance to 0 (all points are below the plane).
+
+    :param x_L:                         bbox lower bounds
+    :param x_U:                         bbox upper bounds
+    :param normal:                      plane coefficients
+    :param D:                           plane offsets
+    :param lower_bound:                 if the plane is a lower bound or an upper bound
+    :param plane_constraints:           constraints on the bbox separating verified/unverified area
+    :param grid_precision:              number of uniform grid points along each axis to use
+    :param constraint_multiplier:       how much to penalize already verified points being re-verified
+    :param perpendicular_multiplier:    if set, adds a penalty for `normal` not being perpendicular to the plane
+                                        constraints
+    :param return_dict:                 if true, returns a dictionary of values of interest in the loss calculation
+    :return:                            `sum_dist` -- sum of distances between plane and points above the plane
+    """
+    batches = x_L.size(0)
+
+    # aids in the creation of the corner points of each grid
+    step_tensor = torch.linspace(0, 1, grid_precision).reshape(1, 1, grid_precision).to(x_L)
+
+    grid_pts = (x_U - x_L).unsqueeze(2) * step_tensor + x_L.unsqueeze(2)
+    x_range, y_range, z_range = grid_pts[:, 0, :], grid_pts[:, 1, :], grid_pts[:, 2, :]
+
+    # creates mesh grids in batches
+    _b_meshgrid = vmap(partial(torch.meshgrid, indexing='ij'))
+
+    # Create a 3D grid of the corner points
+    x, y, z = _b_meshgrid(x_range, y_range, z_range)
+
+    # Stack into a list of 3D coordinates for each grid center
+    grid_centers = torch.stack([x, y, z], dim=-1)  # Shape: (batches, num_x, num_y, num_z, 3)
+    # where num_x=num_y=num_z=grid_precision
+
+    # We do not care to keep them in grid format so flatten the points
+    grid_centers = grid_centers.flatten(1, 3)  # Shape: (batches, grid_precision^3, 3)
+
+    # utilize plane constraints if specified
+    verified_mask, perp_cost = [None]*2
+    if plane_constraints is not None:
+        num_constraints = plane_constraints.size(1)
+        c_normal, c_d = plane_constraints[:, :, :3], plane_constraints[:, :, 3]
+        constraint_distances = torch.einsum('bij,bkj->bik', grid_centers, c_normal) + c_d.reshape(batches, 1, num_constraints)
+        # b = batches, i = number of grid points, j = 3, k = m = number of constraints
+        if lower_bound:
+            verified_mask = (constraint_distances <= 0.).any(dim=2)
+        else:
+            verified_mask = (constraint_distances >= 0.).any(dim=2)
+
+        if perpendicular_multiplier is not None:
+            dot_prod = torch.einsum('bkj,bj->bk', c_normal, normal)  # shape (batches, m)
+            n1 = torch.linalg.norm(c_normal, dim=2)  # shape (batches, m)
+            n2 = torch.linalg.norm(normal, dim=1).reshape(batches, 1)
+            perp_cost = perpendicular_multiplier * (dot_prod / (n1 * n2)).sum()
+
+    # calculate the distances (use einsum to compact this to a single line instead of performing so much reshaping and expanding)
+    distances = torch.einsum('bij,bj->bi', grid_centers, normal) + D.reshape(batches, 1)
+    distances /= torch.norm(normal, dim=1).reshape(batches, 1)
+    # b = batches, i = number of grid points, j = 3
+
+    # want to minimize the total distance between the points above the plane and the plane itself
+    inter_cost, above_cost = [None]*2
+    if lower_bound:
+        if verified_mask is not None:
+            pos_mask = distances >= 0.
+            inter_mask = torch.logical_and(pos_mask, verified_mask)
+            above_mask = torch.logical_and(pos_mask, torch.logical_not(verified_mask))
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[inter_mask] = constraint_multiplier
+            cost_matrix[above_mask] = 1.
+            inter_cost = (distances * cost_matrix).sum(dim=1)
+            above_cost = (distances * cost_matrix).sum(dim=1)
+            sum_dist = inter_cost + above_cost
+        else:
+            pos_mask = distances >= 0.
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[pos_mask] = 1.
+            above_cost = (distances*cost_matrix).sum(dim=1)
+            sum_dist = above_cost
+    else:
+        if verified_mask is not None:
+            pos_mask = distances <= 0.
+            inter_mask = torch.logical_and(pos_mask, verified_mask)
+            above_mask = torch.logical_and(pos_mask, torch.logical_not(verified_mask))
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[inter_mask] = constraint_multiplier
+            cost_matrix[above_mask] = 1.
+            inter_cost = (distances*cost_matrix).sum(dim=1)
+            above_cost = (distances*cost_matrix).sum(dim=1)
+            sum_dist = inter_cost + above_cost
+            sum_dist *= -1
+        else:
+            pos_mask = distances <= 0.
+            cost_matrix = torch.zeros_like(distances)
+            cost_matrix[pos_mask] = 1.
+            above_cost = (distances * cost_matrix).sum(dim=1)
+            sum_dist = above_cost
+            sum_dist *= -1
+
+    if perp_cost is not None:
+        sum_dist += perp_cost
+
+    if return_dict:
+        ret_dict = {
+            'perp_cost': to_numpy(perp_cost) if perp_cost is not None else None,
+            'inter_cost': to_numpy(inter_cost) if inter_cost is not None else None,
+            'above_cost': to_numpy(above_cost) if above_cost is not None else None,
+        }
+        return sum_dist, ret_dict
+    else:
+        return sum_dist, None
 
 
 ### vmap function signatures for simple batching
@@ -712,18 +1137,28 @@ def get_rows_cols(total_plots, max_cols = 4, max_plots = 12):
     return rows, cols
 
 def fill_plots(
-        axs,
-        forward_fn,
-        x_L: Tensor,
-        x_U: Tensor,
-        lA: Tensor,
-        lbias: Tensor,
-        volumes: Tensor,
-        plot_batches: int,
-        num_unverified,
-        num_spec,
-        i = 0
+        axs, forward_fn, x_L: Tensor, x_U: Tensor, lA: Tensor, lbias: Tensor, volumes: Tensor, plot_batches: int,
+        num_unverified, num_spec, bounds,
+        plane_constraints=None, plot_normal_vectors=False, i = 0
 ):
+    """
+
+    :param axs:
+    :param forward_fn:
+    :param x_L:
+    :param x_U:
+    :param lA:
+    :param lbias:
+    :param volumes:
+    :param plot_batches:
+    :param num_unverified:
+    :param num_spec:
+    :param bounds:
+    :param plane_constraints:
+    :param plot_normal_vectors:
+    :param i:
+    :return:
+    """
     faces = unit_cube_faces()
 
     for b in range(plot_batches):
@@ -739,20 +1174,28 @@ def fill_plots(
         with torch.no_grad():
             in_samples = torch.rand(10000, 3) * (curr_nv_x_U - curr_nv_x_L) + curr_nv_x_L
             out_samples = to_numpy(forward_fn(in_samples))
-            in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
+            in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-6).squeeze()]
             ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
 
         D = lbias.reshape(num_unverified, num_spec)[b].item()
         plot_cube(ax1, vertices, faces)
-        plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]])
+        plot_plane(ax1, normal, D, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]],
+                   plot_normal_vector=plot_normal_vectors, x_L=x_L[b], x_U=x_U[b])
         plot_intersection(ax1, vertices, normal, D)
+        if plane_constraints is not None:
+            c_normals, c_ds = to_numpy(plane_constraints[b, :, :3]), to_numpy(plane_constraints[b, :, 3])
+            for m in range(c_normals.shape[0]):
+                c_normal = c_normals[m]
+                c_d = c_ds[m].item()
+                plot_plane(ax1, c_normal, c_d, [x_L_np[0], x_U_np[0]], [x_L_np[1], x_U_np[1]],
+                           label=f'Constraint Plane {m}', plot_normal_vector=plot_normal_vectors, x_L=x_L[b], x_U=x_U[b])
         ax1.set_xlim([x_L_np[0], x_U_np[0]])
         ax1.set_ylim([x_L_np[1], x_U_np[1]])
         ax1.set_zlim([x_L_np[2], x_U_np[2]])
         ax1.set_xlabel('X')
         ax1.set_ylabel('Y')
         ax1.set_zlabel('Z')
-        ax1.set_title(f"Iter. {i}\n(Volume {volumes[b].item():.3e})\nx_L: {x_L_np}\nx_U: {x_U_np}")
+        ax1.set_title(f"Iter. {i}\n(Volume {volumes[b].item():.3e})\nx_L: {x_L_np}\nx_U: {x_U_np}\ndm_lb {bounds[b].item():.2e}")
         # display the legend with the hyperplane coefficients
         handles, labels = ax1.get_legend_handles_labels()
         handles.extend([mpatches.Patch() for _ in range(4)])
@@ -804,8 +1247,10 @@ def batched_main(batches: int):
     x_U = torch.ones((batches, 3), **set_t)
 
     iters = 50
-    lr = 1e-1
-    opt = torch.optim.Adam([normal], lr=lr, maximize=True)
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=True, **optimizer_params)
     losses = np.zeros((batches, iters))
     for i in range(iters):
         opt.zero_grad()
@@ -830,9 +1275,16 @@ def main():
     x_L = torch.zeros(3, **set_t)
     x_U = torch.ones(3, **set_t)
 
+    # x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703], **set_t)
+    # x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875], **set_t)
+    # normal = torch.tensor([0.11218592, 0.8509685, -0.03051529], requires_grad=True, **set_t)
+    # D = -0.10903698
+
     iters = 50
-    lr = 1e-1
-    opt = torch.optim.Adam([normal], lr=lr, maximize=True)
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=True, **optimizer_params)
     losses = np.zeros(iters)
     normal_coeffs = np.zeros((iters, len(normal)))
     for i in range(iters):
@@ -878,16 +1330,32 @@ def main():
 
 def multiplane_main():
     """
-        Example usage of the 'cube_interesction_with_plane' method.
-        """
+        Example usage of the 'cube_intersection_with_plane_with_constraints' method.
+    """
     # plane equation <normal, x> + D = 0
+
+    ## single constraint
     c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
     c_D = -1.5
     plane_constraints: list[tuple[Tensor, float]] = [
         (c_normal, c_D)
     ]
+
+    ## two constraints
+    # c_normal_one = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    # c_D_one = -1.5
+    # c_normal_two = torch.tensor([-0.15, 0.16, 0.9], requires_grad=False, **set_t)
+    # c_D_two = -0.35
+    # plane_constraints: list[tuple[Tensor, float]] = [
+    #     (c_normal_one, c_D_one),
+    #     (c_normal_two, c_D_two)
+    # ]
+
+    # perturb the optimizable plane to prevent nan in gradient ascent
+    # normal = torch.tensor([1 + 1e-6, 1 + 1e-5, 1 + 1e-4], requires_grad=True, **set_t)
+    # D = -1.5 - 1e-1
     normal = torch.tensor([1, 1, 1], requires_grad=True, **set_t)
-    D = -1.5 - 1e-1
+    D = -1.5
 
     lower_bound = True
 
@@ -895,9 +1363,11 @@ def multiplane_main():
     x_L = torch.zeros(3, **set_t)
     x_U = torch.ones(3, **set_t)
 
-    iters = 10
-    lr = 1e-1
-    opt = torch.optim.Adam([normal], lr=lr, maximize=False)
+    iters = 50
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=True, **optimizer_params)
     losses = np.zeros(iters)
     normal_coeffs = np.zeros((iters, len(normal)))
     for i in range(iters):
@@ -912,7 +1382,7 @@ def multiplane_main():
     print(f"Losses (volume): \n{losses}")
 
     ## turns plots into a video clip
-    with imageio.get_writer(out_path + 'plane_training.mp4', fps=5) as writer:
+    with imageio.get_writer(out_path + 'multiplane_constraint_training.mp4', fps=5) as writer:
         for i in range(iters):
             image = imageio.imread(out_path + f"frame_{i}.png")
             writer.append_data(image)
@@ -943,15 +1413,246 @@ def multiplane_main():
     plt.show()
 
 def batched_multiplane_main(batches: int):
+    """
+    Example usage of the 'batch_cube_intersection_with_plane_with_constraints' method.
+    """
+    # plane equation <normal, x> + D = 0
 
-    pass
+    ## single constraint
+    # c_normal = torch.tensor([1, 1, 1], requires_grad=False, **set_t)
+    # c_D = -1.5
+    # plane_constraints = c_normal.reshape(1, 1, -1).repeat(batches, 1, 1)
+    # c_D = torch.ones(batches, 1, 1, **set_t) * c_D
+    # # finalize plane constraints to be (batches, num constraints, 3 + 1 where 3 are normal params and 1 for offset)
+    # plane_constraints = torch.concatenate((plane_constraints, c_D), dim=2)
+    # assert plane_constraints.shape == (batches, 1, 4), "Plane constraints is not formatted correctly"
 
+    ## two constraints
+    plane_constraints = torch.tensor(
+        [
+            [1, 1, 1, -1.5],
+            [-0.15, 0.16, 0.9, -0.35]
+        ], requires_grad=False, **set_t
+    ).repeat(batches, 1, 1)
+
+    # perturb the optimizable plane to prevent nan in gradient ascent
+    normal = torch.tensor([1 + 1e-6, 1 + 1e-5, 1 + 1e-4]*batches, **set_t).reshape(batches, 3)
+    normal.requires_grad = True  # make optimizable
+    D = torch.full((batches,), -1.5 - 1e-1, **set_t)
+
+    lower_bound = True
+
+    # input bounding box
+    x_L = torch.zeros((batches, 3), **set_t)
+    x_U = torch.ones((batches, 3), **set_t)
+
+    iters = 50
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=True, **optimizer_params)
+    losses = np.zeros((batches, iters))
+    for i in range(iters):
+        opt.zero_grad()
+        loss = batch_cube_intersection_with_plane_with_constraints(
+            x_L, x_U, normal, D, plane_constraints, lower_bound, False)
+        losses[:, i] = to_numpy(loss)
+        loss = loss.sum()
+        loss.backward()
+        opt.step()
+
+    print(f"Losses (volume): \n{losses}")
+
+def misc_main():
+    x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703], **set_t).reshape(1, -1)
+    x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875], **set_t).reshape(1, -1)
+    normal = torch.tensor([[ 0.11218592, 0.8509685, -0.03051529]], **set_t).reshape(1, -1)
+    D = torch.tensor([-0.10903698], **set_t)
+    ###
+    # x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703]).reshape(1, -1)
+    # x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875]).reshape(1, -1)
+    # normal = torch.tensor([[0.11218592, 0.8509685, -0.03051529]]).reshape(1, -1)
+    # D = torch.tensor([-0.10903698])
+    ###
+    # x_L = torch.tensor([-0.10644531, 0.140625, -0.04345703], device=set_t['device']).reshape(1, -1)
+    # x_U = torch.tensor([-0.10620117, 0.14111328, -0.04296875], device=set_t['device']).reshape(1, -1)
+    # normal = torch.tensor([[0.11218592, 0.8509685, -0.03051529]], device=set_t['device']).reshape(1, -1)
+    # D = torch.tensor([-0.10903698], device=set_t['device'])
+    ###
+    batches = normal.shape[0]
+    tensors = [x_L, x_U, normal, D]
+    for i, tensor in enumerate(tensors):
+        print("Initial Tensor")
+        print(f"i {i} | dtype: {tensor.dtype}\n{to_numpy(tensor)}")
+
+    x_L_64t = x_L.to(dtype=torch.float64)
+    x_U_64t = x_U.to(dtype=torch.float64)
+
+    print(f"x_L_64t: {to_numpy(x_L_64t)}")
+    print(f"x_U_64t: {to_numpy(x_U_64t)}")
+
+    vertices = b_get_cube_vertices(x_L_64t, x_U_64t)
+    edge_masks = generate_cube_edges()
+    edges = vertices[:, edge_masks, :]
+
+    # convert to float64 for stable numerical precision in small bounding boxes
+    vertices_64t = vertices.to(dtype=torch.float64)
+    edges_64t = edges.to(dtype=torch.float64)
+    normal_64t = normal.to(dtype=torch.float64)
+    D_64t = D.to(dtype=torch.float64)
+
+    # get the intersection points formed by the hyperplane and bounding box
+    ret = b_calculate_intersection(edges, normal_64t, D_64t)
+    [lambdas, intersection_mask, intersection_pts] = ret
+    num_intersections = intersection_mask.to(dtype=int).sum()
+
+    for i, tensor in enumerate(ret):
+        print("Calculate Intersection Return")
+        print(f"i {i} | dtype: {tensor.dtype}")
+    print(f"Number of intersections: {num_intersections}")
+    print(f"Lambdas ({lambdas.shape}): \n{lambdas}")
+    print(f"Intersection Mask ({intersection_mask.shape}): \n{intersection_mask}")
+    print(f"Intersection Pts ({intersection_pts.shape}): \n{intersection_pts}")
+    print(
+        f"Filtered Intesrctions Pts ({intersection_pts[intersection_mask].shape}): \n{intersection_pts[intersection_mask]}")
+    [lambdas, intersection_mask, intersection_pts] = [r.to(dtype=set_t['dtype']) for r in ret]
+    ret = [lambdas, intersection_mask, intersection_pts]
+    intersection_mask = intersection_mask.to(dtype=bool)
+
+    for i, tensor in enumerate(ret):
+        print("Calculate Intersection Return")
+        print(f"i {i} | dtype: {tensor.dtype}")
+
+    num_intersections = intersection_mask.to(dtype=int).sum()
+    print(f"Number of intersections: {num_intersections}")
+    print(f"Lambdas ({lambdas.shape}): \n{lambdas}")
+    print(f"Intersection Mask ({intersection_mask.shape}): \n{intersection_mask}")
+    print(f"Intersection Pts ({intersection_pts.shape}): \n{intersection_pts}")
+    print(f"Filtered Intesrctions Pts ({intersection_pts[intersection_mask].shape}): \n{intersection_pts[intersection_mask]}")
+
+def heuristic_main():
+
+    batches = 3
+    x_L = torch.zeros((batches, 3), **set_t)
+    x_U = torch.ones((batches, 3), **set_t)
+    lower_bound = True
+    use_plane_constraints = False
+    normal = torch.ones((batches, 3), **set_t)
+    normal[:, 0] = 1.8
+    D = torch.ones(batches, **set_t) * -1.5
+    if not lower_bound:
+        normal *= -1
+        D *= -1
+    normal.requires_grad_()
+    if use_plane_constraints:
+        plane_constraints = torch.tensor([
+            [1., 1., 1., -1.5]
+        ], **set_t).reshape(1, 1, 4).repeat(batches, 1, 1)
+        if not lower_bound:
+            plane_constraints *= -1
+    else:
+        plane_constraints = None
+
+    # for plotting
+    vertices = get_cube_vertices(x_L[0], x_U[1])
+    faces = unit_cube_faces()
+    vertices_np = to_numpy(vertices)
+    lim = to_numpy(torch.concatenate((x_L[0], x_U[0]), dim=0).reshape(2, -1))
+    x_lim = lim[:, 0]
+    y_lim = lim[:, 1]
+    z_lim = lim[:, 2]
+
+    show_plots = True
+
+    iters = 10
+    grid_steps = 10
+    optimizer = OptimizerMethod.Adam
+    optimizer_class = optimizers_config[optimizer]["class"]
+    optimizer_params = optimizers_config[optimizer]["params"]
+    opt = optimizer_class([normal], maximize=False, **optimizer_params)
+    losses = np.zeros(iters)
+    coeffs = np.zeros((iters, 3))
+
+    cost_fn_params = {
+        'lower_bound': True,
+        'plane_constraints': plane_constraints,
+        'grid_precision': grid_steps,
+        'constraint_multiplier': 2,
+        'perpendicular_multiplier': None,
+        'return_dict': True
+    }
+
+    for i in range(iters):
+
+        if show_plots:
+            fig = plt.figure(figsize=(12, 8))
+            ax1 = fig.add_subplot(111, projection='3d')
+            f_normal = to_numpy(normal[0])
+            f_d = D[0].item()
+            plot_plane(ax1, f_normal, f_d, x_lim, y_lim, label='Opt Plane')
+            if plane_constraints is not None:
+                c_normals, c_ds = to_numpy(plane_constraints[0, :, :3]), to_numpy(plane_constraints[0, :, 3])
+                for m in range(c_normals.shape[0]):
+                    c_normal = c_normals[m]
+                    c_d = c_ds[m].item()
+                    plot_plane(ax1, c_normal, c_d, x_lim, y_lim, label=f'Constraint Plane {m}')
+            plot_cube(ax1, vertices_np, faces)
+            plot_intersection(ax1, vertices_np, f_normal, f_d)
+            ax1.set_title(f"Iter: {i}")
+            ax1.set_xlabel("x")
+            ax1.set_ylabel("y")
+            ax1.set_zlabel("z")
+            ax1.set_xlim(x_lim)
+            ax1.set_ylim(y_lim)
+            ax1.set_zlim(z_lim)
+            ax1.legend()
+            plt.show()
+
+        opt.zero_grad()
+        loss, cost_dict = batch_estimate_volume(x_L, x_U, normal, D, **cost_fn_params)
+        loss = loss.sum()
+        print(f"i {i} | {cost_dict}")
+        losses[i] = loss.item()
+        coeffs[i] = to_numpy(normal[0])
+        loss.backward()
+        opt.step()
+
+    print(f"Initial coefficients: {coeffs[0, :]}")
+    print(f"Final coefficients: {coeffs[-1, :]}")
+
+    if show_plots:
+        plt.figure(figsize=(12, 8))
+        plt.subplot(2, 2, 1)
+        plt.plot(losses)
+        plt.title("Losses Over Iterations")
+        plt.xlabel("Iteration")
+        plt.ylabel("Loss (Volume)")
+        plt.grid()
+        plt.subplot(2, 2, 2)
+        plt.plot(coeffs[:, 0])
+        plt.title("Normal Coefficient a")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.subplot(2, 2, 3)
+        plt.plot(coeffs[:, 1])
+        plt.title("Normal Coefficient b")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.subplot(2, 2, 4)
+        plt.plot(coeffs[:, 2])
+        plt.title("Normal Coefficient c")
+        plt.xlabel("Iteration")
+        plt.grid()
+        plt.savefig(out_path + "training_summary.png")
+        plt.show()
+
+    print(f"Losses (volume): \n{losses}")
 
 if __name__ == '__main__':
     num_batches = 3  # only used for batch methods
-    method = VolumeCalculationMethod.MultiPlaneSingleVolume  # method to run
-    # method = VolumeCalculationMethod.SinglePlaneSingleVolume
+    method = VolumeCalculationMethod.HeuristicVolume  # method to run
 
+    print(f"Running program: {method.name}")
 
     if method == VolumeCalculationMethod.SinglePlaneSingleVolume:
         main()
@@ -961,5 +1662,9 @@ if __name__ == '__main__':
         multiplane_main()
     elif method == VolumeCalculationMethod.MultiPlaneBatchVolume:
         batched_multiplane_main(num_batches)
+    elif method == VolumeCalculationMethod.HeuristicVolume:
+        heuristic_main()
+    elif method == VolumeCalculationMethod.MiscMain:
+        misc_main()
     else:
         raise Exception("Unknown volume calculation method")

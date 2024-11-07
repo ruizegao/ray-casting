@@ -198,6 +198,8 @@ def func_as_torch(params):
             op_list.append(torch.nn.ReLU())
         elif name == 'elu':
             op_list.append(torch.nn.ELU())
+        elif name == 'gelu':
+            op_list.append(torch.nn.GELU())
         elif name == 'sigmoid':
             op_list.append(torch.nn.Sigmoid())
     model = torch.nn.Sequential(*op_list)
