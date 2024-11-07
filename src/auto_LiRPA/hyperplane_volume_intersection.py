@@ -1174,7 +1174,7 @@ def fill_plots(
         with torch.no_grad():
             in_samples = torch.rand(10000, 3) * (curr_nv_x_U - curr_nv_x_L) + curr_nv_x_L
             out_samples = to_numpy(forward_fn(in_samples))
-            in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-4).squeeze()]
+            in_samples = to_numpy(in_samples)[np.logical_and(out_samples >= 0, out_samples <= 1e-6).squeeze()]
             ax1.scatter(in_samples[:, 0], in_samples[:, 1], in_samples[:, 2], label="Implicit Surface")
 
         D = lbias.reshape(num_unverified, num_spec)[b].item()

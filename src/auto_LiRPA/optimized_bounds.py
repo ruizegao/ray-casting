@@ -1109,14 +1109,14 @@ def _get_optimized_bounds(
         figs = [fig for (fig, _) in fig_graph_upper]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_upper_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_upper))]
-        finalize_plots(figs, title, titles, pickle_data=False)
+        finalize_plots(figs, title, titles, pickle_data=True)
 
     elif save_loss_graphs and not displayed_lb and bound_lower and swap_loss:
         displayed_lb = True
         figs = [fig for (fig, _) in fig_graph_lower]
         title = f"/home/jorgejc2/Documents/Research/ray-casting/temp_figs/loss_lower_fig"
         titles = [title + '_' + str(i) for i in range(len(fig_graph_lower))]
-        finalize_plots(figs, title, titles, pickle_data=False)
+        finalize_plots(figs, title, titles, pickle_data=True)
 
     return best_ret
 

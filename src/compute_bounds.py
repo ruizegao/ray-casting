@@ -81,33 +81,33 @@ def main():
     affine_opts['affine_truncate_policy'] = 'absolute'
     surf_color = (0.157, 0.613, 1.000)
 
-    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'], **affine_opts)
+    implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     # load the matcaps
     matcaps = render.load_matcap(os.path.join(ROOT_DIR, "assets", "matcaps", "wax_{}.png"))
     if mode == 'affine_truncate':
         # truncate options
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'], **affine_opts)
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     elif mode == 'affine_append':
         # truncate options
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'], **affine_opts)
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     elif mode == 'sdf':
 
         changed, affine_opts['sdf_lipschitz'] = psim.InputFloat("SDF Lipschitz", affine_opts['sdf_lipschitz'])
         if changed:
-            implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'], **affine_opts)
+            implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     elif mode in CROWN_MODES:
 
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'], **affine_opts)
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     elif mode == 'affine+backward':
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'])
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     elif mode == 'affine_quad':
-        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, dtype=set_t['dtype'])
+        implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode)
 
     data_bound = float(opts['data_bound'])
     lower = torch.tensor((-data_bound, -data_bound, -data_bound), dtype=set_t['dtype'])
