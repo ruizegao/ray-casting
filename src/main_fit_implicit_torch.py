@@ -75,9 +75,9 @@ class PositionalEncodingLayer(nn.Module):
         coeffs = pows * torch.pi
 
         if with_shift:
-            coeffs = coeffs.repeat(2)
+            coeffs = coeffs.repeat_interleave(2)
             shift = torch.zeros_like(coeffs)
-            shift[1::2] = torch.pi
+            shift[0::2] = torch.pi/2
             # reshape so that we can broadcast
             self.register_buffer("coeffs", coeffs.reshape(1, L * 2))
             self.register_buffer("shift", shift.reshape(1, L * 2))
@@ -86,6 +86,7 @@ class PositionalEncodingLayer(nn.Module):
             self.register_buffer("coeffs", coeffs.reshape(1, L))
             self.shift = None  # No shift buffer needed
 
+        # TODO: Unflatten is not supported by CROWN, simply reshape the input
         # will unflatten input from (batches, 3) to (batches, 3, 1)
         self.unflatten = nn.Unflatten(1, (3, 1))
         # will flatten input from (batches, 3, L(*2)) to (batches, 3*L(*2))
@@ -158,7 +159,7 @@ class FitSurfaceModel(nn.Module):
         # first layers
         start_layer = 0
         layers = []
-        mlp_input_dim = 3
+        mlp_input_dim = 3  # default input of 3D coordinate
         if use_positional_encoding:
             layers.append(
                 ('0000_encoding',
@@ -226,9 +227,10 @@ class FitSurfaceModel(nn.Module):
     def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
         """
         Returns the loss of a single forward pass
-        :param x:   (Batch, input size)
-        :param y:   (Batch, output size)
-        :return:    loss
+        :param x:       (Batch, input size)
+        :param y:       (Batch, output size)
+        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
+        :return:        loss
         """
         # zero the gradients
         self.optimizer.zero_grad()
@@ -679,9 +681,9 @@ def TrainThingi10K_main(args: dict):
     activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
         'layer_width'], args['fit_mode']
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
-    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
+    pos, positional_count, positional_pow_start, lr = args['positional_encoding'], args['positional_count'], args['positional_pow_start'], args['lr']
     if pos:
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}_initLR_{lr}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
