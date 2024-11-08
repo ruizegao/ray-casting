@@ -244,8 +244,8 @@ def cast_rays_shell_based(
     all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
         roots, dirs, stream_compaction=True
     )
-    mask = (func(params, location + delta * dirs[all_true_hit]) > 0.).squeeze(1)
-    location[mask] += delta * dirs[all_true_hit][mask]
+    # mask = (func(params, location + delta * dirs[all_true_hit]) > 0.).squeeze(1)
+    # location[mask] += delta * dirs[all_true_hit][mask]
     roots[all_true_hit] = location
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
