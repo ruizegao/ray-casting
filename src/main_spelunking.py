@@ -39,15 +39,15 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, cast_frustum, opts, matcaps, surf_color, branching_method, cast_opt_based=False):
-    root = torch.tensor([2., 0., 0.])
-    look = torch.tensor([-1., 0., 0.])
+    # root = torch.tensor([-5., 0., 0.])
+    # look = torch.tensor([1., 0., 0.])
+    # up = torch.tensor([0., 1., 0.])
+    # left = torch.tensor([0., 0., 1.])
+    root = torch.tensor([0., 0., 5.])
+    left = torch.tensor([1., 0., 0.])
+    look = torch.tensor([0., 0., -1.])
     up = torch.tensor([0., 1., 0.])
-    left = torch.tensor([0., 0., 1.])
-    # root = torch.tensor([0., -2., 0.])
-    # left = torch.tensor([1., 0., 0.])
-    # look = torch.tensor([0., 1., 0.])
-    # up = torch.tensor([0., 0., 1.])
-    fov_deg = 60.
+    fov_deg = 30.
     res = args.res // opts['res_scale']
 
     surf_color = tuple(surf_color)
@@ -479,8 +479,10 @@ def main():
     grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
     grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
     delta = (grid[1,2] - grid[0,2]).item()
+    print('about to create model')
     if isinstance(implicit_func, CrownImplicitFunction):
         sdf_vals = implicit_func.torch_forward(grid)
+        print("model created")
     else:
         sdf_vals = vmap(partial(implicit_func, params))(grid)
     sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
