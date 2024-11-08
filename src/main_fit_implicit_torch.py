@@ -20,7 +20,7 @@ import igl, geometry
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white"
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
 
 set_t = {
     'dtype': torch.float32,  # double precision for more accurate training
@@ -37,11 +37,13 @@ class MainApplicationMethod(Enum):
     2) Trains implicit surface for all available .obj files in the Thingi10K dataset
     3) Trains implicit surface for all .obj files in the Meshes Master dataset
     4) Trains implicit surface for all .obj files in the ShapeNetCore dataset; This is the largest dataset of them all
+    5) Visualizes the .pth model of a neural implicit network
     """
     Default = 1
     TrainThingi10K = 2
     TrainMeshesMaster = 3
     ShapeNetCore = 4
+    Visualize = 5
 
     @classmethod
     def get(cls, identifier, default_ret=None):
@@ -254,7 +256,7 @@ def load_net_object(pth_file: str) -> FitSurfaceModel:
     :param pth_file:    .pth file to load network parameters and weights from.
     :return:    Network object
     """
-    pth_dict = torch.load(pth_file)
+    pth_dict = torch.load(pth_file, weights_only=True)
     state_dict = pth_dict["state_dict"]  # weights and biases
     model_params = pth_dict["model_params"]  # rest of the parameters
     NetObject = FitSurfaceModel(**model_params)  # initialize object
@@ -931,6 +933,40 @@ def ShapeNetCore_main(args: dict):
         table = from_csv(file)  # renders the table in pretty print format
         print(table)
 
+def Visualize_main(args: dict):
+    import polyscope as ps
+    from skimage import measure
+
+    ps.init()
+    # parse user arguments
+    input_file = args["input_file"]
+    NetObject = load_net_object(input_file)
+
+    # check that the network runs
+    sample = torch.rand((5, 3))
+    output = NetObject(sample)
+    print(output)
+
+    grid_res = 128
+    ax_coords = torch.linspace(-1., 1., grid_res)
+    grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
+    grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
+    delta = (grid[1, 2] - grid[0, 2]).item()
+    sdf_vals = NetObject(grid)
+    sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
+    bbox_min = grid[0, :]
+    verts, faces, normals, values = measure.marching_cubes(to_numpy(sdf_vals), level=0.,
+                                                           spacing=(delta, delta, delta))
+    verts = torch.from_numpy(verts).to('cpu')
+    verts = verts + bbox_min[None, :]
+    ps.register_surface_mesh("coarse shape preview", to_numpy(verts), faces)
+
+    print(
+        "REMEMBER: All routines will be slow on the first invocation due to JAX kernel compilation. Subsequent calls will be fast.")
+
+    # Hand off control to the main callback
+    ps.show()
+
 
 if __name__ == '__main__':
     # parse user arguments
@@ -947,5 +983,7 @@ if __name__ == '__main__':
         TrainMeshesMaster_main(args_dict)
     elif program_mode == MainApplicationMethod.ShapeNetCore:
         ShapeNetCore_main(args_dict)
+    elif program_mode == MainApplicationMethod.Visualize:
+        Visualize_main(args_dict)
     else:
         raise ValueError(f"Invalid program_mode of {program_mode_name}")
