@@ -299,7 +299,8 @@ def main():
     n_closest_point = 16
     shade_style = 'matcap_color'
     surf_color = (0.157,0.613,1.000)
-
+    if args.input.endswith('pth'):
+        mode = 'crown'
     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
 
     # load the matcaps
@@ -478,7 +479,10 @@ def main():
     grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
     grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
     delta = (grid[1,2] - grid[0,2]).item()
-    sdf_vals = vmap(partial(implicit_func, params))(grid)
+    if isinstance(implicit_func, CrownImplicitFunction):
+        sdf_vals = implicit_func.torch_forward(grid)
+    else:
+        sdf_vals = vmap(partial(implicit_func, params))(grid)
     sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
     bbox_min = grid[0,:]
     verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
