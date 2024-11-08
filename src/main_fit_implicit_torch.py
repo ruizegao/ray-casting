@@ -23,7 +23,7 @@ plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause erro
 plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white"
 
 set_t = {
-    'dtype': torch.float64,  # double precision for more accurate training
+    'dtype': torch.float32,  # double precision for more accurate training
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
@@ -89,7 +89,6 @@ class PositionalEncodingLayer(nn.Module):
         # will unflatten input from (batches, 3) to (batches, 3, 1)
         self.unflatten = nn.Unflatten(1, (3, 1))
         # will flatten input from (batches, 3, L(*2)) to (batches, 3*L(*2))
-        # (*2) means that the dimension is doubled if shifting is enabled
         self.flatten = nn.Flatten(start_dim=1)
 
 
@@ -339,7 +338,7 @@ def batch_count_correct(NetObject: FitSurfaceModel, batch_x: Tensor, batch_y: Te
     :return:            Number of predictions whose sign is correct
     """
     prediction = NetObject.forward(batch_x)
-    if fit_mode in ['occupancy', 'sdf']:
+    if fit_mode in 'occupancy':
         # labels are probabilities, they must be corrected
         is_correct_sign = torch.sign(prediction) == torch.sign(batch_y - 0.5)
     elif fit_mode == 'sdf':
