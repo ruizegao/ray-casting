@@ -57,17 +57,85 @@ class MainApplicationMethod(Enum):
         else:
             raise TypeError("Identifier must be a string (name) or an integer (value)")
 
+class PositionalEncodingLayer(nn.Module):
+    """
+    Manually implemented module that performs the following operations in order to produce
+    positional encoding in a higher feature space:
+
+    1) Unflatten the input to be (batches, 3) to (batches, 3, 1)
+    2) Multiplies each input by its respective encoding coefficient
+    3) [optionally] adds a shift so that every other element is a sin operation
+    4) Pass the embedding through a cosine activation function
+    5) Flatten the result to be (batches, 3*L(*2)) where (*2) means that the dimension is doubled if shift is enabled
+    """
+
+    def __init__(self, L: int, start_pow: int = 0, with_shift: bool = True):
+        super(PositionalEncodingLayer, self).__init__()
+        pows = torch.pow(2., torch.arange(start=start_pow, end=start_pow + L))
+        coeffs = pows * torch.pi
+
+        if with_shift:
+            coeffs = coeffs.repeat(2)
+            shift = torch.zeros_like(coeffs)
+            shift[1::2] = torch.pi
+            # reshape so that we can broadcast
+            self.register_buffer("coeffs", coeffs.reshape(1, L * 2))
+            self.register_buffer("shift", shift.reshape(1, L * 2))
+        else:
+            # reshape so that we can broadcast
+            self.register_buffer("coeffs", coeffs.reshape(1, L))
+            self.shift = None  # No shift buffer needed
+
+        # will unflatten input from (batches, 3) to (batches, 3, 1)
+        self.unflatten = nn.Unflatten(1, (3, 1))
+        # will flatten input from (batches, 3, L(*2)) to (batches, 3*L(*2))
+        # (*2) means that the dimension is doubled if shifting is enabled
+        self.flatten = nn.Flatten(start_dim=1)
+
+
+    def forward(self, x: Tensor):
+        # reshape input
+        x_reshape = self.unflatten(x)
+
+        # apply encoding
+        x_encoded = x_reshape * self.coeffs
+        if self.shift is not None:
+            x_encoded += self.shift
+
+        # apply cos as activation function
+        cos_output = torch.cos(x_encoded)
+        return self.flatten(cos_output)
+
+    @staticmethod
+    def compute_output_dim(positional_count: int, with_shift: bool):
+        """
+        Returns what the output dimension of this Module would be given these parameters
+        """
+        if with_shift:
+            return 3 * positional_count * 2
+        else:
+            return 3 * positional_count
+
+
 class FitSurfaceModel(nn.Module):
     def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8, layer_width:int=32,
+                 use_positional_encoding: bool = False, positional_count: Optional[int] = None,
+                 positional_power_start: Optional[int] = None, with_shift: bool = True,
                  step_size: Optional[int] = None, gamma: Optional[float] = None):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
-        :param lrate:       Learning rate
-        :param fit_mode:    If the neural network should be fit for occupancy or sdf
-        :param activation:  Activation function to use at nonlinear layers
-        :param n_layers:    Number of layers to use in the neural network
-        :param layer_width: Number of neurons per hidden layer
+        :param lrate:                       Learning rate
+        :param fit_mode:                    If the neural network should be fit for occupancy or sdf
+        :param activation:                  Activation function to use at nonlinear layers
+        :param n_layers:                    Number of layers to use in the neural network
+        :param layer_width:                 Number of neurons per hidden layer
+        :param use_positional_encoding:     If True, does positional encoding
+        :param positional_count:            New dimension after positional encoding
+        :param positional_power_start:      Starting frequency in positional encoding
+        :param with_shift:                  If true, doubles encoding size to incorporate sin
+        :param step_size:                   Number of epochs before applying gamma in step scheduler
+        :param gamma:                       Gamma to apply to LR after step_size epochs
         """
         super(FitSurfaceModel, self).__init__()
 
@@ -89,10 +157,22 @@ class FitSurfaceModel(nn.Module):
         ## create the network based on the specifications
 
         # first layers
-        layers = [
-            ('0000_dense', nn.Linear(3, layer_width)),
-            (f'0001_{activation_fn_name}', activation_fn)
-        ]
+        start_layer = 0
+        layers = []
+        mlp_input_dim = 3
+        if use_positional_encoding:
+            layers.append(
+                ('0000_encoding',
+                 PositionalEncodingLayer(positional_count, positional_power_start, with_shift))
+            )
+            # MLP will now have start layer idx of 1
+            start_layer = 1
+            # Get new input dimension of MLP
+            mlp_input_dim = PositionalEncodingLayer.compute_output_dim(positional_count, with_shift)
+        layers.extend([
+            (f'{start_layer:04d}_dense', nn.Linear(mlp_input_dim, layer_width)),
+            (f'{start_layer+1:04d}_{activation_fn_name}', activation_fn)
+        ])
         # hidden layers
         for i in range(n_layers - 2):
             layer_count = len(layers)
@@ -114,7 +194,7 @@ class FitSurfaceModel(nn.Module):
             # numerical stability (using the log-sum-exp trick)
             # As a note, we also do not want sigmoid because it can make bounds unnecessarily loose when we don't need
             # the output to be in the range (0, 1). We simply want to classify based on if the logit is >=0 or < 0.
-            # Such an output aligns well wit the SDF output and requires fewer changes in ray-casting
+            # Such an output aligns well with the SDF output and requires fewer changes in ray-casting
             # Reduction = 'None' allows us to manually apply weights to the loss to help correct class imbalance
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
         elif fit_mode == 'sdf':
@@ -526,6 +606,10 @@ def main(args: dict):
         'activation': activation,
         'n_layers': n_layers,
         'layer_width': layer_width,
+        'use_positional_encoding': positional_encoding,
+        'positional_count': positional_count,
+        'positional_power_start': positional_pow_start,
+        'with_shift': True,
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
     }
@@ -596,6 +680,9 @@ def TrainThingi10K_main(args: dict):
     activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
         'layer_width'], args['fit_mode']
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
+    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
+    if pos:
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
@@ -628,7 +715,7 @@ def TrainThingi10K_main(args: dict):
             fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
             warn(
                 f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
-            stacklevel=2)
+            stacklevel=1)
 
             success.append('n')
             error.append('y')
@@ -683,6 +770,9 @@ def TrainMeshesMaster_main(args: dict):
     activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
         'layer_width'], args['fit_mode']
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
+    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
+    if pos:
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
 
     # create a table that views the output
     csv_subdir, csv_file, success, error = [], [], [], []
@@ -710,17 +800,17 @@ def TrainMeshesMaster_main(args: dict):
             #         error.append('n')
             #         continue
 
-            try:
-                main(args)
-                success.append('y')
-                error.append('n')
-            except Exception as e:
-                exc_type, exc_obj, exc_tb = sys.exc_info()
-                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
-                warn(f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
-                     stacklevel=2)
-                success.append('n')
-                error.append('y')
+            # try:
+            main(args)
+            success.append('y')
+            error.append('n')
+            # except Exception as e:
+            #     exc_type, exc_obj, exc_tb = sys.exc_info()
+            #     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            #     warn(f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+            #          stacklevel=1)
+            #     success.append('n')
+            #     error.append('y')
 
     csv_path = output_directory + 'summary.csv'
     with open(csv_path, mode='w', newline='') as file:
@@ -771,6 +861,9 @@ def ShapeNetCore_main(args: dict):
     activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
         'layer_width'], args['fit_mode']
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
+    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
+    if pos:
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
 
     # create a table that views the output
     csv_subdir, csv_subbdir, csv_file, success, error = [], [], [], [], []
@@ -819,7 +912,7 @@ def ShapeNetCore_main(args: dict):
                     fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
                     warn(
                         f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
-                    stacklevel=2)
+                    stacklevel=1)
                     success.append('n')
                     error.append('y')
 
