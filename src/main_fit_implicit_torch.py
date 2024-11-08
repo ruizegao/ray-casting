@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import argparse
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
@@ -10,20 +11,19 @@ import matplotlib.pyplot as plt
 from collections import OrderedDict, defaultdict
 from enum import Enum
 import numpy as np
-import os, csv
+import sys, os, csv
 from prettytable import from_csv
+from warnings import warn
 
 # imports specific to sdf
 import igl, geometry
 
-from src.utils import enumerate_mask
-
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white"
 
 set_t = {
-    'dtype': torch.float32,
+    'dtype': torch.float64,  # double precision for more accurate training
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
@@ -103,27 +103,23 @@ class FitSurfaceModel(nn.Module):
                 (f'{layer_count_formatted_plus_one}{activation_fn_name}', activation_fn)
             ])
         # last layer
+        layer_count = len(layers)
+        layer_count_formatted = f"{layer_count:04d}_"
+        layers.extend([
+            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1))
+        ])
+        # set the loss function
         if fit_mode == 'occupancy':
-            # binary classification, should be a probability in range (0, 1)
-            layer_count = len(layers)
-            layer_count_formatted = f"{layer_count:04d}_"
-            layer_count_formatted_plus_one = f"{layer_count+1:04d}_"
-            sigmoid_fn_name = nn.Sigmoid().__class__.__name__.lower()
-            layers.extend([
-                (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
-                (f'{layer_count_formatted_plus_one}{sigmoid_fn_name}', nn.Sigmoid())
-            ])
-            # set loss function to be binary cross entropy
-            self.loss_fn = nn.BCELoss()
+            # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
+            # numerical stability (using the log-sum-exp trick)
+            # As a note, we also do not want sigmoid because it can make bounds unnecessarily loose when we don't need
+            # the output to be in the range (0, 1). We simply want to classify based on if the logit is >=0 or < 0.
+            # Such an output aligns well wit the SDF output and requires fewer changes in ray-casting
+            # Reduction = 'None' allows us to manually apply weights to the loss to help correct class imbalance
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
         elif fit_mode == 'sdf':
-            # regression, last layer is fine being linear
-            layer_count = len(layers)
-            layer_count_formatted = f"{layer_count:04d}_"
-            layers.extend([
-                (layer_count_formatted + 'dense', nn.Linear(layer_width, 1))
-            ])
-            # set loss function to be L1 loss
-            self.loss_fn = nn.L1Loss()
+            # Reduction = 'None' but the weights that are passed will be all 1's
+            self.loss_fn = nn.L1Loss(reduction='none')
         else:
             raise ValueError("fit_mode must be either 'occupancy' or 'sdf'")
         # convert layers to OrderedDict to retain custom layer names
@@ -131,6 +127,7 @@ class FitSurfaceModel(nn.Module):
         self.model = nn.Sequential(layer_dict)
 
         # set optimizer
+        self.fit_mode = fit_mode
         self.lr = lrate
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
 
@@ -147,7 +144,7 @@ class FitSurfaceModel(nn.Module):
         """
         return self.model(x)
 
-    def step(self, x: torch.Tensor, y: torch.Tensor) -> float:
+    def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
         """
         Returns the loss of a single forward pass
         :param x:   (Batch, input size)
@@ -161,7 +158,8 @@ class FitSurfaceModel(nn.Module):
         y_hat = self.forward(x)
 
         # compute the loss
-        loss = self.loss_fn(y_hat, y)
+        unweighted_loss = self.loss_fn(y_hat, y)
+        loss = (unweighted_loss * weights).mean()
 
         # update model
         loss.backward()
@@ -210,11 +208,11 @@ class SampleDataset(Dataset):
         V, F = igl.read_triangle_mesh(mesh_input_file)
         V = torch.from_numpy(V)
         F = torch.from_numpy(F)
-
         # preprocess (center and scale)
         if verbose:
             print("Normalizing position array")
         V = geometry.normalize_positions(V, method='bbox')
+
 
         if verbose:
             print("Collecting geometry samples")
@@ -223,6 +221,7 @@ class SampleDataset(Dataset):
         if verbose:
             print(f"Formatting labels")
         if fit_mode == 'occupancy':
+            # apply label and calculate sample weight to correct class imbalance
             samp_target = (samp_SDF > 0) * 1.0
             n_pos = np.sum(samp_target > 0)
             n_neg = samp_target.shape[0] - n_pos
@@ -230,6 +229,8 @@ class SampleDataset(Dataset):
             w_neg = n_pos / (n_pos + n_neg)
             samp_weight = np.where(samp_target > 0, w_pos, w_neg)
         elif fit_mode in ['sdf', 'tanh']:
+            # apply label and give all weights equal importance
+            # since this is regression not classification based
             samp_target = samp_SDF
             samp_weight = np.ones_like(samp_target)
         else:
@@ -241,12 +242,13 @@ class SampleDataset(Dataset):
             print(f"Saving samples and labels to the dataset")
         self.x = torch.from_numpy(samp)  # shape (n_samples, 3)
         self.y = torch.from_numpy(samp_target).reshape(n_samples, 1)
+        self.weights = torch.from_numpy(samp_weight).reshape(n_samples, 1)
 
     def __len__(self) -> int:
             return len(self.x)
 
-    def __getitem__(self, idx) -> Tuple[Tensor, Tensor]:
-        return self.x[idx], self.y[idx]
+    def __getitem__(self, idx) -> Tuple[Tensor, Tensor, Tensor]:
+        return self.x[idx], self.y[idx], self.weights[idx]
 
 def batch_count_correct(NetObject: FitSurfaceModel, batch_x: Tensor, batch_y: Tensor, fit_mode: str) -> Tensor:
     """
@@ -257,7 +259,8 @@ def batch_count_correct(NetObject: FitSurfaceModel, batch_x: Tensor, batch_y: Te
     :return:            Number of predictions whose sign is correct
     """
     prediction = NetObject.forward(batch_x)
-    if fit_mode == 'occupancy':
+    if fit_mode in ['occupancy', 'sdf']:
+        # labels are probabilities, they must be corrected
         is_correct_sign = torch.sign(prediction) == torch.sign(batch_y - 0.5)
     elif fit_mode == 'sdf':
         is_correct_sign = torch.sign(prediction) == torch.sign(batch_y)
@@ -300,11 +303,12 @@ def fit_model(
     for epoch in range(epochs):
         epoch_loss = 0.0
         for batch in train_loader:
-            batch_x, batch_y = batch
+            batch_x, batch_y, batch_weight = batch
             batch_x = batch_x.to(**set_t)
             batch_y = batch_y.to(**set_t)
+            batch_weight = batch_weight.to(**set_t)
             n_total += len(batch_x)
-            curr_epoch_loss = NetObject.step(batch_x, batch_y)
+            curr_epoch_loss = NetObject.step(batch_x, batch_y, batch_weight)
             epoch_loss += curr_epoch_loss
             with torch.no_grad():
                 correct_count = batch_count_correct(NetObject, batch_x, batch_y, fit_mode).item()
@@ -566,7 +570,7 @@ def TrainThingi10K_main(args: dict):
     :return:
     """
 
-    row_names = ['Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
@@ -589,8 +593,9 @@ def TrainThingi10K_main(args: dict):
     output_directory = "sample_inputs/Thingi10K_inputs/"
     file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
@@ -616,9 +621,17 @@ def TrainThingi10K_main(args: dict):
 
         try:
             main(args)
+            success.append('y')
+            error.append('n')
         except Exception as e:
-            print(f"Could not fit implicit surface to {in_file}. Received exception:")
-            print(e)
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            warn(
+                f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+            stacklevel=2)
+
+            success.append('n')
+            error.append('y')
 
     csv_path = output_directory + 'summary.csv'
     with open(csv_path, mode='w', newline='') as file:
@@ -634,6 +647,7 @@ def TrainThingi10K_main(args: dict):
         print(table)
 
 
+
 def TrainMeshesMaster_main(args: dict):
     """
     Main program for training implicit surfaces on the entire Meshes Master dataset
@@ -641,7 +655,7 @@ def TrainMeshesMaster_main(args: dict):
     :return:
     """
 
-    row_names = ['Directory', 'Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Directory', 'Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
@@ -666,8 +680,9 @@ def TrainMeshesMaster_main(args: dict):
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/meshes-master_inputs/"
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
 
     # create a table that views the output
     csv_subdir, csv_file, success, error = [], [], [], []
@@ -700,8 +715,10 @@ def TrainMeshesMaster_main(args: dict):
                 success.append('y')
                 error.append('n')
             except Exception as e:
-                print(f"Could not fit implicit surface to {in_file}. Received exception:")
-                print(e)
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                warn(f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+                     stacklevel=2)
                 success.append('n')
                 error.append('y')
 
@@ -726,7 +743,7 @@ def ShapeNetCore_main(args: dict):
     :return:
     """
 
-    row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # been rendered in the data successfully/unsuccessfully
@@ -751,8 +768,9 @@ def ShapeNetCore_main(args: dict):
                       if os.path.isdir(os.path.join(input_directory, name))]
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/ShapeNetCore_inputs/"
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
 
     # create a table that views the output
     csv_subdir, csv_subbdir, csv_file, success, error = [], [], [], [], []
@@ -797,8 +815,11 @@ def ShapeNetCore_main(args: dict):
                     success.append('y')
                     error.append('n')
                 except Exception as e:
-                    print(f"Could not fit implicit surface to {in_file}. Received exception:")
-                    print(e)
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    warn(
+                        f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+                    stacklevel=2)
                     success.append('n')
                     error.append('y')
 

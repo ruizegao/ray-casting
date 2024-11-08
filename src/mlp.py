@@ -14,6 +14,8 @@ import slope_interval
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
 
+from auto_LiRPA.operators.gelu import GELU
+
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
@@ -199,7 +201,8 @@ def func_as_torch(params):
         elif name == 'elu':
             op_list.append(torch.nn.ELU())
         elif name == 'gelu':
-            op_list.append(torch.nn.GELU())
+            # op_list.append(torch.nn.GELU())
+            op_list.append(GELU())
         elif name == 'sigmoid':
             op_list.append(torch.nn.Sigmoid())
     model = torch.nn.Sequential(*op_list)

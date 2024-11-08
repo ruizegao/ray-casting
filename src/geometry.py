@@ -115,7 +115,7 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
 
     # Sample ambient points
     # Q_ambient = torch.random.uniform(size=(n_sample_full, 3), low=-ambient_range, high=ambient_range)
-    Q_ambient = torch.empty(n_sample_full, 3).uniform_(-ambient_range, ambient_range)
+    Q_ambient = torch.empty(n_sample_full, 3, dtype=V_torch.dtype).uniform_(-ambient_range, ambient_range)
     Q_ambient_np = to_numpy(Q_ambient)
 
     # Assign weights
@@ -132,7 +132,7 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
 
     # Get SDF value via distance & winding number
     sdf_vals, _, closest = igl.signed_distance(Q_np, V_np, F_np)
-    sdf_vals = torch.tensor(sdf_vals)
+    sdf_vals = torch.tensor(sdf_vals, dtype=V_torch.dtype)
 
     # convert to numpy arrays
     Q_np = to_numpy(Q)
