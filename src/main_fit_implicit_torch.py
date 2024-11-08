@@ -118,7 +118,8 @@ class FitSurfaceModel(nn.Module):
             # Reduction = 'None' allows us to manually apply weights to the loss to help correct class imbalance
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
         elif fit_mode == 'sdf':
-            self.loss_fn = nn.L1Loss()
+            # Reduction = 'None' but the weights that are passed will be all 1's
+            self.loss_fn = nn.L1Loss(reduction='none')
         else:
             raise ValueError("fit_mode must be either 'occupancy' or 'sdf'")
         # convert layers to OrderedDict to retain custom layer names
@@ -592,8 +593,9 @@ def TrainThingi10K_main(args: dict):
     output_directory = "sample_inputs/Thingi10K_inputs/"
     file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
@@ -678,8 +680,9 @@ def TrainMeshesMaster_main(args: dict):
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/meshes-master_inputs/"
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
 
     # create a table that views the output
     csv_subdir, csv_file, success, error = [], [], [], []
@@ -765,8 +768,9 @@ def ShapeNetCore_main(args: dict):
                       if os.path.isdir(os.path.join(input_directory, name))]
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/ShapeNetCore_inputs/"
-    activation, nlayers, layerwidth = args['activation'], args['n_layers'], args['layer_width']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}"
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
 
     # create a table that views the output
     csv_subdir, csv_subbdir, csv_file, success, error = [], [], [], [], []
