@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import argparse
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
@@ -10,20 +11,19 @@ import matplotlib.pyplot as plt
 from collections import OrderedDict, defaultdict
 from enum import Enum
 import numpy as np
-import os, csv
+import sys, os, csv
 from prettytable import from_csv
+from warnings import warn
 
 # imports specific to sdf
 import igl, geometry
 
-from src.utils import enumerate_mask
-
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white"
 
 set_t = {
-    'dtype': torch.float32,
+    'dtype': torch.float64,  # double precision for more accurate training
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
@@ -210,11 +210,11 @@ class SampleDataset(Dataset):
         V, F = igl.read_triangle_mesh(mesh_input_file)
         V = torch.from_numpy(V)
         F = torch.from_numpy(F)
-
         # preprocess (center and scale)
         if verbose:
             print("Normalizing position array")
         V = geometry.normalize_positions(V, method='bbox')
+
 
         if verbose:
             print("Collecting geometry samples")
@@ -566,7 +566,7 @@ def TrainThingi10K_main(args: dict):
     :return:
     """
 
-    row_names = ['Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
@@ -616,9 +616,17 @@ def TrainThingi10K_main(args: dict):
 
         try:
             main(args)
+            success.append('y')
+            error.append('n')
         except Exception as e:
-            print(f"Could not fit implicit surface to {in_file}. Received exception:")
-            print(e)
+            exc_type, exc_obj, exc_tb = sys.exc_info()
+            fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+            warn(
+                f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+            stacklevel=2)
+
+            success.append('n')
+            error.append('y')
 
     csv_path = output_directory + 'summary.csv'
     with open(csv_path, mode='w', newline='') as file:
@@ -634,6 +642,7 @@ def TrainThingi10K_main(args: dict):
         print(table)
 
 
+
 def TrainMeshesMaster_main(args: dict):
     """
     Main program for training implicit surfaces on the entire Meshes Master dataset
@@ -641,7 +650,7 @@ def TrainMeshesMaster_main(args: dict):
     :return:
     """
 
-    row_names = ['Directory', 'Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Directory', 'Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # check_csv_table: Optional['str'] = args.pop('check_csv_table', None)
@@ -700,8 +709,10 @@ def TrainMeshesMaster_main(args: dict):
                 success.append('y')
                 error.append('n')
             except Exception as e:
-                print(f"Could not fit implicit surface to {in_file}. Received exception:")
-                print(e)
+                exc_type, exc_obj, exc_tb = sys.exc_info()
+                fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                warn(f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+                     stacklevel=2)
                 success.append('n')
                 error.append('y')
 
@@ -726,7 +737,7 @@ def ShapeNetCore_main(args: dict):
     :return:
     """
 
-    row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success, Training Failure']
+    row_names = ['Directory', 'Sub Directory', 'Obj Filename', 'Training Success', 'Training Failure']
 
     # TODO: Would be nice to load in a csv file that describes what objects have previously
     # been rendered in the data successfully/unsuccessfully
@@ -797,8 +808,11 @@ def ShapeNetCore_main(args: dict):
                     success.append('y')
                     error.append('n')
                 except Exception as e:
-                    print(f"Could not fit implicit surface to {in_file}. Received exception:")
-                    print(e)
+                    exc_type, exc_obj, exc_tb = sys.exc_info()
+                    fname = os.path.split(exc_tb.tb_frame.f_code.co_filename)[1]
+                    warn(
+                        f"Could not fit implicit surface to {in_file}. Received exception:\n{exc_type}, {fname}, {exc_tb.tb_lineno}\n{str(e)}",
+                    stacklevel=2)
                     success.append('n')
                     error.append('y')
 
