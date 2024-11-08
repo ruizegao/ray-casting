@@ -16,12 +16,11 @@ from prettytable import from_csv
 from warnings import warn
 
 # imports specific to sdf
-# import igl
-import geometry
+import igl, geometry
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white"
+plt.style.use("seaborn-white")  # if throws error, use "seaborn-white"
 
 set_t = {
     'dtype': torch.float32,  # double precision for more accurate training
@@ -38,11 +37,13 @@ class MainApplicationMethod(Enum):
     2) Trains implicit surface for all available .obj files in the Thingi10K dataset
     3) Trains implicit surface for all .obj files in the Meshes Master dataset
     4) Trains implicit surface for all .obj files in the ShapeNetCore dataset; This is the largest dataset of them all
+    5) Visualizes the .pth model of a neural implicit network
     """
     Default = 1
     TrainThingi10K = 2
     TrainMeshesMaster = 3
     ShapeNetCore = 4
+    Visualize = 5
 
     @classmethod
     def get(cls, identifier, default_ret=None):
@@ -76,9 +77,9 @@ class PositionalEncodingLayer(nn.Module):
         coeffs = pows * torch.pi
 
         if with_shift:
-            coeffs = coeffs.repeat(2)
+            coeffs = coeffs.repeat_interleave(2)
             shift = torch.zeros_like(coeffs)
-            shift[1::2] = torch.pi
+            shift[0::2] = torch.pi/2
             # reshape so that we can broadcast
             self.register_buffer("coeffs", coeffs.reshape(1, L * 2))
             self.register_buffer("shift", shift.reshape(1, L * 2))
@@ -87,6 +88,7 @@ class PositionalEncodingLayer(nn.Module):
             self.register_buffer("coeffs", coeffs.reshape(1, L))
             self.shift = None  # No shift buffer needed
 
+        # TODO: Unflatten is not supported by CROWN, simply reshape the input
         # will unflatten input from (batches, 3) to (batches, 3, 1)
         self.unflatten = nn.Unflatten(1, (3, 1))
         # will flatten input from (batches, 3, L(*2)) to (batches, 3*L(*2))
@@ -159,7 +161,7 @@ class FitSurfaceModel(nn.Module):
         # first layers
         start_layer = 0
         layers = []
-        mlp_input_dim = 3
+        mlp_input_dim = 3  # default input of 3D coordinate
         if use_positional_encoding:
             layers.append(
                 ('0000_encoding',
@@ -227,9 +229,10 @@ class FitSurfaceModel(nn.Module):
     def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
         """
         Returns the loss of a single forward pass
-        :param x:   (Batch, input size)
-        :param y:   (Batch, output size)
-        :return:    loss
+        :param x:       (Batch, input size)
+        :param y:       (Batch, output size)
+        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
+        :return:        loss
         """
         # zero the gradients
         self.optimizer.zero_grad()
@@ -682,7 +685,8 @@ def TrainThingi10K_main(args: dict):
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
     pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
     if pos:
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
+        lr_decay_every, lr = args['lr_decay_every'], args['lr']
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}_initLR_{lr}_step_{lr_decay_every}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
@@ -929,33 +933,16 @@ def ShapeNetCore_main(args: dict):
         table = from_csv(file)  # renders the table in pretty print format
         print(table)
 
-
-if __name__ == '__main__':
-    # parse user arguments
-    args_dict = parse_args()
-    program_mode_name = args_dict.pop('program_mode')
-    program_mode = MainApplicationMethod.get(program_mode_name, None)
-
-    # run the specified program
-    if program_mode == MainApplicationMethod.Default:
-        main(args_dict)
-    elif program_mode == MainApplicationMethod.TrainThingi10K:
-        TrainThingi10K_main(args_dict)
-    elif program_mode == MainApplicationMethod.TrainMeshesMaster:
-        TrainMeshesMaster_main(args_dict)
-    elif program_mode == MainApplicationMethod.ShapeNetCore:
-        ShapeNetCore_main(args_dict)
-    else:
-        raise ValueError(f"Invalid program_mode of {program_mode_name}")
-
-
-if __name__ == 'test':
+def Visualize_main(args: dict):
     import polyscope as ps
     from skimage import measure
+
     ps.init()
     # parse user arguments
-    NetObject = load_net_object(
-        '/home/ruize/PycharmProjects/ray-casting/sample_inputs/nefertiti_activation_relu_nlayers_8_layerwidth_64_fitmode_occupancy_pos_L_10_pow_start_0.pth')
+    input_file = args["input_file"]
+    NetObject = load_net_object(input_file)
+
+    # check that the network runs
     sample = torch.rand((5, 3))
     output = NetObject(sample)
     print(output)
@@ -979,3 +966,24 @@ if __name__ == 'test':
 
     # Hand off control to the main callback
     ps.show()
+
+
+if __name__ == '__main__':
+    # parse user arguments
+    args_dict = parse_args()
+    program_mode_name = args_dict.pop('program_mode')
+    program_mode = MainApplicationMethod.get(program_mode_name, None)
+
+    # run the specified program
+    if program_mode == MainApplicationMethod.Default:
+        main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainThingi10K:
+        TrainThingi10K_main(args_dict)
+    elif program_mode == MainApplicationMethod.TrainMeshesMaster:
+        TrainMeshesMaster_main(args_dict)
+    elif program_mode == MainApplicationMethod.ShapeNetCore:
+        ShapeNetCore_main(args_dict)
+    elif program_mode == MainApplicationMethod.Visualize:
+        Visualize_main(args_dict)
+    else:
+        raise ValueError(f"Invalid program_mode of {program_mode_name}")
