@@ -681,9 +681,10 @@ def TrainThingi10K_main(args: dict):
     activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
         'layer_width'], args['fit_mode']
     descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
-    pos, positional_count, positional_pow_start, lr = args['positional_encoding'], args['positional_count'], args['positional_pow_start'], args['lr']
+    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
     if pos:
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}_initLR_{lr}"
+        lr_decay_every, lr = args['lr_decay_every'], args['lr']
+        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}_initLR_{lr}_step_{lr_decay_every}"
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
