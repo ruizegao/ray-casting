@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import sys, os, time, math
 # os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 
-from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
+# from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -101,12 +101,15 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
 def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='autodiff'):
     this_normal_one = lambda p, id: outward_normal(funcs_tuple, params_tuple, p, id, eps, method=method)
     if method == 'autodiff':
-        N = int(hit_pos.shape[0]/3)
-        M = int(2*hit_pos.shape[0]/3)
-        ret1 = vmap(this_normal_one)(hit_pos[:N], hit_ids[:N])
-        ret2 = vmap(this_normal_one)(hit_pos[N:M], hit_ids[N:M])
-        ret3 = vmap(this_normal_one)(hit_pos[M:], hit_ids[M:])
-        return torch.cat((ret1, ret2, ret3), dim=0)
+        total_samples = hit_pos.shape[0]
+        out_normal = torch.empty_like(hit_pos)
+        batch_size_per_iteration = 256
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            out_normal[start_idx:end_idx] \
+                = vmap(this_normal_one)(hit_pos[start_idx:end_idx], hit_ids[start_idx:end_idx])
+
+        return out_normal
     return vmap(this_normal_one)(hit_pos, hit_ids)
 
 

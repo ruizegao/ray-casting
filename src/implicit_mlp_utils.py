@@ -13,6 +13,9 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
     if input_path.endswith(".npz"):
         params = mlp.load(input_path, shift=shift)
         obj_name = input_path[input_path.rindex('/')+1:-4]
+    elif input_path.endswith(".pth"):
+        params = torch.load(input_path)
+        print(params)
     else:
         raise ValueError("unrecognized filetype")
 
@@ -82,8 +85,11 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
         return slope_interval.SlopeIntervalImplicitFunction(implicit_func), params
 
     elif mode == 'crown':
-        crown_func = mlp.func_as_torch(params)
-        # data_bound = 1.
+        if input_path.endswith('pth'):
+            crown_func = params
+        else:
+            crown_func = mlp.func_as_torch(params)
+        # data_bound = 1.ren
         # lower = torch.tensor((0.25, -0.6875, 0.46875), dtype=torch.float32)
         # upper = torch.tensor((0.28125, -0.6875, 0.46875))
         # upper = torch.tensor((0.28125, -0.65625, 0.5), dtype=torch.float32)

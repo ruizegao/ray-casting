@@ -117,10 +117,11 @@ def main():
     if not use_cache:
         print(f"Not using cache, computing bounds and saving to (and potentially overwriting) {cache_dir}")
         # out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
-        out_dict = construct_adaptive_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True, max_split_depth=max_split_depth)
-        node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
-        node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
-        node_upper = torch.cat((out_dict['unknown_node_upper'], out_dict['interior_node_upper']), dim=0)
+        node_lower, node_upper, lAs, lbs, uAs, ubs = construct_hybrid_unknown_tree(implicit_func, params, lower, upper, base_depth=split_depth, max_depth=max_split_depth, delta=0.001, batch_size=256)
+        node_valid = torch.full(node_lower.shape[0], True)
+        # node_valid = torch.cat((out_dict['unknown_node_valid'], out_dict['interior_node_valid']), dim=0)
+        # node_lower = torch.cat((out_dict['unknown_node_lower'], out_dict['interior_node_lower']), dim=0)
+        # node_upper = torch.cat((out_dict['unknown_node_upper'], out_dict['interior_node_upper']), dim=0)
         # FIXME: Tree construction should support returning the bounding planes
         # node_lA = torch.empty(1)
         # node_uA = torch.empty(1)
@@ -161,19 +162,19 @@ def main():
     node_lower_valid = node_lower[node_valid]
     node_upper_valid = node_upper[node_valid]
     num_valid = node_valid.sum().item()
-    lAs = np.empty_like(to_numpy(node_lower_valid))
-    lbs = np.empty((num_valid,))
-    uAs = np.empty_like(to_numpy(node_lower_valid))
-    ubs = np.empty((num_valid,))
-    for start_idx in range(0, num_valid, batch_size):
-        end_idx = min(start_idx + batch_size, num_valid)
-        i = start_idx // batch_size
-        print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
-        out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx], swap_loss=True)
-        lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
-        lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
-        uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
-        ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
+    # lAs = np.empty_like(to_numpy(node_lower_valid))
+    # lbs = np.empty((num_valid,))
+    # uAs = np.empty_like(to_numpy(node_lower_valid))
+    # ubs = np.empty((num_valid,))
+    # for start_idx in range(0, num_valid, batch_size):
+    #     end_idx = min(start_idx + batch_size, num_valid)
+    #     i = start_idx // batch_size
+    #     print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
+    #     out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx], swap_loss=True)
+    #     lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
+    #     lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
+    #     uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
+    #     ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
 
     first_stage_time = time.time() - start_time
     print("First pass time: ", first_stage_time)
