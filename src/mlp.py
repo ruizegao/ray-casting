@@ -423,7 +423,7 @@ def pow2_frequency_encode(count_pow2, start_pow=0, with_shift=True):
     if with_shift:
         coefs = np.repeat(coefs, 2)
         shift = np.zeros_like(coefs)
-        shift = shift.at[1::2].set(np.pi)
+        shift[1::2] = np.pi
         return {"pow2_frequency_encode.coefs" : coefs, "pow2_frequency_encode.shift" : shift}
     else:
         return {"pow2_frequency_encode.coefs" : coefs}
