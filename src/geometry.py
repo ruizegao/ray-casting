@@ -138,7 +138,7 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
     # convert to numpy arrays
     Q_np = to_numpy(Q)
     sdf_vals_np = to_numpy(sdf_vals)
-
+    sdf_vals_np = np.clip(sdf_vals_np, -0.04, 0.04)
     return Q_np, sdf_vals_np
 
 def sample_point_on_triangle(v0, v1, v2):
