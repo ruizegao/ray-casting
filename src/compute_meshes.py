@@ -5,6 +5,7 @@ import time
 import argparse
 import warnings
 import numpy as np
+import torch
 import imageio
 import polyscope.imgui as psim
 # Imports from this project
@@ -138,59 +139,12 @@ if __name__ == '__main__':
         # trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
         # trimesh_mesh.show()
 
-
-    # def process_plane_cube(A, b, l, u):
-    #     cube = trimesh.creation.box(bounds=np.stack((l, u)))
-    #     o = np.array([0., 0., - b / A[2]])
-    #     mesh = cube.slice_plane(o, -A, cap=True)
-    #     v = np.array(mesh.vertices)
-    #     f = np.array(mesh.faces)
-    #     return v, f
-    #
-    # def register_plane_and_cube_with_polyscope(
-    #         As: torch.Tensor,
-    #         bs: torch.Tensor,
-    #         lower: torch.Tensor,
-    #         upper: torch.Tensor):
-    #
-    #     start_time = time.time()
-    #
-    #     tri_faces = []
-    #     tri_vertices = []
-    #
-    #     count = 0
-    #     # Use ProcessPoolExecutor for parallel processing
-    #     num_workers = os.cpu_count()  # Try reducing or increasing this number
-    #     num_workers = int(os.cpu_count() / 6) # Try reducing or increasing this number
-    #     print(f'assigning task to {num_workers} workers')
-    #     with ProcessPoolExecutor(max_workers=num_workers) as executor:
-    #         futures = [
-    #             executor.submit(process_plane_cube, A, b, l, u)
-    #             for A, b, l, u in zip(As, bs, lower, upper)
-    #         ]
-    #
-    #         for future in as_completed(futures):
-    #             v, f = future.result()
-    #             if len(v) > 0 and len(f) > 0:
-    #                 tri_faces.append(f + count)
-    #                 tri_vertices.append(v)
-    #                 count += len(v)
-    #
-    #     tri_faces = np.concatenate(tri_faces, axis=0)
-    #     tri_vertices = np.concatenate(tri_vertices, axis=0)
-    #
-    #     end_time = time.time()
-    #     print("total time cost: ", end_time - start_time)
-    #
-    #     # Save to file
-    #     mesh = {'vertices': tri_vertices, 'faces': tri_faces}
-    #     np.savez(args.save_to, **mesh)
-
     ret_val = [val for val in np.load(args.load_from).values()]
     [node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs, plane_constraints_lower, plane_constraints_upper] = ret_val
 
     num_constraints = plane_constraints_lower.shape[1]
     # num_constraints = 0
+    print(f"Found {num_constraints} constraint plane(s) to add to the mesh")
     if num_constraints == 1:
         cAs = plane_constraints_lower[:, :, :3].squeeze(1)
         cbs = plane_constraints_lower[:, :, 3].squeeze(1)
