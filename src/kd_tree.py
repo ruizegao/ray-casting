@@ -664,19 +664,21 @@ def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=No
 def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256):
     def eval_batch_of_nodes(lower, upper):
         types, crown_ret = func.classify_box(params, lower, upper)
-        types = types.squeeze(-1)
-        lAs = crown_ret['lA'].squeeze(1)
-        lbs = crown_ret['lbias'].squeeze(1)
-        uAs = crown_ret['uA'].squeeze(1)
-        ubs = crown_ret['ubias'].squeeze(1)
+        types = types.squeeze(-1).detach()
+        lAs = crown_ret['lA'].squeeze(1).detach()
+        lbs = crown_ret['lbias'].squeeze(1).detach()
+        uAs = crown_ret['uA'].squeeze(1).detach()
+        ubs = crown_ret['ubias'].squeeze(1).detach()
+        # lAs = lbs = uAs = ubs = None
+        # return types, crown_ret['lA'].squeeze(1).cpu(), crown_ret['lbias'].squeeze(1).cpu(), crown_ret['uA'].squeeze(1).cpu(), crown_ret['ubias'].squeeze(1).cpu()
         return types, lAs, lbs, uAs, ubs
 
     total_samples = node_lower.shape[0]
-    node_type = torch.empty((total_samples,))
-    node_lA = torch.empty((total_samples, 3))
-    node_lb = torch.empty((total_samples,))
-    node_uA = torch.empty((total_samples, 3))
-    node_ub = torch.empty((total_samples,))
+    node_type = torch.empty((total_samples,)).detach()
+    node_lA = torch.empty((total_samples, 3)).detach()
+    node_lb = torch.empty((total_samples,)).detach()
+    node_uA = torch.empty((total_samples, 3)).detach()
+    node_ub = torch.empty((total_samples,)).detach()
 
     for start_idx in range(0, total_samples, batch_size):
         end_idx = min(start_idx + batch_size, total_samples)
@@ -684,7 +686,7 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
          node_lA[start_idx:end_idx], node_lb[start_idx:end_idx],
          node_uA[start_idx:end_idx], node_ub[start_idx:end_idx]) = (
             eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx]))
-
+        # node_type[start_idx:end_idx] = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx])[0]
 
     neg_mask = node_type == SIGN_NEGATIVE
     unk_mask = node_type == SIGN_UNKNOWN
@@ -727,19 +729,19 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
 def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256):
     def eval_batch_of_nodes(lower, upper):
         types, crown_ret = func.classify_box(params, lower, upper)
-        types = types.squeeze(-1)
-        lAs = crown_ret['lA'].squeeze(1)
-        lbs = crown_ret['lbias'].squeeze(1)
-        uAs = crown_ret['uA'].squeeze(1)
-        ubs = crown_ret['ubias'].squeeze(1)
+        types = types.squeeze(-1).detach()
+        lAs = crown_ret['lA'].squeeze(1).detach()
+        lbs = crown_ret['lbias'].squeeze(1).detach()
+        uAs = crown_ret['uA'].squeeze(1).detach()
+        ubs = crown_ret['ubias'].squeeze(1).detach()
         return types, lAs, lbs, uAs, ubs
 
     total_samples = node_lower.shape[0]
-    node_type = torch.empty((total_samples,))
-    node_lA = torch.empty((total_samples, 3))
-    node_lb = torch.empty((total_samples,))
-    node_uA = torch.empty((total_samples, 3))
-    node_ub = torch.empty((total_samples,))
+    node_type = torch.empty((total_samples,)).detach()
+    node_lA = torch.empty((total_samples, 3)).detach()
+    node_lb = torch.empty((total_samples,)).detach()
+    node_uA = torch.empty((total_samples, 3)).detach()
+    node_ub = torch.empty((total_samples,)).detach()
 
     for start_idx in range(0, total_samples, batch_size):
         end_idx = min(start_idx + batch_size, total_samples)

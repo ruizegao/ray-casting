@@ -5,6 +5,7 @@ from numpy.core.defchararray import rindex
 import utils
 import mlp, sdf, affine, slope_interval, crown
 import torch
+from main_fit_implicit_torch import *
 
 def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
 
@@ -14,8 +15,7 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
         params = mlp.load(input_path, shift=shift)
         obj_name = input_path[input_path.rindex('/')+1:-4]
     elif input_path.endswith(".pth"):
-        params = torch.load(input_path)
-        print(params)
+        params = load_net_object(input_path)
     else:
         raise ValueError("unrecognized filetype")
 

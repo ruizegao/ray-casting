@@ -28,8 +28,8 @@ torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
 def save_render_current_view(args, implicit_func, params, opts, matcaps, load_from):
-    root = torch.tensor([5., 0., 0.]) #+ torch.ones(3)
-    look = torch.tensor([-1., 0., 0.])
+    root = torch.tensor([-5., 0., 0.]) #+ torch.ones(3)
+    look = torch.tensor([1., 0., 0.])
     up = torch.tensor([0., 1., 0.])
     left = torch.tensor([0., 0., 1.])
     # root = torch.tensor([0., -3., 0.])
