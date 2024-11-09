@@ -3,14 +3,12 @@ import torch.nn as nn
 import torch.optim as optim
 import argparse
 
-from sympy.polys.polyoptions import Order
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from enum import Enum
 import numpy as np
 import sys, os, csv
