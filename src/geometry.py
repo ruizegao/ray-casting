@@ -4,8 +4,10 @@ import torch
 from typing import Union, Tuple, Optional
 from torch import Tensor
 from numpy import ndarray
+import igl
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+to_numpy = lambda x: x.detach().cpu().numpy()
 
 def split_generator(generator, num_splits=2):
     return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
@@ -91,11 +93,10 @@ def sample_mesh_sdf(V, F, n_sample, surface_frac=0.5, surface_perturb_sigma=0.01
 
 
 def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
-                           n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25
+                           n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25,
+                           sdf_max=0.4
                            ) -> Tuple[ndarray, ndarray]:
     import igl
-
-    to_numpy = lambda x : x.detach().cpu().numpy()
 
     if isinstance(V, Tensor):
         V_torch = V
@@ -137,5 +138,62 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
     # convert to numpy arrays
     Q_np = to_numpy(Q)
     sdf_vals_np = to_numpy(sdf_vals)
-
+    sdf_vals_np = np.clip(sdf_vals_np, -sdf_max, sdf_max)
     return Q_np, sdf_vals_np
+
+def sample_point_on_triangle(v0, v1, v2):
+    # Sample uniformly in the triangle using barycentric coordinates
+    r1, r2 = np.random.rand(2)
+    sqrt_r1 = np.sqrt(r1)
+    u = 1 - sqrt_r1
+    v = r2 * sqrt_r1
+    return (1 - u - v) * v0 + u * v1 + v * v2
+
+def sample_points_on_mesh(V, F, num_samples):
+    areas = igl.doublearea(V, F) / 2  # Half of double area gives true area for triangles
+    cumulative_areas = np.cumsum(areas)
+    total_area = cumulative_areas[-1]
+    samples = []
+    for _ in range(num_samples):
+        # Select a triangle based on area
+        sample_area = np.random.rand() * total_area
+        triangle_idx = np.searchsorted(cumulative_areas, sample_area)
+
+        # Get vertices of the selected triangle
+        v0 = V[F[triangle_idx, 0]]
+        v1 = V[F[triangle_idx, 1]]
+        v2 = V[F[triangle_idx, 2]]
+
+        # Sample a point on the triangle
+        sample_point = sample_point_on_triangle(v0, v1, v2)
+        samples.append(sample_point)
+
+    return np.array(samples)
+
+def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, ambient_range=1.):
+
+    if isinstance(V, Tensor):
+        V_torch = V
+        V_np = to_numpy(V_torch)
+    else:
+        V_np = V
+        V_torch = torch.from_numpy(V_np)
+
+    if isinstance(F, Tensor):
+        F_torch = F
+        F_np = to_numpy(F_torch)
+    else:
+        F_np = F
+        F_torch = torch.from_numpy(F_np)
+
+    num_uni = int(n_sample / 5)
+    num_on_surf = num_near_surf = 2 * num_uni
+    Q_on_surf = sample_points_on_mesh(V_np, F_np, num_on_surf)
+    Q_near_surf = np.random.normal(0, 0.01, Q_on_surf.shape)
+    Q_uni = torch.empty(num_uni, 3, dtype=V_torch.dtype).uniform_(-ambient_range, ambient_range)
+
+    Q = np.concatenate((Q_on_surf, Q_near_surf, Q_uni))
+    np.random.shuffle(Q)
+    sdf_val, _, _ = igl.signed_distance(Q, V_np, F_np)
+
+    return Q, sdf_val
