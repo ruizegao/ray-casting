@@ -170,7 +170,7 @@ def sample_points_on_mesh(V, F, num_samples):
 
     return np.array(samples)
 
-def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, ambient_range=1.):
+def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, sdf_max=0.04, ambient_range=1.):
 
     if isinstance(V, Tensor):
         V_torch = V
@@ -195,5 +195,5 @@ def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, a
     Q = np.concatenate((Q_on_surf, Q_near_surf, Q_uni))
     np.random.shuffle(Q)
     sdf_val, _, _ = igl.signed_distance(Q, V_np, F_np)
-
+    sdf_val = np.clip(sdf_val, -sdf_max, sdf_max)
     return Q, sdf_val
