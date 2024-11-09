@@ -2,13 +2,13 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import argparse
+
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
 from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from enum import Enum
 import numpy as np
 import sys, os, csv
@@ -18,12 +18,17 @@ from warnings import warn
 # imports specific to sdf
 import igl, geometry
 
+USE_WANDB = bool(os.environ.get('USE_WANDB', 0))
+WANDB_GROUP = None
+if USE_WANDB:
+    import wandb
+
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-white")  # if throws error, use "seaborn-white"
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
 
 set_t = {
-    'dtype': torch.float32,  # double precision for more accurate training
+    'dtype': torch.float64,  # double precision for more accurate training
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
 
@@ -59,6 +64,169 @@ class MainApplicationMethod(Enum):
         else:
             raise TypeError("Identifier must be a string (name) or an integer (value)")
 
+
+class SineLayer(nn.Module):
+    """
+    The SineLayer implementation given by the SIRENZ paper.
+
+    See paper sec. 3.2, final paragraph, and supplement Sec. 1.5 for discussion of omega_0.
+    If is_first=True, omega_0 is a frequency factor which simply multiplies the activations before the
+    nonlinearity. Different signals may require different omega_0 in the first layer - this is a
+    hyperparameter.
+    If is_first=False, then the weights will be divided by omega_0 so as to keep the magnitude of
+    activations constant, but boost gradients to the weight matrix (see supplement Sec. 1.5)
+    """
+
+    def __init__(self, in_features: int, out_features: int, bias=True,
+                 is_first: bool=False, omega_0: float=30.):
+        """
+
+        :param in_features:
+        :param out_features:
+        :param bias:
+        :param is_first:
+        :param omega_0:
+        """
+        super().__init__()
+        self.omega_0 = omega_0
+        self.is_first = is_first
+
+        self.in_features = in_features
+        self.linear = nn.Linear(in_features, out_features, bias=bias)
+
+        self.init_weights()
+
+    def init_weights(self):
+        """
+        :return:
+        """
+        with torch.no_grad():
+            if self.is_first:
+                self.linear.weight.uniform_(-1 / self.in_features,
+                                            1 / self.in_features)
+            else:
+                self.linear.weight.uniform_(-np.sqrt(6 / self.in_features) / self.omega_0,
+                                            np.sqrt(6 / self.in_features) / self.omega_0)
+
+    def forward(self, input):
+        return torch.sin(self.omega_0 * self.linear(input))
+
+    def forward_with_intermediate(self, input):
+        # For visualization of activation distributions
+        intermediate = self.omega_0 * self.linear(input)
+        return torch.sin(intermediate), intermediate
+
+
+class Siren(nn.Module):
+    def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,
+                 lrate: float, outermost_linear: bool=False,
+                 first_omega_0: int=30, hidden_omega_0: float=30.,
+                 step_size: Optional[int] = None, gamma: Optional[float] = None):
+        super().__init__()
+
+        self.model = []
+        self.model.append(
+            ('0000_SineLayer', SineLayer(in_features, hidden_features,
+                                  is_first=True, omega_0=first_omega_0))
+        )
+
+        for i in range(hidden_layers):
+            idx_str = f"{i+1:4d}_SineLayer"
+            self.model.append(
+                (idx_str, SineLayer(hidden_features, hidden_features,
+                                      is_first=False, omega_0=hidden_omega_0))
+            )
+
+        idx_str = f"{hidden_layers + 1:4d}_"
+        if outermost_linear:
+            final_linear = nn.Linear(hidden_features, out_features)
+
+            with torch.no_grad():
+                final_linear.weight.uniform_(-np.sqrt(6 / hidden_features) / hidden_omega_0,
+                                             np.sqrt(6 / hidden_features) / hidden_omega_0)
+
+            self.model.append((idx_str + "dense", final_linear))
+        else:
+            self.model.append(
+                (idx_str + "SineLayer", SineLayer(hidden_features, out_features,
+                                      is_first=False, omega_0=hidden_omega_0))
+            )
+
+        self.model = nn.Sequential(OrderedDict(self.model))
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
+        self.loss_fn = nn.MSELoss(reduction='none')
+
+        # set LR scheduler
+        self.scheduler = None
+        if step_size is not None and gamma is not None:
+            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size,
+                                                       gamma=gamma)
+
+    def forward(self, coords):
+        return self.model(coords)
+
+    def forward_with_coords(self, coords):
+        coords = coords.clone().detach().requires_grad_(
+            True)  # allows to take derivative w.r.t. input
+        output = self.model(coords)
+        return output, coords
+
+    def forward_with_activations(self, coords, retain_grad=False):
+        '''Returns not only model output, but also intermediate activations.
+        Only used for visualizing activations later!'''
+        activations = OrderedDict()
+
+        activation_count = 0
+        x = coords.clone().detach().requires_grad_(True)
+        activations['input'] = x
+        for i, layer in enumerate(self.model):
+            if isinstance(layer, SineLayer):
+                x, intermed = layer.forward_with_intermediate(x)
+
+                if retain_grad:
+                    x.retain_grad()
+                    intermed.retain_grad()
+
+                activations['_'.join((str(layer.__class__), "%d" % activation_count))] = intermed
+                activation_count += 1
+            else:
+                x = layer(x)
+
+                if retain_grad:
+                    x.retain_grad()
+
+            activations['_'.join((str(layer.__class__), "%d" % activation_count))] = x
+            activation_count += 1
+
+        return activations
+
+    def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
+        """
+        Returns the loss of a single forward pass
+        :param x:       (Batch, input size)
+        :param y:       (Batch, output size)
+        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
+        :return:        loss
+        """
+        # zero the gradients
+        self.optimizer.zero_grad()
+
+        # pass the batch through the model
+        y_hat = self.forward(x)
+
+        # clip the estimate
+        # y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
+
+        # compute the loss
+        unweighted_loss = self.loss_fn(y_hat, y)
+        loss = (unweighted_loss * weights).mean()
+
+        # update model
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
+
 class PositionalEncodingLayer(nn.Module):
     """
     Manually implemented module that performs the following operations in order to produce
@@ -71,10 +239,18 @@ class PositionalEncodingLayer(nn.Module):
     5) Flatten the result to be (batches, 3*L(*2)) where (*2) means that the dimension is doubled if shift is enabled
     """
 
-    def __init__(self, L: int, start_pow: int = 0, with_shift: bool = True):
+    def __init__(self, L: int, start_pow: int = 0, with_shift: bool = True, prepend: bool = False):
+        """
+        Initializes a layer that performs positional encoding.
+        :param L:
+        :param start_pow:
+        :param with_shift:
+        :param prepend:
+        """
         super(PositionalEncodingLayer, self).__init__()
         pows = torch.pow(2., torch.arange(start=start_pow, end=start_pow + L))
         coeffs = pows * torch.pi
+        self.prepend = prepend
 
         if with_shift:
             coeffs = coeffs.repeat_interleave(2)
@@ -101,29 +277,43 @@ class PositionalEncodingLayer(nn.Module):
 
         # apply encoding
         x_encoded = x_reshape * self.coeffs
+
+        # add the shift so that every other is sin
         if self.shift is not None:
             x_encoded += self.shift
 
         # apply cos as activation function
         cos_output = torch.cos(x_encoded)
-        return self.flatten(cos_output)
+        flatten_output = self.flatten(cos_output)
+
+        # prepend the position if specified
+        if self.prepend:
+            flatten_output = torch.concatenate((x, flatten_output), dim=1)
+
+        return flatten_output
+
 
     @staticmethod
-    def compute_output_dim(positional_count: int, with_shift: bool):
+    def compute_output_dim(positional_count: int, with_shift: bool, prepend: bool):
         """
         Returns what the output dimension of this Module would be given these parameters
         """
+        output_dim = 3 * positional_count
         if with_shift:
-            return 3 * positional_count * 2
-        else:
-            return 3 * positional_count
+            output_dim *= 2
+
+        if prepend:
+            output_dim += 3
+
+        return output_dim
 
 
 class FitSurfaceModel(nn.Module):
-    def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8, layer_width:int=32,
+    def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
+                 layer_width:int=32, sdf_max: float=0.4,
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
-                 positional_power_start: Optional[int] = None, with_shift: bool = True,
-                 step_size: Optional[int] = None, gamma: Optional[float] = None):
+                 positional_power_start: Optional[int] = None, positional_prepend: bool = False,
+                 with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
@@ -165,12 +355,15 @@ class FitSurfaceModel(nn.Module):
         if use_positional_encoding:
             layers.append(
                 ('0000_encoding',
-                 PositionalEncodingLayer(positional_count, positional_power_start, with_shift))
+                 PositionalEncodingLayer(positional_count, positional_power_start,
+                                         with_shift, positional_prepend))
             )
             # MLP will now have start layer idx of 1
             start_layer = 1
             # Get new input dimension of MLP
-            mlp_input_dim = PositionalEncodingLayer.compute_output_dim(positional_count, with_shift)
+            mlp_input_dim = PositionalEncodingLayer.compute_output_dim(positional_count,
+                                                                       with_shift,
+                                                                       positional_prepend)
         layers.extend([
             (f'{start_layer:04d}_dense', nn.Linear(mlp_input_dim, layer_width)),
             (f'{start_layer+1:04d}_{activation_fn_name}', activation_fn)
@@ -211,6 +404,7 @@ class FitSurfaceModel(nn.Module):
         # set optimizer
         self.fit_mode = fit_mode
         self.lr = lrate
+        self.sdf_max = sdf_max
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
 
         # set LR scheduler
@@ -240,6 +434,9 @@ class FitSurfaceModel(nn.Module):
         # pass the batch through the model
         y_hat = self.forward(x)
 
+        # clip the estimate
+        y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
+
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)
         loss = (unweighted_loss * weights).mean()
@@ -250,7 +447,7 @@ class FitSurfaceModel(nn.Module):
 
         return loss.item()
 
-def load_net_object(pth_file: str) -> FitSurfaceModel:
+def load_net_object(pth_file: str) -> Union[FitSurfaceModel, Siren]:
     """
     A helper function that retrieves a torch network from a .pth file
     :param pth_file:    .pth file to load network parameters and weights from.
@@ -259,7 +456,11 @@ def load_net_object(pth_file: str) -> FitSurfaceModel:
     pth_dict = torch.load(pth_file, weights_only=True)
     state_dict = pth_dict["state_dict"]  # weights and biases
     model_params = pth_dict["model_params"]  # rest of the parameters
-    NetObject = FitSurfaceModel(**model_params)  # initialize object
+    is_siren = pth_dict.pop("is_siren", False)
+    if is_siren:
+        NetObject = Siren(**model_params)
+    else:
+        NetObject = FitSurfaceModel(**model_params)  # initialize object
     NetObject.load_state_dict(state_dict)  # load in weights and biases
     NetObject.eval()  # set to evaluation mode
 
@@ -271,8 +472,10 @@ class SampleDataset(Dataset):
             mesh_input_file: str,
             fit_mode: str,
             n_samples: int,
+            sdf_max: float,
             sample_weight_beta: float,
             sample_ambient_range: float,
+            sample_221: bool = False,
             verbose=False
     ):
         """
@@ -283,6 +486,7 @@ class SampleDataset(Dataset):
         :param n_samples:               Number of samples to create
         :param sample_weight_beta:      The sample weight beta factor
         :param sample_ambient_range:
+        :param sample_221:              Use 2-2-1 sampling
         :param verbose:                 If true, prints additional info during dataset creation
         """
 
@@ -298,8 +502,11 @@ class SampleDataset(Dataset):
 
 
         if verbose:
-            print("Collecting geometry samples")
-        samp, samp_SDF = geometry.sample_mesh_importance(V, F, n_samples, beta=sample_weight_beta, ambient_range=sample_ambient_range)
+            print(f"Collecting geometry samples. Is using sample_221? {sample_221}")
+        if sample_221:
+            samp, samp_SDF = geometry.sample_221(V, F, n_samples, sample_ambient_range)
+        else:
+            samp, samp_SDF = geometry.sample_mesh_importance(V, F, n_samples, beta=sample_weight_beta, ambient_range=sample_ambient_range, sdf_max=sdf_max)
 
         if verbose:
             print(f"Formatting labels")
@@ -333,7 +540,8 @@ class SampleDataset(Dataset):
     def __getitem__(self, idx) -> Tuple[Tensor, Tensor, Tensor]:
         return self.x[idx], self.y[idx], self.weights[idx]
 
-def batch_count_correct(NetObject: FitSurfaceModel, batch_x: Tensor, batch_y: Tensor, fit_mode: str) -> Tensor:
+def batch_count_correct(NetObject: Union[FitSurfaceModel, Siren], batch_x: Tensor, batch_y: Tensor,
+                        fit_mode: str) -> Tensor:
     """
     For some batch of inputs and labels, return the number of predictions whose sign is correct.
     :param NetObject:   Neural network object to evaluate
@@ -355,11 +563,11 @@ def batch_count_correct(NetObject: FitSurfaceModel, batch_x: Tensor, batch_y: Te
 
 
 def fit_model(
-        NetObject: FitSurfaceModel,
+        NetObject: Union[FitSurfaceModel, Siren],
         train_loader: DataLoader,
         fit_mode: str,
         epochs: int
-) -> Tuple[list[float], list[int], list[float], FitSurfaceModel]:
+) -> Tuple[list[float], list[int], list[float], Union[FitSurfaceModel, Siren]]:
     """
     Given a neurol network and train loader, fit the neural network to the training dataset and record the losses.
     The training heuristics that are returned are:
@@ -410,14 +618,16 @@ def fit_model(
         # calculate the epoch loss and update progress bar
         epoch_loss /= len(train_loader)
         losses.append(epoch_loss)
-        epoch_progress_bar.update(1)
-        epoch_progress_bar.set_postfix(
-            {
+        epoch_details = {
                 'Epoch Loss': epoch_loss,
                 'Correct Sign': f'{100*frac_correct:.2f}%',
                 'Learning Rate': current_lr,
             }
-        )
+        epoch_progress_bar.update(1)
+        epoch_progress_bar.set_postfix(epoch_details)
+        if USE_WANDB:
+            epoch_details.update({'Correct Sign': 100 * frac_correct})
+            wandb.log(epoch_details)
 
     # return metrics and trained network
     return losses, correct_counts, correct_fracs, NetObject
@@ -456,7 +666,7 @@ def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_
     else:
         plt.close()
 
-def save_to_npz(NetObject: FitSurfaceModel, npz_path: str, verbose: bool = False):
+def save_to_npz(NetObject: Union[FitSurfaceModel, Siren], npz_path: str, verbose: bool = False):
     """
     Saves the Torch model as a .npz file that can be loaded in by the other ray tracing scripts. Runs in 3 stages:
 
@@ -530,9 +740,16 @@ def parse_args() -> dict:
     parser.add_argument("--activation", type=str, default='elu')
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--layer_width", type=int, default=32)
+    #positional arguments
     parser.add_argument("--positional_encoding", action='store_true')
     parser.add_argument("--positional_count", type=int, default=10)
     parser.add_argument("--positional_pow_start", type=int, default=-3)
+    parser.add_argument("--positional_prepend", action='store_true')
+    # siren arguments
+    parser.add_argument("--siren_model", action='store_true')
+    parser.add_argument("--siren_outermost_linear", action='store_true')
+    parser.add_argument("--siren_first_omega_0", type=int, default=30)
+    parser.add_argument("--siren_hidden_omega_0", type=int, default=30)
 
     # loss / data
     parser.add_argument("--fit_mode", type=str, default='sdf')
@@ -540,6 +757,8 @@ def parse_args() -> dict:
     parser.add_argument("--n_samples", type=int, default=1000000)
     parser.add_argument("--sample_ambient_range", type=float, default=1.25)
     parser.add_argument("--sample_weight_beta", type=float, default=20.)
+    parser.add_argument("--sample_221", action='store_true')
+    parser.add_argument("--sdf_max", type=float, default=0.1)
 
     # training
     parser.add_argument("--lr", type=float, default=1e-2)
@@ -565,6 +784,7 @@ def main(args: dict):
     ##  unpack arguments
 
     # Build arguments
+    program_mode = args["program_mode"]
     input_file = args["input_file"]
     output_file = args["output_file"]
     if input_file is None or output_file is None:
@@ -573,16 +793,25 @@ def main(args: dict):
     activation = args["activation"]
     n_layers = args["n_layers"]
     layer_width = args["layer_width"]
-    # TODO: Not a priority, but positional networks not supported as of yet
+    # positional encoding params
     positional_encoding = args["positional_encoding"]
     positional_count = args["positional_count"]
     positional_pow_start = args["positional_pow_start"]
+    positional_prepend = args["positional_prepend"]
+    # siren params
+    siren_model = args["siren_model"]
+    siren_outermost_linear = args["siren_outermost_linear"]
+    siren_first_omega_0 = args["siren_first_omega_0"]
+    siren_hidden_omega_0 = args["siren_hidden_omega_0"]
+
     # loss / data
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     n_samples = args["n_samples"]
     sample_ambient_range = args["sample_ambient_range"]
     sample_weight_beta = args["sample_weight_beta"]
+    sample_221 = args["sample_221"]
+    sdf_max = args["sdf_max"]
     # training
     lr = args["lr"]
     batch_size = args["batch_size"]
@@ -594,6 +823,31 @@ def main(args: dict):
 
     print(f"Program Configuration: {args}")
 
+    if USE_WANDB:
+        global WANDB_GROUP
+        if WANDB_GROUP is None:
+            WANDB_GROUP = program_mode + '_' + wandb.util.generate_id()
+        uniq_id = WANDB_GROUP.split('_')[-1]
+        file_name = input_file.split('/')[-1].split('.obj')[0] + '_' + uniq_id
+
+        # start a new wandb run to track this script
+        tags = [fit_mode, program_mode]
+        if siren_model:
+            tags += ['siren']
+        elif positional_encoding:
+            tags += ['positional_encoding']
+        wandb.init(
+            # set the wandb project and name where this run will be logged
+            project="main_fit_implicit_torch",
+            name=file_name,
+            # track hyperparameters and run metadata
+            config=args_dict,
+            # set group
+            group=WANDB_GROUP,
+            # set tags
+            tags=tags
+        )
+
     # validate some inputs
     if activation not in ['relu', 'elu', 'gelu', 'cos']:
         raise ValueError("unrecognized activation")
@@ -603,20 +857,40 @@ def main(args: dict):
         raise ValueError("output file should end with .npz")
 
     # initialize the network
-    model_params = {
-        'lrate': lr,
-        'fit_mode': fit_mode,
-        'activation': activation,
-        'n_layers': n_layers,
-        'layer_width': layer_width,
-        'use_positional_encoding': positional_encoding,
-        'positional_count': positional_count,
-        'positional_power_start': positional_pow_start,
-        'with_shift': True,
-        'step_size': lr_decay_every,
-        'gamma': lr_decay_frac,
-    }
-    NetObject = FitSurfaceModel(**model_params)
+    if not siren_model:
+        model_params = {
+            'lrate': lr,
+            'fit_mode': fit_mode,
+            'activation': activation,
+            'n_layers': n_layers,
+            'layer_width': layer_width,
+            'sdf_max': sdf_max,
+            'use_positional_encoding': positional_encoding,
+            'positional_count': positional_count,
+            'positional_power_start': positional_pow_start,
+            'positional_prepend': positional_prepend,
+            'with_shift': True,
+            'step_size': lr_decay_every,
+            'gamma': lr_decay_frac,
+        }
+        NetObject = FitSurfaceModel(**model_params)
+    else:
+        model_params = {
+            'in_features': 3,
+            'hidden_features': layer_width,
+            'hidden_layers': n_layers,
+            'out_features': 1,
+            'lrate': lr,
+            'outermost_linear': siren_outermost_linear,
+            'first_omega_0': siren_first_omega_0,
+            'hidden_omega_0': siren_hidden_omega_0,
+            'step_size': lr_decay_every,
+            'gamma': lr_decay_frac,
+        }
+        NetObject = Siren(**model_params)
+        sample_ambient_range = 1.
+        warn("'sample_ambient_range' was changed to 1. as inputs outside of the range [-1, 1] "
+             "may cause training instability for a SIREN model")
 
     # initialize the dataset
     dataset_pararms = {
@@ -624,7 +898,9 @@ def main(args: dict):
         'fit_mode': fit_mode,
         'n_samples': n_samples,
         'sample_weight_beta': sample_weight_beta,
-        'sample_ambient_range': sample_ambient_range,
+        'sample_ambient_range': 1. if siren_model else sample_ambient_range,
+        'sample_221': sample_221,
+        'sdf_max': sdf_max,
         'verbose': verbose
     }
     train_dataset = SampleDataset(**dataset_pararms)
@@ -640,6 +916,7 @@ def main(args: dict):
     pth_dict = {
         "state_dict": NetObject.state_dict(),
         "model_params": model_params,
+        "is_siren": siren_model,
     }
     torch.save(pth_dict, pth_file)
 
@@ -649,6 +926,35 @@ def main(args: dict):
 
     # save the neural network in .npz format
     save_to_npz(NetObject, output_file, verbose)
+
+    if USE_WANDB:
+        wandb.finish()
+
+def get_filename_descriptor(args: dict) -> str:
+    """
+    Formats the filename of the output file to be more descriptive with regard to the training
+    parameters and architecture.
+    :param args:
+    :return:
+    """
+    is_siren = args['siren_model']
+    first_omega_0 = args['siren_first_omega_0']
+    hidden_omega_0 = args['siren_hidden_omega_0']
+    outermost_linear = args['siren_outermost_linear']
+    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
+        'layer_width'], args['fit_mode']
+    pos, positional_count, positional_pow_start = args['positional_encoding'], args[
+        'positional_count'], args['positional_pow_start']
+
+    if is_siren:
+        descriptor = f"_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
+        descriptor += f"_siren_first_omega_{first_omega_0}_hidden_omega_{hidden_omega_0}_out_linear_{outermost_linear}"
+    else:
+        descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
+        if pos:
+            descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
+
+    return descriptor
 
 def TrainThingi10K_main(args: dict):
     """
@@ -680,13 +986,7 @@ def TrainThingi10K_main(args: dict):
     output_directory = "sample_inputs/Thingi10K_inputs/"
     file_names = [f for f in os.listdir(input_directory) if f.endswith('.obj')]
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
-        'layer_width'], args['fit_mode']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
-    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
-    if pos:
-        lr_decay_every, lr = args['lr_decay_every'], args['lr']
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}_initLR_{lr}_step_{lr_decay_every}"
+    descriptor = get_filename_descriptor(args)
     input_files = [input_directory + f for f in file_names]
     output_files = [output_directory + f.replace(".obj", descriptor + ".npz") for f in file_names]
 
@@ -771,12 +1071,7 @@ def TrainMeshesMaster_main(args: dict):
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/meshes-master_inputs/"
     os.makedirs(output_directory, exist_ok=True)
-    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
-        'layer_width'], args['fit_mode']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
-    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
-    if pos:
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
+    descriptor = get_filename_descriptor(args)
 
     # create a table that views the output
     csv_subdir, csv_file, success, error = [], [], [], []
@@ -862,13 +1157,7 @@ def ShapeNetCore_main(args: dict):
                       if os.path.isdir(os.path.join(input_directory, name))]
     subdirectories = [input_directory + name for name in sub_names]
     output_directory = "sample_inputs/ShapeNetCore_inputs/"
-    activation, nlayers, layerwidth, fit_mode = args['activation'], args['n_layers'], args[
-        'layer_width'], args['fit_mode']
-    descriptor = f"_activation_{activation}_nlayers_{nlayers}_layerwidth_{layerwidth}_fitmode_{fit_mode}"
-    pos, positional_count, positional_pow_start = args['positional_encoding'], args['positional_count'], args['positional_pow_start']
-    if pos:
-        descriptor += f"_pos_L_{positional_count}_pow_start_{positional_pow_start}"
-
+    descriptor = get_filename_descriptor(args)
     # create a table that views the output
     csv_subdir, csv_subbdir, csv_file, success, error = [], [], [], [], []
 
@@ -971,7 +1260,7 @@ def Visualize_main(args: dict):
 if __name__ == '__main__':
     # parse user arguments
     args_dict = parse_args()
-    program_mode_name = args_dict.pop('program_mode')
+    program_mode_name = args_dict['program_mode']
     program_mode = MainApplicationMethod.get(program_mode_name, None)
 
     # run the specified program

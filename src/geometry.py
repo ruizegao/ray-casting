@@ -7,6 +7,7 @@ from numpy import ndarray
 import igl
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
+to_numpy = lambda x: x.detach().cpu().numpy()
 
 def split_generator(generator, num_splits=2):
     return [torch.Generator(device=device).manual_seed(generator.initial_seed() + i) for i in range(num_splits)]
@@ -92,11 +93,10 @@ def sample_mesh_sdf(V, F, n_sample, surface_frac=0.5, surface_perturb_sigma=0.01
 
 
 def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
-                           n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25
+                           n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25,
+                           sdf_max=0.4
                            ) -> Tuple[ndarray, ndarray]:
     import igl
-
-    to_numpy = lambda x : x.detach().cpu().numpy()
 
     if isinstance(V, Tensor):
         V_torch = V
@@ -138,7 +138,7 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
     # convert to numpy arrays
     Q_np = to_numpy(Q)
     sdf_vals_np = to_numpy(sdf_vals)
-    sdf_vals_np = np.clip(sdf_vals_np, -0.04, 0.04)
+    sdf_vals_np = np.clip(sdf_vals_np, -sdf_max, sdf_max)
     return Q_np, sdf_vals_np
 
 def sample_point_on_triangle(v0, v1, v2):
@@ -171,7 +171,6 @@ def sample_points_on_mesh(V, F, num_samples):
     return np.array(samples)
 
 def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, ambient_range=1.):
-    to_numpy = lambda x: x.detach().cpu().numpy()
 
     if isinstance(V, Tensor):
         V_torch = V
