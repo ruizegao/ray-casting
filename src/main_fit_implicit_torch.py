@@ -21,6 +21,7 @@ from warnings import warn
 import igl, geometry
 
 USE_WANDB = bool(os.environ.get('USE_WANDB', 0))
+WANDB_GROUP = None
 if USE_WANDB:
     import wandb
 
@@ -627,6 +628,7 @@ def fit_model(
         epoch_progress_bar.update(1)
         epoch_progress_bar.set_postfix(epoch_details)
         if USE_WANDB:
+            epoch_details.update({'Correct Sign': 100 * frac_correct})
             wandb.log(epoch_details)
 
     # return metrics and trained network
@@ -779,21 +781,12 @@ def parse_args() -> dict:
 
 def main(args: dict):
 
-    if USE_WANDB:
-        # start a new wandb run to track this script
-        wandb.init(
-            # set the wandb project where this run will be logged
-            project="main_fit_implicit_torch",
-
-            # track hyperparameters and run metadata
-            config=args_dict
-        )
-
     print(f"Torch Settings: {set_t}")
 
     ##  unpack arguments
 
     # Build arguments
+    program_mode = args["program_mode"]
     input_file = args["input_file"]
     output_file = args["output_file"]
     if input_file is None or output_file is None:
@@ -831,6 +824,31 @@ def main(args: dict):
     display_plots = args["display_plots"]
 
     print(f"Program Configuration: {args}")
+
+    if USE_WANDB:
+        global WANDB_GROUP
+        if WANDB_GROUP is None:
+            WANDB_GROUP = program_mode + '_' + wandb.util.generate_id()
+        uniq_id = WANDB_GROUP.split('_')[-1]
+        file_name = input_file.split('/')[-1].split('.obj')[0] + '_' + uniq_id
+
+        # start a new wandb run to track this script
+        tags = [fit_mode, program_mode]
+        if siren_model:
+            tags += ['siren']
+        elif positional_encoding:
+            tags += ['positional_encoding']
+        wandb.init(
+            # set the wandb project and name where this run will be logged
+            project="main_fit_implicit_torch",
+            name=file_name,
+            # track hyperparameters and run metadata
+            config=args_dict,
+            # set group
+            group=WANDB_GROUP,
+            # set tags
+            tags=tags
+        )
 
     # validate some inputs
     if activation not in ['relu', 'elu', 'gelu', 'cos']:
@@ -1244,7 +1262,7 @@ def Visualize_main(args: dict):
 if __name__ == '__main__':
     # parse user arguments
     args_dict = parse_args()
-    program_mode_name = args_dict.pop('program_mode')
+    program_mode_name = args_dict['program_mode']
     program_mode = MainApplicationMethod.get(program_mode_name, None)
 
     # run the specified program
