@@ -583,6 +583,8 @@ def fit_model(
     :return:                Training heuristics and trained `NetObject`
     """
 
+    global USE_WANDB
+
     # send to device
     NetObject = NetObject.to(**set_t)
 
@@ -778,6 +780,7 @@ def parse_args() -> dict:
     return args_dict
 
 def main(args: dict):
+    global USE_WANDB, WANDB_GROUP
 
     print(f"Torch Settings: {set_t}")
 
@@ -824,7 +827,6 @@ def main(args: dict):
     print(f"Program Configuration: {args}")
 
     if USE_WANDB:
-        global WANDB_GROUP
         if WANDB_GROUP is None:
             WANDB_GROUP = program_mode + '_' + wandb.util.generate_id()
         uniq_id = WANDB_GROUP.split('_')[-1]
@@ -847,6 +849,8 @@ def main(args: dict):
             # set tags
             tags=tags
         )
+
+    print(f"WANDB ENABLED: {USE_WANDB} | WANDB GROUP: {WANDB_GROUP}")
 
     # validate some inputs
     if activation not in ['relu', 'elu', 'gelu', 'cos']:
