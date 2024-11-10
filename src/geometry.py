@@ -94,7 +94,7 @@ def sample_mesh_sdf(V, F, n_sample, surface_frac=0.5, surface_perturb_sigma=0.01
 
 def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
                            n_sample, n_sample_full_mult=10., beta=20., ambient_range=1.25,
-                           sdf_max=0.4
+                           sdf_max=0.4, show_surface=False
                            ) -> Tuple[ndarray, ndarray]:
     import igl
 
@@ -138,7 +138,29 @@ def sample_mesh_importance(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray],
     # convert to numpy arrays
     Q_np = to_numpy(Q)
     sdf_vals_np = to_numpy(sdf_vals)
+    print(f"Smallest sdf val: {sdf_vals_np.min()}, Largest sdf val: {sdf_vals_np.max()}")
     sdf_vals_np = np.clip(sdf_vals_np, -sdf_max, sdf_max)
+
+    if show_surface:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        # Create a 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        filt_idx = sdf_vals_np < 0.04
+        samples_np = Q_np[filt_idx]
+
+        # Plot the points
+        ax.scatter(samples_np[:, 0], samples_np[:, 1], samples_np[:, 2], c='b', marker='o')
+
+        # Set labels for clarity
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        # Show the plot
+        plt.show()
+
     return Q_np, sdf_vals_np
 
 def sample_point_on_triangle(v0, v1, v2):
@@ -147,9 +169,10 @@ def sample_point_on_triangle(v0, v1, v2):
     sqrt_r1 = np.sqrt(r1)
     u = 1 - sqrt_r1
     v = r2 * sqrt_r1
-    return (1 - u - v) * v0 + u * v1 + v * v2
+    return (1 - sqrt_r1)*v0 + (sqrt_r1*(1-r2))*v1 + (sqrt_r1*r2)*v2
+    # return (1 - u - v) * v0 + u * v1 + v * v2
 
-def sample_points_on_mesh(V, F, num_samples):
+def sample_points_on_mesh(V, F, num_samples, show_surface) -> ndarray:
     areas = igl.doublearea(V, F) / 2  # Half of double area gives true area for triangles
     cumulative_areas = np.cumsum(areas)
     total_area = cumulative_areas[-1]
@@ -168,10 +191,30 @@ def sample_points_on_mesh(V, F, num_samples):
         sample_point = sample_point_on_triangle(v0, v1, v2)
         samples.append(sample_point)
 
-    return np.array(samples)
+    samples_np = np.array(samples)
+
+    if show_surface:
+        import matplotlib.pyplot as plt
+        from mpl_toolkits.mplot3d import Axes3D
+        # Create a 3D plot
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+
+        # Plot the points
+        ax.scatter(samples_np[:, 0], samples_np[:, 1], samples_np[:, 2], c='b', marker='o')
+
+        # Set labels for clarity
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+
+        # Show the plot
+        plt.show()
+
+    return samples_np
 
 def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, ambient_range=1.,
-               sdf_max=0.4):
+               sdf_max=0.4, show_surface = False):
 
     if isinstance(V, Tensor):
         V_torch = V
@@ -189,13 +232,14 @@ def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, a
 
     num_uni = int(n_sample / 5)
     num_on_surf = num_near_surf = 2 * num_uni
-    Q_on_surf = sample_points_on_mesh(V_np, F_np, num_on_surf)
-    Q_near_surf = Q_on_surf + np.random.normal(0, 0.01, Q_on_surf.shape)
+    Q_on_surf = sample_points_on_mesh(V_np, F_np, num_on_surf, show_surface)
+    Q_near_surf = np.clip(Q_on_surf + np.random.normal(0, sdf_max, Q_on_surf.shape), -ambient_range, ambient_range)
     Q_uni = torch.empty(num_uni, 3, dtype=V_torch.dtype).uniform_(-ambient_range, ambient_range)
 
     Q = np.concatenate((Q_on_surf, Q_near_surf, Q_uni))
-    np.random.shuffle(Q)
+    # np.random.shuffle(Q)
     sdf_val, _, _ = igl.signed_distance(Q, V_np, F_np)
+    print(f"Smallest sdf val: {sdf_val.min()}, Largest sdf val: {sdf_val.max()}")
     sdf_val = np.clip(sdf_val, -sdf_max, sdf_max)
 
     return Q, sdf_val
