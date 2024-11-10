@@ -14,6 +14,7 @@ import numpy as np
 import sys, os, csv
 from prettytable import from_csv
 from warnings import warn
+from siren_pytorch import SirenNet, SirenWrapper
 
 # imports specific to sdf
 import igl, geometry
@@ -25,7 +26,7 @@ if USE_WANDB:
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
+plt.style.use("seaborn-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
 
 set_t = {
     'dtype': torch.float64,  # double precision for more accurate training
@@ -395,6 +396,7 @@ class FitSurfaceModel(nn.Module):
         elif fit_mode == 'sdf':
             # Reduction = 'None' but the weights that are passed will be all 1's
             self.loss_fn = nn.L1Loss(reduction='none')
+            # self.loss_fn = nn.SmoothL1Loss(reduction='none')
         else:
             raise ValueError("fit_mode must be either 'occupancy' or 'sdf'")
         # convert layers to OrderedDict to retain custom layer names
@@ -435,7 +437,7 @@ class FitSurfaceModel(nn.Module):
         y_hat = self.forward(x)
 
         # clip the estimate
-        y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
+        # y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
 
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)
@@ -457,10 +459,13 @@ def load_net_object(pth_file: str) -> Union[FitSurfaceModel, Siren]:
     state_dict = pth_dict["state_dict"]  # weights and biases
     model_params = pth_dict["model_params"]  # rest of the parameters
     is_siren = pth_dict.pop("is_siren", False)
+    siren_latent_dim = pth_dict.get("siren_latent_dim", 0)
     if is_siren:
         NetObject = Siren(**model_params)
-    else:
+    elif siren_latent_dim == 0:
         NetObject = FitSurfaceModel(**model_params)  # initialize object
+    else:
+        NetObject = SirenWrapper(**model_params)
     NetObject.load_state_dict(state_dict)  # load in weights and biases
     NetObject.eval()  # set to evaluation mode
 
@@ -476,6 +481,7 @@ class SampleDataset(Dataset):
             sample_weight_beta: float,
             sample_ambient_range: float,
             sample_221: bool = False,
+            show_sample_221: bool = False,
             verbose=False
     ):
         """
@@ -504,9 +510,11 @@ class SampleDataset(Dataset):
         if verbose:
             print(f"Collecting geometry samples. Is using sample_221? {sample_221}")
         if sample_221:
-            samp, samp_SDF = geometry.sample_221(V, F, n_samples, sample_ambient_range)
+            samp, samp_SDF = geometry.sample_221(V, F, n_samples, sample_ambient_range, sdf_max, show_sample_221)
         else:
-            samp, samp_SDF = geometry.sample_mesh_importance(V, F, n_samples, beta=sample_weight_beta, ambient_range=sample_ambient_range, sdf_max=sdf_max)
+            samp, samp_SDF = geometry.sample_mesh_importance(V, F, n_samples, beta=sample_weight_beta,
+                                                             ambient_range=sample_ambient_range, sdf_max=sdf_max,
+                                                             show_surface=show_sample_221)
 
         if verbose:
             print(f"Formatting labels")
@@ -749,6 +757,7 @@ def parse_args() -> dict:
     parser.add_argument("--positional_prepend", action='store_true')
     # siren arguments
     parser.add_argument("--siren_model", action='store_true')
+    parser.add_argument("--siren_latent_dim", type=int, default=0)
     parser.add_argument("--siren_outermost_linear", action='store_true')
     parser.add_argument("--siren_first_omega_0", type=int, default=30)
     parser.add_argument("--siren_hidden_omega_0", type=int, default=30)
@@ -760,6 +769,7 @@ def parse_args() -> dict:
     parser.add_argument("--sample_ambient_range", type=float, default=1.25)
     parser.add_argument("--sample_weight_beta", type=float, default=20.)
     parser.add_argument("--sample_221", action='store_true')
+    parser.add_argument('--show_sample_221', action='store_true')
     parser.add_argument("--sdf_max", type=float, default=0.1)
 
     # training
@@ -803,6 +813,7 @@ def main(args: dict):
     positional_prepend = args["positional_prepend"]
     # siren params
     siren_model = args["siren_model"]
+    siren_latent_dim = args["siren_latent_dim"]
     siren_outermost_linear = args["siren_outermost_linear"]
     siren_first_omega_0 = args["siren_first_omega_0"]
     siren_hidden_omega_0 = args["siren_hidden_omega_0"]
@@ -814,6 +825,7 @@ def main(args: dict):
     sample_ambient_range = args["sample_ambient_range"]
     sample_weight_beta = args["sample_weight_beta"]
     sample_221 = args["sample_221"]
+    show_sample_221 = args["show_sample_221"]
     sdf_max = args["sdf_max"]
     # training
     lr = args["lr"]
@@ -878,7 +890,7 @@ def main(args: dict):
             'gamma': lr_decay_frac,
         }
         NetObject = FitSurfaceModel(**model_params)
-    else:
+    elif siren_latent_dim == 0:
         model_params = {
             'in_features': 3,
             'hidden_features': layer_width,
@@ -895,6 +907,35 @@ def main(args: dict):
         sample_ambient_range = 1.
         warn("'sample_ambient_range' was changed to 1. as inputs outside of the range [-1, 1] "
              "may cause training instability for a SIREN model")
+    else:
+        print(f"Using Siren Wrapper instead of Sirent with Latent dim {siren_latent_dim}")
+        if siren_hidden_omega_0 != 1.:
+            warn(f"'siren_hidden_omega_0' is {siren_hidden_omega_0}, for siren with latents, it is recommended that"
+                 f"this value is 1.")
+        siren_net_params = {
+            'dim_in': 3,
+            'dim_hidden': layer_width,
+            'dim_out': 1,
+            'num_layers': n_layers,
+            'w0_initial': siren_first_omega_0,
+            'w0': siren_hidden_omega_0,
+            'use_bias': True,
+            'final_activation': None,
+            'dropout': 0,
+        }
+        net = SirenNet(**siren_net_params)
+
+        model_params = {
+            'net': net,
+            'lrate': lr,
+            'latent_dim': siren_latent_dim,
+            'step_size': lr_decay_every,
+            'gamma': lr_decay_frac,
+        }
+        NetObject = SirenWrapper(**model_params)
+        sample_ambient_range = 1.
+        warn("'sample_ambient_range' was changed to 1. as inputs outside of the range [-1, 1] "
+             "may cause training instability for a SIREN model")
 
     # initialize the dataset
     dataset_pararms = {
@@ -904,6 +945,7 @@ def main(args: dict):
         'sample_weight_beta': sample_weight_beta,
         'sample_ambient_range': 1. if siren_model else sample_ambient_range,
         'sample_221': sample_221,
+        'show_sample_221': show_sample_221,
         'sdf_max': sdf_max,
         'verbose': verbose
     }
