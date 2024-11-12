@@ -6,6 +6,9 @@ import utils
 import mlp, sdf, affine, slope_interval, crown
 import torch
 from main_fit_implicit_torch import *
+from siren_pytorch import SirenNet
+
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
 
@@ -15,7 +18,22 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
         params = mlp.load(input_path, shift=shift)
         obj_name = input_path[input_path.rindex('/')+1:-4]
     elif input_path.endswith(".pth"):
-        params = load_net_object(input_path)
+        # params = load_net_object(input_path)
+        params = SirenNet(
+            dim_in=3,
+            dim_hidden=256,
+            dim_out=1,
+            num_layers=5,
+            final_activation=nn.Identity(),
+        ).to(device)
+        # print(params)
+        state_dict = torch.load(input_path, weights_only=True, map_location=torch.device(device))
+        new_state_dict = {}
+        for key, value in state_dict.items():
+            new_key = key.replace("module.", "")
+            new_state_dict[new_key] = value
+        params.load_state_dict(new_state_dict)
+        # params.eval()
     else:
         raise ValueError("unrecognized filetype")
 
