@@ -118,7 +118,7 @@ def main():
         print(f"Not using cache, computing bounds and saving to (and potentially overwriting) {cache_dir}")
         # out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
         # out_dict = construct_adaptive_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
-        node_lower, node_upper, lAs, lbs, uAs, ubs = construct_hybrid_unknown_tree(implicit_func, params, lower, upper, base_depth=split_depth, max_depth=max_split_depth, delta=0.001, batch_size=256)
+        node_lower, node_upper, lAs, lbs, uAs, ubs = construct_hybrid_unknown_tree(implicit_func, params, lower, upper, base_depth=split_depth, max_depth=max_split_depth, delta=0.001, batch_size=args.batch_size)
         lAs = lAs.cpu().numpy()
         lbs = lbs.cpu().numpy()
         uAs = uAs.cpu().numpy()
