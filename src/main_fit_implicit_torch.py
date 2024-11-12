@@ -26,7 +26,7 @@ if USE_WANDB:
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
 
 set_t = {
     'dtype': torch.float64,  # double precision for more accurate training
@@ -120,7 +120,7 @@ class SineLayer(nn.Module):
 
 class Siren(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,
-                 lrate: float, outermost_linear: bool=False,
+                 lrate: float, fit_mode: str, outermost_linear: bool=False,
                  first_omega_0: int=30, hidden_omega_0: float=30.,
                  step_size: Optional[int] = None, gamma: Optional[float] = None):
         super().__init__()
@@ -155,7 +155,13 @@ class Siren(nn.Module):
 
         self.model = nn.Sequential(OrderedDict(self.model))
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
-        self.loss_fn = nn.MSELoss(reduction='none')
+        if fit_mode == 'sdf':
+            self.loss_fn = nn.MSELoss(reduction='none')
+        elif fit_mode == 'occupancy':
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+        else:
+            raise ValueError(f"fit_mode {fit_mode} is not valid. Select from ['sdf', 'occupancy']")
+
 
         # set LR scheduler
         self.scheduler = None
@@ -971,6 +977,7 @@ def main(args: dict):
             'hidden_layers': n_layers,
             'out_features': 1,
             'lrate': lr,
+            'fit_mode': fit_mode,
             'outermost_linear': siren_outermost_linear,
             'first_omega_0': siren_first_omega_0,
             'hidden_omega_0': siren_hidden_omega_0,
@@ -994,7 +1001,8 @@ def main(args: dict):
             'w0_initial': siren_first_omega_0,
             'w0': siren_hidden_omega_0,
             'use_bias': True,
-            'final_activation': None,
+            'sdf_max': sdf_max,
+            'final_activation': nn.Tanh(),
             'dropout': 0,
         }
         net = SirenNet(**siren_net_params)
@@ -1002,6 +1010,7 @@ def main(args: dict):
         model_params = {
             'net': net,
             'lrate': lr,
+            'fit_mode': fit_mode,
             'latent_dim': siren_latent_dim,
             'step_size': lr_decay_every,
             'gamma': lr_decay_frac,
