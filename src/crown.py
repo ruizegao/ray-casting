@@ -20,7 +20,7 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
-batch_size_per_iteration = 100000
+batch_size_per_iteration = 100
 
 # === Crown utility methods
 
