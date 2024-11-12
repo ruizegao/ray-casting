@@ -249,7 +249,9 @@ class PositionalEncodingLayer(nn.Module):
         :param prepend:
         """
         super(PositionalEncodingLayer, self).__init__()
-        pows = torch.pow(2., torch.arange(start=start_pow, end=start_pow + L))
+        pow_args = torch.arange(start=start_pow, end=start_pow + L - 1)
+        pow_args = torch.concatenate((torch.zeros(1), pow_args))
+        pows = torch.pow(2., pow_args)
         coeffs = pows * torch.pi
         self.prepend = prepend
 
@@ -308,6 +310,9 @@ class PositionalEncodingLayer(nn.Module):
 
         return output_dim
 
+class CubeRootActivation(nn.Module):
+    def forward(self, x):
+        return torch.sign(x) * torch.abs(x).pow(1/3)
 
 class FitSurfaceModel(nn.Module):
     def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
@@ -381,9 +386,18 @@ class FitSurfaceModel(nn.Module):
         # last layer
         layer_count = len(layers)
         layer_count_formatted = f"{layer_count:04d}_"
+        layer_count_formatted_plus_one = f"{layer_count+1:04d}_"
         layers.extend([
-            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1))
+            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+            (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
         ])
+        # layer_count = len(layers)
+        # layer_count_formatted = f"{layer_count:04d}_"
+        # layer_count_formatted_plus_one = f"{layer_count + 1:04d}_"
+        # layers.extend([
+        #     (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+        #     (layer_count_formatted_plus_one + 'cbrt', CubeRootActivation())
+        # ])
         # set the loss function
         if fit_mode == 'occupancy':
             # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
@@ -434,10 +448,7 @@ class FitSurfaceModel(nn.Module):
         self.optimizer.zero_grad()
 
         # pass the batch through the model
-        y_hat = self.forward(x)
-
-        # clip the estimate
-        # y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
+        y_hat = self.forward(x) * self.sdf_max
 
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)

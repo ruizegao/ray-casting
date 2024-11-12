@@ -233,13 +233,16 @@ def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, a
     num_uni = int(n_sample / 5)
     num_on_surf = num_near_surf = 2 * num_uni
     Q_on_surf = sample_points_on_mesh(V_np, F_np, num_on_surf, show_surface)
-    Q_near_surf = np.clip(Q_on_surf + np.random.normal(0, sdf_max, Q_on_surf.shape), -ambient_range, ambient_range)
+    Q_near_surf = np.clip(Q_on_surf + np.random.normal(0, 0.02, Q_on_surf.shape), -ambient_range, ambient_range)
     Q_uni = torch.empty(num_uni, 3, dtype=V_torch.dtype).uniform_(-ambient_range, ambient_range)
 
     Q = np.concatenate((Q_on_surf, Q_near_surf, Q_uni))
     # np.random.shuffle(Q)
     sdf_val, _, _ = igl.signed_distance(Q, V_np, F_np)
     print(f"Smallest sdf val: {sdf_val.min()}, Largest sdf val: {sdf_val.max()}")
+    sdf_val = np.clip(sdf_val, -1, 1)
+    # sdf_val = np.cbrt(sdf_val)
     sdf_val = np.clip(sdf_val, -sdf_max, sdf_max)
+
 
     return Q, sdf_val
