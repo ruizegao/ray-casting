@@ -51,7 +51,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name=''):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
-        self.torch_model = crown_func
+        self.torch_model = crown_func.to(device)
+        self.torch_model.eval()
         self.crown_mode = crown_mode
         self._init_bounded_func()
         self._enable_clipping = enable_clipping

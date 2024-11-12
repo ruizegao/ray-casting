@@ -5,7 +5,8 @@ from numpy.core.defchararray import rindex
 import utils
 import mlp, sdf, affine, slope_interval, crown
 import torch
-from main_fit_implicit_torch import *
+# from main_fit_implicit_torch import *
+import torch.nn as nn
 from siren_pytorch import SirenNet
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -26,14 +27,44 @@ def generate_implicit_from_file(input_path, mode, shift=None, **kwargs):
             num_layers=5,
             final_activation=nn.Identity(),
         ).to(device)
-        # print(params)
+        print(params)
         state_dict = torch.load(input_path, weights_only=True, map_location=torch.device(device))
         new_state_dict = {}
         for key, value in state_dict.items():
             new_key = key.replace("module.", "")
             new_state_dict[new_key] = value
         params.load_state_dict(new_state_dict)
-        # params.eval()
+        layer_list = []
+        for layer in params.layers:
+            weight = layer.weight.detach().clone()
+            dim_in = weight.shape[1]
+            dim_out = weight.shape[0]
+            linear_layer = nn.Linear(dim_in, dim_out)
+            linear_layer.weight = layer.weight
+            linear_layer.bias = layer.bias
+            layer_list.append(linear_layer)
+            layer_list.append(layer.activation)
+            # if hasattr(layer, "dropout") and isinstance(layer.dropout, nn.Dropout):
+            #     layer.dropout = nn.Identity()
+
+        # Replace dropout in last_layer
+        # if hasattr(params.last_layer, "dropout") and isinstance(params.last_layer.dropout, nn.Dropout):
+        #     params.last_layer.dropout = nn.Identity()
+        weight = params.last_layer.weight.detach().clone()
+        dim_in = weight.shape[1]
+        dim_out = weight.shape[0]
+        linear_layer = nn.Linear(dim_in, dim_out)
+        linear_layer.weight = params.last_layer.weight
+        linear_layer.bias = params.last_layer.bias
+        layer_list.append(linear_layer)
+        if not isinstance(params.last_layer.activation, nn.Identity):
+            layer_list.append(params.last_layer.activation)
+
+        # params = nn.Sequential(*[layer.activation for layer in params.layers])
+        params = nn.Sequential(*layer_list)
+        print("after removal of dropout")
+        print(params)
+        params.eval()
     else:
         raise ValueError("unrecognized filetype")
 
