@@ -17,8 +17,10 @@ from prettytable import from_csv
 from warnings import warn
 import dataio
 
-# imports specific to sdf
-import igl, geometry
+USE_WANDB = bool(os.environ.get('USE_WANDB', 0))
+WANDB_GROUP = None
+if USE_WANDB:
+    import wandb
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
@@ -350,6 +352,7 @@ def fit_model(
     :param epochs:          Number of epochs to run
     :return:                Training heuristics and trained `NetObject`
     """
+    global USE_WANDB
 
     # send to device
     NetObject = NetObject.to(**set_t)
@@ -404,12 +407,15 @@ def fit_model(
             }
         epoch_progress_bar.update(1)
         epoch_progress_bar.set_postfix(epoch_details)
+        if USE_WANDB:
+            wandb.log(epoch_details)
 
     # return metrics and trained network
     return losses, NetObject
 
 
 def main(args: dict):
+    global USE_WANDB, WANDB_GROUP
 
     print(f"Torch Settings: {set_t}")
 
@@ -457,6 +463,30 @@ def main(args: dict):
         'gamma': lr_decay_frac,
     }
 
+    if USE_WANDB:
+        if WANDB_GROUP is None:
+            WANDB_GROUP = 'manuscript_' + wandb.util.generate_id()
+        uniq_id = WANDB_GROUP.split('_')[-1]
+        file_name = input_file.split('/')[-1].split('.obj')[0] + '_' + uniq_id
+
+        # start a new wandb run to track this script
+        tags = [fit_mode, 'siren_eik']
+        if siren_latent_dim > 0:
+            tags.append('latent_modulation')
+        wandb.init(
+            # set the wandb project and name where this run will be logged
+            project="main_fit_implicit_point_cloud",
+            name=file_name,
+            # track hyperparameters and run metadata
+            config=args_dict,
+            # set group
+            group=WANDB_GROUP,
+            # set tags
+            tags=tags
+        )
+
+    print(f"WANDB ENABLED: {USE_WANDB} | WANDB GROUP: {WANDB_GROUP}")
+
     NetObject = Siren(**model_params)
 
     # load the dataset
@@ -480,6 +510,9 @@ def main(args: dict):
     # display results
     plt_file = output_file.replace('.xyz', '.png')
     plot_training_metrics(losses, plt_file, display_plots)
+
+    if USE_WANDB:
+        wandb.finish()
 
 
 def parse_args() -> dict:
