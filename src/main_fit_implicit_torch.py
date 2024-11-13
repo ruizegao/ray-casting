@@ -228,6 +228,69 @@ class Siren(nn.Module):
 
         return loss.item()
 
+    def step_eikonal(self, x: Tensor, y: Tensor, weights: Tensor, on_surface_mask: Tensor):
+        """
+        Returns the loss of a single forward pass
+        :param x:       (Batch, input size) -- batches of coordinates
+        :param y:       (Batch, output size) -- the target normals; only meaningful for points on the surface
+        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
+        :return:        loss
+        """
+        # penalization multipliers recommended by SIREN paper
+        c1 = 5e1
+        c2 = 3e3
+        c3 = 1e2
+
+        def _gradient(x, y, grad_outputs=None):
+            if grad_outputs is None:
+                grad_outputs = torch.ones_like(y)
+            grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+            return grad
+
+        def _psi(x, a: float = 100):
+            exp_in = -a * (x).abs()
+            exp_out = torch.exp(exp_in).squeeze(1)
+            return exp_out
+
+        # zero the gradients
+        self.optimizer.zero_grad()
+
+        # pass the batch through the model
+        output, coords = self.forward_with_coords(x)
+
+        # compute the graident of the output w.r.t. input
+        grad_output = _gradient(coords, output)
+
+        # eikonal loss
+        eik_loss = torch.linalg.vector_norm(grad_output, dim=1).unsqueeze(1)
+
+        # on surface loss
+        surface_output = output[on_surface_mask]
+        surface_grad = grad_output[on_surface_mask]
+        on_surface_loss = torch.zeros_like(on_surface_mask)
+        on_surface_loss[on_surface_mask, :] = torch.linalg.vector_norm(surface_output, dim=1) + (
+                    1 - torch.einsum('bi,bi->b', surface_grad, y))
+
+        # off surface loss
+        off_surface_mask = torch.logical_not(on_surface_mask)
+        off_surface_output = output[off_surface_mask]
+        off_surface_loss = torch.zeros_like(output)
+        off_surface_loss[off_surface_mask, :] = _psi(off_surface_output)
+
+
+        # add together for a total loss
+        total_loss = c1*eik_loss + c2*on_surface_loss + c3*off_surface_loss
+
+        # compute the loss
+        unweighted_loss = self.loss_fn(total_loss, torch.zeros_like(total_loss))
+        loss = (unweighted_loss * weights).mean()
+
+        # update model
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
+
 class PositionalEncodingLayer(nn.Module):
     """
     Manually implemented module that performs the following operations in order to produce
