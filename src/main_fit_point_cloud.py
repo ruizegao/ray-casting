@@ -1,20 +1,22 @@
+from sched import scheduler
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import argparse
 
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 from torch import Tensor
 from tqdm import tqdm
 from typing import Union, Tuple, Optional
 import matplotlib.pyplot as plt
 from collections import OrderedDict
-from enum import Enum
 import numpy as np
-import sys, os, csv
-from prettytable import from_csv
+import os
+from functools import partial
 from warnings import warn
+from torch.optim.lr_scheduler import LambdaLR
 import dataio
 
 USE_WANDB = bool(os.environ.get('USE_WANDB', 0))
@@ -24,7 +26,7 @@ if USE_WANDB:
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
+plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
 
 set_t = {
     'dtype': torch.float32,  # double precision for more accurate training
@@ -34,6 +36,10 @@ set_t = {
 available_activations = [nn.ReLU, nn.ELU, nn.GELU, nn.Sigmoid]  # list of currently supported activation functions
 
 to_numpy = lambda x : x.detach().cpu().numpy()  # converts tensors to numpy arrays
+
+### Custom LR Schedulers
+def linear_decay(epoch, initial_lr, final_lr, total_epochs):
+    return 1 - epoch / total_epochs * (1 - final_lr / initial_lr)
 
 class SineLayer(nn.Module):
     """
@@ -114,14 +120,38 @@ class Modulator(nn.Module):
 
 class Siren(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,
-                 lrate: float, outermost_linear: bool=False,
+                 siren_lrate: float, latent_lrate: float, num_epochs: int,
+                 final_siren_lrate: Optional[float]=None, final_latent_lrate: Optional[float] = None,
                  first_omega_0: int=30, hidden_omega_0: float=30., latent_dim: int = 0,
-                 step_size: Optional[int] = None, gamma: Optional[float] = None):
-        super().__init__()
+                 step_size: Optional[int] = None, gamma: Optional[float] = None,
+                 clip_gradient_norm: Optional[float] = None, scheduler_type: str='none'):
+        """
 
+        Initializes a Siren model for fitting weak signed distance functions. Latent variables are supported as
+        well for modulation.
+
+        :param in_features:         Input dimension
+        :param hidden_features:     Hidden layer width
+        :param hidden_layers:       Number of hidden layers
+        :param out_features:        Output dimension
+        :param siren_lrate:         Learning rate for Siren network
+        :param latent_lrate:        Learning rate for latent variable parameters
+        :param first_omega_0:       omega to use for first Siren layer
+        :param hidden_omega_0:      omegas to use for intermediate Siren layers
+        :param latent_dim:          Dimension of the latent variable
+        :param step_size:           Number of steps before applying LR Scheduler
+        :param gamma:               LR Scheduler Decay
+        :param clip_gradient_norm:  Max norm to clip model gradients. Helps with stabilization when using latent variables.
+        """
+        super().__init__()
+        if final_siren_lrate is None: final_siren_lrate = siren_lrate
+        if final_latent_lrate is None: final_latent_lrate = latent_lrate
         self.hidden_layers = hidden_layers
+        self.clip_gradient_norm = clip_gradient_norm
         self.latent, self.modulator = None, None
-        opt_parameters = []  # optimizable parameters
+        self.has_latent = latent_dim > 0
+        self.opt_latent_parameters = []  # optimizable parameters
+        self.opt_siren_parameters = []
         if latent_dim > 0:
             self.modulator = Modulator(
                 dim_in=latent_dim,
@@ -129,7 +159,7 @@ class Siren(nn.Module):
                 num_layers=hidden_layers
             )
             self.latent = nn.Parameter(torch.zeros(latent_dim).normal_(0, 1e-2))
-            opt_parameters.extend([
+            self.opt_latent_parameters.extend([
                 self.latent,
                 *self.modulator.parameters(),
             ])
@@ -153,20 +183,45 @@ class Siren(nn.Module):
 
         self.model = nn.ModuleDict(OrderedDict(self.model))
         for l in self.model.values():
-            opt_parameters.extend(l.parameters())
-        self.optimizer = optim.Adam(opt_parameters, lr=lrate)
+            self.opt_siren_parameters.extend(l.parameters())
+        if self.has_latent:
+            self.latent_optimizer = optim.Adam(self.opt_latent_parameters, lr=latent_lrate)
+            self.latent_lrate = latent_lrate
+        else:
+            self.latent_optimizer = None
+            self.latent_lrate = None
+        self.siren_optimizer = optim.Adam(self.opt_siren_parameters, lr=siren_lrate)
+        self.siren_lrate = siren_lrate
         self.loss_fn = nn.MSELoss(reduction='none')
 
-        # set LR scheduler
-        self.scheduler = None
-        if step_size is not None and gamma is not None:
-            self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size,
+        # set linear LR scheduler
+        self.siren_scheduler, self.latent_scheduler = None, None
+        if scheduler_type == 'step':
+            assert step_size is not None and gamma is not None, "Must specify step size and gamma to use Step LR"
+            self.siren_scheduler = optim.lr_scheduler.StepLR(self.siren_optimizer, step_size=step_size,
                                                        gamma=gamma)
+            if self.has_latent:
+                self.latent_scheduler = optim.lr_scheduler.StepLR(self.latent_optimizer, step_size=step_size,
+                                                                 gamma=gamma)
+        elif scheduler_type == 'linear':
+            decay_func_siren = partial(linear_decay, initial_lr=siren_lrate, final_lr=final_siren_lrate,
+                                       total_epochs=num_epochs)
+            self.siren_scheduler = optim.lr_scheduler.LambdaLR(self.siren_optimizer, lr_lambda=decay_func_siren)
+            if self.has_latent:
+                decay_func_latent = partial(linear_decay, initial_lr=latent_lrate, final_lr=final_latent_lrate,
+                                            total_epochs=num_epochs)
+                self.latent_scheduler = optim.lr_scheduler.LambdaLR(self.latent_optimizer, lr_lambda=decay_func_latent)
+        elif scheduler_type == 'none':
+            pass
+        else:
+            raise ValueError(f"Scheduler type of {scheduler_type} is not recognized")
+
+
 
     def forward(self, x):
 
         # create mods (simply tuple of Nones if not enabled)
-        if self.latent is not None and self.modulator is not None:
+        if self.has_latent:
             latent_input = self.latent
             mods = self.modulator(latent_input)
         else:
@@ -193,7 +248,7 @@ class Siren(nn.Module):
         output = x
 
         # create mods (simply tuple of Nones if not enabled)
-        if self.latent is not None and self.modulator is not None:
+        if self.has_latent:
             latent_input = self.latent
             mods = self.modulator(latent_input)
         else:
@@ -234,7 +289,9 @@ class Siren(nn.Module):
 
         # update model
         loss.backward()
-        self.optimizer.step()
+        self.siren_optimizer.step()
+        if self.has_latent:
+            self.latent_optimizer.step()
 
         return loss.item()
 
@@ -243,7 +300,6 @@ class Siren(nn.Module):
         Returns the loss of a single forward pass
         :param x:       (Batch, input size) -- batches of coordinates
         :param y:       (Batch, output size) -- the target normals; only meaningful for points on the surface
-        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
         :return:        loss
         """
         # penalization multipliers recommended by SIREN paper
@@ -266,7 +322,9 @@ class Siren(nn.Module):
         on_surface_mask = on_surface_mask.squeeze(1)
 
         # zero the gradients
-        self.optimizer.zero_grad()
+        self.siren_optimizer.zero_grad()
+        if self.has_latent:
+            self.latent_optimizer.zero_grad()
 
         # pass the batch through the model
         output, coords = self.forward_with_coords(x)
@@ -275,9 +333,13 @@ class Siren(nn.Module):
         grad_output = _gradient(coords, output)
 
         # eikonal loss
+        # Desc: The norm of the gradient should be constrained to be 1 everywhere
         eik_loss = c1*(1 - torch.linalg.vector_norm(grad_output, dim=1)).abs().unsqueeze(1)
 
         # on surface loss
+        # Desc: We should have that:
+        # 1) Points on the surfaces have an SDF of 0
+        # 2) Points on the surface should have their normals align with the target normals from the dataset
         surface_output = output[on_surface_mask]
         surface_grad = grad_output[on_surface_mask]
         on_surface_loss = torch.zeros_like(output)
@@ -287,12 +349,13 @@ class Siren(nn.Module):
         on_surface_loss[on_surface_mask, :] = pre_on_surface_loss
 
         # off surface loss
+        # Desc: Points close to the surface should be penalized if their SDF is close to 0
         off_surface_mask = torch.logical_not(on_surface_mask)
         off_surface_output = output[off_surface_mask]
         off_surface_loss = torch.zeros_like(output)
         off_surface_loss[off_surface_mask, :] = c2*_psi(off_surface_output).unsqueeze(1)
 
-        # get loss description so that more info can be printed
+        # return loss description for more details
         loss_desc = [to_numpy(eik_loss.clone()), to_numpy(on_surface_loss.clone()), to_numpy(off_surface_loss.clone())]
         loss_desc = [n.mean().item() for n in loss_desc]
 
@@ -302,9 +365,36 @@ class Siren(nn.Module):
 
         # update model
         loss.backward()
-        self.optimizer.step()
+
+        # perform gradient clipping
+        if self.clip_gradient_norm is not None:
+            torch.nn.utils.clip_grad_norm_(self.opt_siren_parameters, max_norm=self.clip_gradient_norm)
+            if self.has_latent:
+                torch.nn.utils.clip_grad_norm_(self.opt_latent_parameters, max_norm=self.clip_gradient_norm)
+
+        self.siren_optimizer.step()
+        if self.has_latent:
+            self.latent_optimizer.step()
 
         return loss.item(), loss_desc
+
+    def scheduler_step(self) -> Tuple[Optional[float], Optional[float]]:
+
+        # step with siren scheduler
+        if self.siren_scheduler is not None:
+            self.siren_scheduler.step()
+            siren_lr = self.siren_scheduler.get_last_lr()[0]
+        else:
+            siren_lr = self.siren_lrate
+
+        # step with latent scheduler
+        if self.has_latent and self.latent_scheduler is not None:
+            self.latent_scheduler.step()
+            latent_lr = self.latent_scheduler.get_last_lr()[0]
+        else:
+            latent_lr = self.latent_lrate
+
+        return siren_lr, latent_lr
 
 def plot_training_metrics(losses: list[float], save_path: Optional[str] = None, display: bool = False):
     """
@@ -384,11 +474,7 @@ def fit_model(
             off_surface_loss += curr_off_surface_loss
 
         # get the current learning rate
-        if NetObject.scheduler is not None:
-            NetObject.scheduler.step()
-            current_lr = NetObject.scheduler.get_last_lr()[0]
-        else:
-            current_lr = NetObject.lr
+        current_siren_lr, current_latent_lr = NetObject.scheduler_step()
         # calculate the fraction of correctly predicted signs
         # calculate the epoch loss and update progress bar
         train_loader_len = len(train_loader)
@@ -402,7 +488,8 @@ def fit_model(
                 'Eik Loss': eik_loss,
                 'On Surface Loss': on_surface_loss,
                 'Off Surface Loss': off_surface_loss,
-                'Learning Rate': current_lr,
+                'Siren Learning Rate': current_siren_lr,
+                'Latent Learning Rate': current_latent_lr,
                 'Train Loader Length': train_loader_len
             }
         epoch_progress_bar.update(1)
@@ -412,6 +499,21 @@ def fit_model(
 
     # return metrics and trained network
     return losses, NetObject
+
+def load_net_object(pth_file: str) -> Siren:
+    """
+    A helper function that retrieves a torch network from a .pth file
+    :param pth_file:    .pth file to load network parameters and weights from.
+    :return:    Network object
+    """
+    pth_dict = torch.load(pth_file, weights_only=False)
+    state_dict = pth_dict["state_dict"]  # weights and biases
+    model_params = pth_dict["model_params"]  # rest of the parameters
+    NetObject = Siren(**model_params)
+    NetObject.load_state_dict(state_dict)  # load in weights and biases
+    NetObject.eval()  # set to evaluation mode
+
+    return NetObject
 
 
 def main(args: dict):
@@ -429,10 +531,10 @@ def main(args: dict):
     # network
     n_layers = args["n_layers"]
     layer_width = args["layer_width"]
+    clip_gradient_norm = args["clip_gradient_norm"]
     # siren params
     siren_model = args["siren_model"]
     siren_latent_dim = args["siren_latent_dim"]
-    siren_outermost_linear = args["siren_outermost_linear"]
     siren_first_omega_0 = args["siren_first_omega_0"]
     siren_hidden_omega_0 = args["siren_hidden_omega_0"]
 
@@ -440,7 +542,11 @@ def main(args: dict):
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     # training
-    lr = args["lr"]
+    siren_lr = args["siren_lr"]
+    final_siren_lr = args["final_siren_lr"]
+    latent_lr = args["latent_lr"]
+    final_latent_lr = args["final_latent_lr"]
+    scheduler_type = args["scheduler_type"]
     batch_size = args["batch_size"]
     lr_decay_every = args["lr_decay_every"]
     lr_decay_frac = args["lr_decay_frac"]
@@ -448,20 +554,6 @@ def main(args: dict):
     display_plots = args["display_plots"]
 
     print(f"Program Configuration: {args}")
-
-    model_params = {
-        'in_features': 3,
-        'hidden_features': layer_width,
-        'hidden_layers': n_layers,
-        'out_features': 1,
-        'lrate': lr,
-        'outermost_linear': siren_outermost_linear,
-        'first_omega_0': siren_first_omega_0,
-        'hidden_omega_0': siren_hidden_omega_0,
-        'latent_dim': siren_latent_dim,
-        'step_size': lr_decay_every,
-        'gamma': lr_decay_frac,
-    }
 
     if USE_WANDB:
         if WANDB_GROUP is None:
@@ -487,6 +579,24 @@ def main(args: dict):
 
     print(f"WANDB ENABLED: {USE_WANDB} | WANDB GROUP: {WANDB_GROUP}")
 
+    model_params = {
+        'in_features': 3,
+        'hidden_features': layer_width,
+        'hidden_layers': n_layers,
+        'out_features': 1,
+        'num_epochs': n_epochs,
+        'siren_lrate': siren_lr,
+        'final_siren_lrate': final_siren_lr,
+        'latent_lrate': latent_lr,
+        'final_latent_lrate': final_latent_lr,
+        'scheduler_type': scheduler_type,
+        'first_omega_0': siren_first_omega_0,
+        'hidden_omega_0': siren_hidden_omega_0,
+        'latent_dim': siren_latent_dim,
+        'step_size': lr_decay_every,
+        'gamma': lr_decay_frac,
+        'clip_gradient_norm': clip_gradient_norm
+    }
     NetObject = Siren(**model_params)
 
     # load the dataset
@@ -523,9 +633,9 @@ def parse_args() -> dict:
     parser.add_argument("--output_file", type=str, default=None)
 
     # network
-    parser.add_argument("--activation", type=str, default='elu')
     parser.add_argument("--n_layers", type=int, default=8)
     parser.add_argument("--layer_width", type=int, default=32)
+    parser.add_argument("--clip_gradient_norm", type=float, default=1.0)
     #positional arguments
     parser.add_argument("--positional_encoding", action='store_true')
     parser.add_argument("--positional_count", type=int, default=10)
@@ -534,7 +644,6 @@ def parse_args() -> dict:
     # siren arguments
     parser.add_argument("--siren_model", action='store_true')
     parser.add_argument("--siren_latent_dim", type=int, default=0)
-    parser.add_argument("--siren_outermost_linear", action='store_true')
     parser.add_argument("--siren_first_omega_0", type=int, default=30)
     parser.add_argument("--siren_hidden_omega_0", type=int, default=30)
 
@@ -549,10 +658,14 @@ def parse_args() -> dict:
     parser.add_argument("--sdf_max", type=float, default=0.1)
 
     # training
-    parser.add_argument("--lr", type=float, default=1e-2)
+    parser.add_argument("--siren_lr", type=float, default=1e-4)
+    parser.add_argument("--final_siren_lr", type=float, default=None)
+    parser.add_argument("--latent_lr", type=float, default=1e-2)
+    parser.add_argument("--final_latent_lr", type=float, default=None)
     parser.add_argument("--batch_size", type=int, default=2048)
-    parser.add_argument("--lr_decay_every", type=int, default=99999)
-    parser.add_argument("--lr_decay_frac", type=float, default=.5)
+    parser.add_argument("--lr_decay_every", type=int, default=None)
+    parser.add_argument("--lr_decay_frac", type=float, default=None)
+    parser.add_argument('--scheduler_type', type=str, default='none')
 
     # general options
     parser.add_argument("--verbose", action='store_true')
