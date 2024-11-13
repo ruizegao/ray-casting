@@ -76,12 +76,14 @@ class SirenNet(nn.Module):
         w0 = 1.,
         w0_initial = 30.,
         use_bias = True,
+        sdf_max = 1.0,
         final_activation = None,
         dropout = 0.
     ):
         super().__init__()
         self.num_layers = num_layers
         self.dim_hidden = dim_hidden
+        self.sdf_max = sdf_max
 
         self.layers = nn.ModuleList([])
         for ind in range(num_layers):
@@ -112,7 +114,7 @@ class SirenNet(nn.Module):
             if exists(mod):
                 x *= rearrange(mod, 'd -> () d')
 
-        return self.last_layer(x)
+        return self.last_layer(x) * self.sdf_max
 
 # modulatory feed forward
 
@@ -144,7 +146,7 @@ class Modulator(nn.Module):
 # wrapper
 
 class SirenWrapper(nn.Module):
-    def __init__(self, net, lrate, latent_dim = None,
+    def __init__(self, net, lrate, fit_mode: str, latent_dim = None,
                  step_size = None, gamma = None):
         super().__init__()
         assert isinstance(net, SirenNet), 'SirenWrapper must receive a Siren network'
@@ -168,7 +170,12 @@ class SirenWrapper(nn.Module):
 
         # print(f"SirenWrapper has parameters: \n{parameters}")
         self.optimizer = optim.Adam(parameters, lr=lrate)
-        self.loss_fn = nn.MSELoss(reduction='none')
+        if fit_mode == 'sdf':
+            self.loss_fn = nn.L1Loss(reduction='none')
+        elif fit_mode == 'occupancy':
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+        else:
+            raise ValueError(f"fit_mode {fit_mode} is not valid. Select from ['sdf', 'occupancy']")
 
         # set LR scheduler
         self.scheduler = None
