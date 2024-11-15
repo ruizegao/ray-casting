@@ -240,8 +240,6 @@ def sample_221(V: Union[Tensor, ndarray], F: Union[Tensor, ndarray], n_sample, a
     # np.random.shuffle(Q)
     sdf_val, _, _ = igl.signed_distance(Q, V_np, F_np)
     print(f"Smallest sdf val: {sdf_val.min()}, Largest sdf val: {sdf_val.max()}")
-    sdf_val = np.clip(sdf_val, -1, 1)
-    # sdf_val = np.cbrt(sdf_val)
     sdf_val = np.clip(sdf_val, -sdf_max, sdf_max)
 
 
