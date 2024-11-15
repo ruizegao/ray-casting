@@ -26,7 +26,13 @@ if USE_WANDB:
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
+
+# Set plot style to seaborn white. If these options do not work, don't set the plot style or select from other
+# available plot styles.
+try:
+    plt.style.use("seaborn-white")
+except OSError as e:
+    plt.style.use("seaborn-v0_8-white")
 
 set_t = {
     'dtype': torch.float64,  # double precision for more accurate training
@@ -120,7 +126,7 @@ class SineLayer(nn.Module):
 
 class Siren(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,
-                 lrate: float, outermost_linear: bool=False,
+                 lrate: float, fit_mode: str, outermost_linear: bool=False,
                  first_omega_0: int=30, hidden_omega_0: float=30.,
                  step_size: Optional[int] = None, gamma: Optional[float] = None):
         super().__init__()
@@ -155,7 +161,13 @@ class Siren(nn.Module):
 
         self.model = nn.Sequential(OrderedDict(self.model))
         self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
-        self.loss_fn = nn.MSELoss(reduction='none')
+        if fit_mode == 'sdf':
+            self.loss_fn = nn.MSELoss(reduction='none')
+        elif fit_mode == 'occupancy':
+            self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+        else:
+            raise ValueError(f"fit_mode {fit_mode} is not valid. Select from ['sdf', 'occupancy']")
+
 
         # set LR scheduler
         self.scheduler = None
@@ -228,6 +240,69 @@ class Siren(nn.Module):
 
         return loss.item()
 
+    def step_eikonal(self, x: Tensor, y: Tensor, weights: Tensor, on_surface_mask: Tensor):
+        """
+        Returns the loss of a single forward pass
+        :param x:       (Batch, input size) -- batches of coordinates
+        :param y:       (Batch, output size) -- the target normals; only meaningful for points on the surface
+        :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
+        :return:        loss
+        """
+        # penalization multipliers recommended by SIREN paper
+        c1 = 5e1
+        c2 = 3e3
+        c3 = 1e2
+
+        def _gradient(x, y, grad_outputs=None):
+            if grad_outputs is None:
+                grad_outputs = torch.ones_like(y)
+            grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+            return grad
+
+        def _psi(x, a: float = 100):
+            exp_in = -a * (x).abs()
+            exp_out = torch.exp(exp_in).squeeze(1)
+            return exp_out
+
+        # zero the gradients
+        self.optimizer.zero_grad()
+
+        # pass the batch through the model
+        output, coords = self.forward_with_coords(x)
+
+        # compute the graident of the output w.r.t. input
+        grad_output = _gradient(coords, output)
+
+        # eikonal loss
+        eik_loss = torch.linalg.vector_norm(grad_output, dim=1).unsqueeze(1)
+
+        # on surface loss
+        surface_output = output[on_surface_mask]
+        surface_grad = grad_output[on_surface_mask]
+        on_surface_loss = torch.zeros_like(on_surface_mask)
+        on_surface_loss[on_surface_mask, :] = torch.linalg.vector_norm(surface_output, dim=1) + (
+                    1 - torch.einsum('bi,bi->b', surface_grad, y))
+
+        # off surface loss
+        off_surface_mask = torch.logical_not(on_surface_mask)
+        off_surface_output = output[off_surface_mask]
+        off_surface_loss = torch.zeros_like(output)
+        off_surface_loss[off_surface_mask, :] = _psi(off_surface_output)
+
+
+        # add together for a total loss
+        total_loss = c1*eik_loss + c2*on_surface_loss + c3*off_surface_loss
+
+        # compute the loss
+        unweighted_loss = self.loss_fn(total_loss, torch.zeros_like(total_loss))
+        loss = (unweighted_loss * weights).mean()
+
+        # update model
+        loss.backward()
+        self.optimizer.step()
+
+        return loss.item()
+
 class PositionalEncodingLayer(nn.Module):
     """
     Manually implemented module that performs the following operations in order to produce
@@ -249,7 +324,9 @@ class PositionalEncodingLayer(nn.Module):
         :param prepend:
         """
         super(PositionalEncodingLayer, self).__init__()
-        pows = torch.pow(2., torch.arange(start=start_pow, end=start_pow + L))
+        pow_args = torch.arange(start=start_pow, end=start_pow + L - 1)
+        pow_args = torch.concatenate((torch.zeros(1), pow_args))
+        pows = torch.pow(2., pow_args)
         coeffs = pows * torch.pi
         self.prepend = prepend
 
@@ -308,6 +385,9 @@ class PositionalEncodingLayer(nn.Module):
 
         return output_dim
 
+class CubeRootActivation(nn.Module):
+    def forward(self, x):
+        return torch.sign(x) * torch.abs(x).pow(1/3)
 
 class FitSurfaceModel(nn.Module):
     def __init__(self, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
@@ -381,9 +461,18 @@ class FitSurfaceModel(nn.Module):
         # last layer
         layer_count = len(layers)
         layer_count_formatted = f"{layer_count:04d}_"
+        layer_count_formatted_plus_one = f"{layer_count+1:04d}_"
         layers.extend([
-            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1))
+            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+            (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
         ])
+        # layer_count = len(layers)
+        # layer_count_formatted = f"{layer_count:04d}_"
+        # layer_count_formatted_plus_one = f"{layer_count + 1:04d}_"
+        # layers.extend([
+        #     (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+        #     (layer_count_formatted_plus_one + 'cbrt', CubeRootActivation())
+        # ])
         # set the loss function
         if fit_mode == 'occupancy':
             # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
@@ -434,10 +523,7 @@ class FitSurfaceModel(nn.Module):
         self.optimizer.zero_grad()
 
         # pass the batch through the model
-        y_hat = self.forward(x)
-
-        # clip the estimate
-        # y_hat = torch.clip(y_hat, min=-self.sdf_max, max=self.sdf_max)
+        y_hat = self.forward(x) * self.sdf_max
 
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)
@@ -897,6 +983,7 @@ def main(args: dict):
             'hidden_layers': n_layers,
             'out_features': 1,
             'lrate': lr,
+            'fit_mode': fit_mode,
             'outermost_linear': siren_outermost_linear,
             'first_omega_0': siren_first_omega_0,
             'hidden_omega_0': siren_hidden_omega_0,
@@ -920,7 +1007,8 @@ def main(args: dict):
             'w0_initial': siren_first_omega_0,
             'w0': siren_hidden_omega_0,
             'use_bias': True,
-            'final_activation': None,
+            'sdf_max': sdf_max,
+            'final_activation': nn.Tanh(),
             'dropout': 0,
         }
         net = SirenNet(**siren_net_params)
@@ -928,6 +1016,7 @@ def main(args: dict):
         model_params = {
             'net': net,
             'lrate': lr,
+            'fit_mode': fit_mode,
             'latent_dim': siren_latent_dim,
             'step_size': lr_decay_every,
             'gamma': lr_decay_frac,
