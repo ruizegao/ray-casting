@@ -26,7 +26,13 @@ if USE_WANDB:
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
-plt.style.use("seaborn-v0_8-white")  # if throws error, use "seaborn-white" or "seaborn-v0_8-white"
+
+# Set plot style to seaborn white. If these options do not work, don't set the plot style or select from other
+# available plot styles.
+try:
+    plt.style.use("seaborn-white")
+except OSError as e:
+    plt.style.use("seaborn-v0_8-white")
 
 set_t = {
     'dtype': torch.float64,  # double precision for more accurate training

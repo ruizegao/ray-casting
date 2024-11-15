@@ -689,6 +689,7 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
         # node_type[start_idx:end_idx] = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx])[0]
 
     neg_mask = node_type == SIGN_NEGATIVE
+    neg_mask = torch.full_like(node_type, False, dtype=torch.bool)
     unk_mask = node_type == SIGN_UNKNOWN
 
     if continue_splitting:
@@ -753,6 +754,7 @@ def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, co
 
 
     neg_mask = node_type == SIGN_NEGATIVE
+    neg_mask = torch.full_like(node_type, False, dtype=torch.bool)
     unk_mask = node_type == SIGN_UNKNOWN
     large_dist_mask = get_distance(node_lower, node_upper, node_lA.unsqueeze(-1), node_lb.unsqueeze(-1),
                             node_uA.unsqueeze(-1), node_ub.unsqueeze(-1)) > 0.001
