@@ -652,9 +652,9 @@ def main(args: dict):
         'latent_dim': siren_latent_dim,
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
-        'siren_c1': siren_c1,
-        'siren_c2': siren_c2,
-        'siren_c3': siren_c3,
+        'c1': siren_c1,
+        'c2': siren_c2,
+        'c3': siren_c3,
         'clip_gradient_norm': clip_gradient_norm
     }
     net_object = Siren(**model_params)

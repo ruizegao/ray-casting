@@ -394,7 +394,8 @@ class FitSurfaceModel(nn.Module):
                  layer_width:int=32, sdf_max: float=0.4,
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
-                 with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None):
+                 with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None, input_dim: int = 3,
+                 weight_decay: Union[float, int] = 0):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
@@ -432,7 +433,7 @@ class FitSurfaceModel(nn.Module):
         # first layers
         start_layer = 0
         layers = []
-        mlp_input_dim = 3  # default input of 3D coordinate
+        mlp_input_dim = input_dim  # default input of 3D coordinate
         if use_positional_encoding:
             layers.append(
                 ('0000_encoding',
@@ -466,13 +467,6 @@ class FitSurfaceModel(nn.Module):
             (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
             (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
         ])
-        # layer_count = len(layers)
-        # layer_count_formatted = f"{layer_count:04d}_"
-        # layer_count_formatted_plus_one = f"{layer_count + 1:04d}_"
-        # layers.extend([
-        #     (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
-        #     (layer_count_formatted_plus_one + 'cbrt', CubeRootActivation())
-        # ])
         # set the loss function
         if fit_mode == 'occupancy':
             # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
@@ -496,7 +490,7 @@ class FitSurfaceModel(nn.Module):
         self.fit_mode = fit_mode
         self.lr = lrate
         self.sdf_max = sdf_max
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lrate)
+        self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
 
         # set LR scheduler
         self.scheduler = None
