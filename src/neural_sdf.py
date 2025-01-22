@@ -43,7 +43,7 @@ class MLP(nn.Module):
     elu, and tanh.
     """
     def __init__(self, input_dim: int, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
-                 layer_width:int=32, sdf_max: float=0.4,
+                 layer_width:int=32, sdf_max: float = 1.0,
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
                  with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None,
@@ -131,9 +131,11 @@ class MLP(nn.Module):
             # Such an output aligns well with the SDF output and requires fewer changes in ray-casting
             # Reduction = 'None' allows us to manually apply weights to the loss to help correct class imbalance
             self.loss_fn = nn.BCEWithLogitsLoss(reduction='none')
+            sdf_max = 1.0
         elif fit_mode == 'sdf':
             # Reduction = 'None' but the weights that are passed will be all 1's
             self.loss_fn = nn.L1Loss(reduction='none')
+            # self.loss_fn = nn.MSELoss(reduction='none')
             # self.loss_fn = nn.SmoothL1Loss(reduction='none')
         else:
             raise ValueError("fit_mode must be either 'occupancy' or 'sdf'")
@@ -151,6 +153,8 @@ class MLP(nn.Module):
         self.scheduler = None
         if step_size is not None and gamma is not None:
             self.scheduler = optim.lr_scheduler.StepLR(self.optimizer, step_size=step_size, gamma=gamma)
+        elif gamma is not None:
+            self.scheduler = optim.lr_scheduler.ExponentialLR(self.optimizer, gamma=gamma)
 
     def forward(self, x: Tensor) -> Tensor:
         """
