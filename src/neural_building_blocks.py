@@ -85,7 +85,7 @@ class PositionalEncodingLayer(nn.Module):
             output_dim *= 2
 
         if prepend:
-            output_dim += 3
+            output_dim += input_dim
 
         return output_dim
 
