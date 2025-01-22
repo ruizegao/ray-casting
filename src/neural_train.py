@@ -4,11 +4,18 @@ Main script for training a neural network to be an SDF or occupancy based networ
 import argparse
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-from warnings import warn
+import signal
+import sys
 
 from neural_sdf import *
-from neural_utils import plot_training_metrics, save_to_npz, batch_count_correct
+from neural_utils import plot_training_metrics, save_net_object, batch_count_correct
 from neural_datasets import SampleDataset, PointCloud
+
+interrupt_flag, sig_handler_set = False, False
+def signal_handler(signum, frame):
+    global interrupt_flag
+    print("\nSignal interrupt detected. Preparing to save the model...")
+    interrupt_flag = True
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
@@ -26,10 +33,13 @@ set_t = {
 }
 
 def fit_mlp_model(
-        NetObject: MLP,
+        net_object: MLP,
         train_loader: DataLoader,
         fit_mode: str,
-        epochs: int
+        epochs: int,
+        model_params: dict,
+        output_file: str,
+        verbose: bool
 ) -> Tuple[list[float], list[int], list[float], MLP]:
     """
     Given an MLP neurol network and train loader, fit the neural network to the training dataset and record the losses.
@@ -39,17 +49,18 @@ def fit_mlp_model(
     * `correct_counts` -- number of predictions that have predicted the correct sign
     * `correct_fracs` -- fraction of predictions that have predicted the correct sign
 
-    :param NetObject:       Neural network object to train
+    :param net_object:       Neural network object to train
     :param train_loader:    Training dataset
     :param fit_mode:        Neural network fitting mode (occupancy or sdf)
     :param epochs:          Number of epochs to run
-    :return:                Training heuristics and trained `NetObject`
+    :return:                Training heuristics and trained `net_object`
     """
 
     # global USE_WANDB
+    global interrupt_flag, sig_handler_set
 
     # send to device
-    NetObject = NetObject.to(**set_t)
+    net_object = net_object.to(**set_t)
 
     # train and record losses
     losses, correct_counts, correct_fracs = [], [], []
@@ -64,19 +75,19 @@ def fit_mlp_model(
             batch_y = batch_y.to(**set_t)
             batch_weight = batch_weight.to(**set_t)
             n_total += len(batch_x)
-            curr_epoch_loss = NetObject.step(batch_x, batch_y, batch_weight)
+            curr_epoch_loss = net_object.step(batch_x, batch_y, batch_weight)
             epoch_loss += curr_epoch_loss
             with torch.no_grad():
-                correct_count = batch_count_correct(NetObject, batch_x, batch_y, fit_mode).item()
+                correct_count = batch_count_correct(net_object, batch_x, batch_y, fit_mode).item()
                 n_correct += correct_count
                 correct_counts.append(correct_count)
 
         # get the current learning rate
-        if NetObject.scheduler is not None:
-            NetObject.scheduler.step()
-            current_lr = NetObject.scheduler.get_last_lr()[0]
+        if net_object.scheduler is not None:
+            net_object.scheduler.step()
+            current_lr = net_object.scheduler.get_last_lr()[0]
         else:
-            current_lr = NetObject.lr
+            current_lr = net_object.lr
         # calculate the fraction of correctly predicted signs
         frac_correct= n_correct / n_total
         correct_fracs.append(frac_correct)
@@ -93,14 +104,27 @@ def fit_mlp_model(
         # if USE_WANDB:
         #     epoch_details.update({'Correct Sign': 100 * frac_correct})
         #     wandb.log(epoch_details)
+        if interrupt_flag:
+            print(f"\nInterrupt caught during epoch {epoch}. Saving model...")
+            save_net_object(net_object, losses, model_params, output_file, verbose=verbose)
+            sys.exit(0)  # Exit gracefully
 
+        if sig_handler_set == False:
+            signal.signal(signal.SIGINT, signal_handler)
+            sig_handler_set = True
+
+    # Reset to default signal handling
+    signal.signal(signal.SIGINT, signal.SIG_DFL)
     # return metrics and trained network
-    return losses, correct_counts, correct_fracs, NetObject
+    return losses, correct_counts, correct_fracs, net_object
 
 def fit_siren_model(
         net_object: Siren,
         train_loader: DataLoader,
-        epochs: int
+        epochs: int,
+        model_params: dict,
+        output_file: str,
+        verbose: bool
 ) -> Tuple[list[float], Siren]:
     """
     Given a Siren neural network and train loader, fit the neural network to the training dataset and record the losses.
@@ -111,6 +135,7 @@ def fit_siren_model(
     :return:                Training heuristics and trained `net_object`
     """
     # global USE_WANDB
+    global interrupt_flag, sig_handler_set
 
     # send to device
     net_object = net_object.to(**set_t)
@@ -163,6 +188,14 @@ def fit_siren_model(
         epoch_progress_bar.set_postfix(epoch_details)
         # if USE_WANDB:
         #     wandb.log(epoch_details)
+        if interrupt_flag:
+            print(f"\nInterrupt caught during epoch {epoch}. Saving model...")
+            save_net_object(net_object, losses, model_params, output_file, verbose=verbose)
+            sys.exit(0)  # Exit gracefully
+
+        if sig_handler_set == False:
+            signal.signal(signal.SIGINT, signal_handler)
+            sig_handler_set = True
 
     # return metrics and trained network
     return losses, net_object
@@ -177,6 +210,7 @@ def train_mlp(args: dict):
     if input_file is None or output_file is None:
         raise ValueError("input_file and/or output_file is None")
     # network
+    input_dim = args["input_dim"]
     activation = args["activation"]
     n_layers = args["n_layers"]
     layer_width = args["layer_width"]
@@ -190,6 +224,7 @@ def train_mlp(args: dict):
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     n_samples = args["n_samples"]
+    init_scale_factor = args["init_scale_factor"]
     sample_ambient_range = args["sample_ambient_range"]
     sample_weight_beta = args["sample_weight_beta"]
     sample_221 = args["sample_221"]
@@ -242,6 +277,7 @@ def train_mlp(args: dict):
 
     # initialize the network
     model_params = {
+        'input_dim': input_dim,
         'lrate': lr,
         'fit_mode': fit_mode,
         'activation': activation,
@@ -256,11 +292,11 @@ def train_mlp(args: dict):
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
     }
-    NetObject = MLP(**model_params)
+    net_object = MLP(**model_params)
 
     # initialize the dataset
     dataset_pararms = {
-        'mesh_input_file': input_file,
+        'input_file': input_file,
         'fit_mode': fit_mode,
         'n_samples': n_samples,
         'sample_weight_beta': sample_weight_beta,
@@ -268,30 +304,20 @@ def train_mlp(args: dict):
         'sample_221': sample_221,
         'show_sample_221': show_sample_221,
         'sdf_max': sdf_max,
+        'init_scale_factor': init_scale_factor,
         'verbose': verbose
     }
     train_dataset = SampleDataset(**dataset_pararms)
+    batch_size = min(batch_size, len(train_dataset))
+    print(f"Batch Size: {batch_size}")
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, drop_last=True)
 
     # train the neural network
-    losses, correct_counts, correct_fracs, NetObject = fit_mlp_model(NetObject, train_loader, fit_mode, n_epochs)
-    NetObject.eval()  # set to evaluation mode
+    losses, correct_counts, correct_fracs, net_object = fit_mlp_model(net_object, train_loader, fit_mode, n_epochs,
+                                                                     model_params, output_file, verbose)
 
-    # save the neural network in Torch format
-    pth_file = output_file.replace('.npz', '.pth')
-    print(f"Saving model to {pth_file}...")
-    pth_dict = {
-        "state_dict": NetObject.state_dict(),
-        "model_params": model_params,
-    }
-    torch.save(pth_dict, pth_file)
-
-    # display results
-    plt_file = output_file.replace('.npz', '.png')
-    plot_training_metrics(losses, correct_fracs, plt_file, display_plots)
-
-    # save the neural network in .npz format
-    save_to_npz(NetObject, output_file, verbose)
+    # save the model
+    save_net_object(net_object, losses, model_params, output_file, verbose=verbose)
 
     # if USE_WANDB:
     #     wandb.finish()
@@ -305,6 +331,7 @@ def train_siren(args: dict):
     if input_file is None or output_file is None:
         raise ValueError("input_file and/or output_file is None")
     # network
+    input_dim = args["input_dim"]
     n_layers = args["n_layers"]
     layer_width = args["layer_width"]
     clip_gradient_norm = args["clip_gradient_norm"]
@@ -319,6 +346,7 @@ def train_siren(args: dict):
     # loss / data
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
+    init_scale_factor = args["init_scale_factor"]
     # training
     siren_lr = args["lr"]
     final_siren_lr = args["final_siren_lr"]
@@ -329,6 +357,7 @@ def train_siren(args: dict):
     lr_decay_every = args["lr_decay_every"]
     lr_decay_frac = args["lr_decay_frac"]
     # general options
+    verbose = args["verbose"]
     display_plots = args["display_plots"]
 
     print(f"Program Configuration: {args}")
@@ -360,7 +389,7 @@ def train_siren(args: dict):
 
     # build the neural network with the specified configuration
     model_params = {
-        'in_features': 3,
+        'in_features': input_dim,
         'hidden_features': layer_width,
         'hidden_layers': n_layers,
         'out_features': 1,
@@ -383,26 +412,15 @@ def train_siren(args: dict):
     net_object = Siren(**model_params)
 
     # load the dataset
+    # TODO: This PointCloud dataset has not been modified to handle 2D images as of yet
     sdf_dataset = PointCloud(input_file, on_surface_points=batch_size)
     dataloader = DataLoader(sdf_dataset, shuffle=True, batch_size=1)
 
     # train the neural network
-    losses, net_object = fit_siren_model(net_object, dataloader, n_epochs)
+    losses, net_object = fit_siren_model(net_object, dataloader, n_epochs, model_params, output_file, verbose)
 
-    net_object.eval()  # set to evaluation mode
-
-    # save the neural network in Torch format
-    pth_file = output_file.replace('.xyz', '.pth')
-    print(f"Saving model to {pth_file}...")
-    pth_dict = {
-        "state_dict": net_object.state_dict(),
-        "model_params": model_params
-    }
-    torch.save(pth_dict, pth_file)
-
-    # display results
-    plt_file = output_file.replace('.xyz', '.png')
-    # plot_training_metrics(losses, plt_file, display_plots)
+    # save the model
+    save_net_object(net_object, losses, model_params, output_file)
 
     # if USE_WANDB:
     #     wandb.finish()
@@ -434,14 +452,16 @@ def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
     # Build arguments
-    parser.add_argument("--input_file", type=str, default=None,
+    parser.add_argument("--input_file", type=str, required=True,
                         help="The input dataset to use for training.")
     parser.add_argument("--output_file", type=str, default=None,
                         help="Name of the file to save the model and plots.")
 
     # network
-    parser.add_argument("--model_type", type=str,
+    parser.add_argument("--model_type", type=str, required=True,
                         help="Type of model to use (MLP or Siren).")  # MLP or Siren
+    parser.add_argument("--input_dim", type=int, default=3,
+                        help="Input dimension of the neural network model.")
     parser.add_argument("--activation", type=str, default='relu',
                         help="Type of activation function to use at each intermediate layer.")
     parser.add_argument("--n_layers", type=int, default=8,
@@ -458,7 +478,7 @@ def parse_args() -> dict:
     parser.add_argument("--positional_pow_start", type=int, default=-3,
                         help="If positional encoding is enabled, defines sinusoidal frequency to start with.")
     parser.add_argument("--positional_prepend", action='store_true',
-                        hlep="If positional encoding is enabled, prepends the network input to the output of the "
+                        help="If positional encoding is enabled, prepends the network input to the output of the "
                              "positional encoding layer.")
     # siren arguments
     parser.add_argument("--siren_latent_dim", type=int, default=0,
@@ -488,6 +508,11 @@ def parse_args() -> dict:
                         help="Number of epochs to train for.")
     parser.add_argument("--batch_size", type=int, default=2048,
                         help="Batch size per epoch.")
+    parser.add_argument("--init_scale_factor", type=int, default=2,
+                        help="For loading a 2D png image to use an SDF, the original image may not produce enough "
+                             "samples. In this case, the image will iteratively get refactored until the number of "
+                             "samples is at least n_samples. This process can be redundant if the user already knows "
+                             "the scale factor that should be used.")
     parser.add_argument("--lr", type=float, default=1e-4,
                         help="Main network learning rate.")
     parser.add_argument("--final_siren_lr", type=float, default=None)

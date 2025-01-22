@@ -14,25 +14,6 @@ available_activations = [nn.ReLU, nn.ELU, nn.GELU, nn.Sigmoid]  # list of curren
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
-### Custom LR Schedulers
-def linear_decay(epoch, initial_lr, final_lr, total_epochs, last_decay):
-    """
-
-    :param epoch:
-    :param initial_lr:
-    :param final_lr:
-    :param total_epochs:
-    :param last_decay:
-    :return:
-    """
-    # FIXME: Currently hard-coded to a tailored configuration that shows stable convergence. The parameters should
-    # be modified instead of hard-coded.
-    if epoch < 5000:
-        total_epochs = 5000
-        return 1 - epoch / total_epochs * (1 - final_lr / initial_lr)
-    else:
-        return last_decay
-
 def load_net_object(pth_file: str, model_type: str) -> Union[MLP, Siren]:
     """
     A helper function that retrieves a torch network from a .pth file. As a note, it is wise to save the model type
@@ -49,21 +30,52 @@ def load_net_object(pth_file: str, model_type: str) -> Union[MLP, Siren]:
     model_params = pth_dict["model_params"]  # rest of the parameters
     # initialize the NN model based on its type of architecture
     if model_type == 'mlp':
-        NetObject = MLP(**model_params)
+        net_object = MLP(**model_params)
     elif model_type == 'siren':
-        NetObject = Siren(**model_params)
+        net_object = Siren(**model_params)
     elif model_type == 'nglod':
         raise NotImplementedError('nglod models not yet supported.')
     else:
         raise ValueError('Invalid model type')
 
 
-    NetObject.load_state_dict(state_dict)  # load in weights and biases
-    NetObject.eval()  # set to evaluation mode
+    net_object.load_state_dict(state_dict)  # load in weights and biases
+    net_object.eval()  # set to evaluation mode
 
-    return NetObject
+    return net_object
 
-def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_path: Optional[str] = None, display: bool = False):
+def save_net_object(net_object: Union[MLP, Siren], losses: list[float], model_params: dict, output_file: str, 
+                    verbose: bool = False):
+    """
+    Saves the model in a .pth file, generates a .png plot of the losses, and saves the model weights and layers
+    to an .npz file that is compatible with the Jax ray tracing scripts.
+    :param net_object: 
+    :param losses: 
+    :param model_params: 
+    :param output_file:     Path to save the model. The file extension is expected to be .npz.
+    :param verbose: 
+    :return: 
+    """
+    net_object.eval()  # set to evaluation mode
+
+    # save the neural network in Torch format
+    # TODO: Probably cleaner to not depend on the output_file to end with .npz and could leave more general
+    pth_file = output_file.replace('.npz', '.pth')
+    print(f"Saving model to {pth_file}...")
+    pth_dict = {
+        "state_dict": net_object.state_dict(),
+        "model_params": model_params,
+    }
+    torch.save(pth_dict, pth_file)
+
+    # display results
+    plt_file = output_file.replace('.npz', '.png')
+    plot_training_metrics(losses, None, plt_file, False)
+
+    # save the neural network in .npz format
+    save_to_npz(net_object, output_file, verbose)
+
+def plot_training_metrics(losses: list[float], correct_fracs: Optional[list[float]] = None, save_path: Optional[str] = None, display: bool = False):
     """
     Displays and/or saves the metrics recorded during the training of the implicit surface.
     :param losses:          List of losses over epochs
@@ -75,19 +87,24 @@ def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_
     if save_path is None and not display:
         return
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 5))
+    num_subplots = 1 if correct_fracs is None else 2
+    fig, axes = plt.subplots(1, num_subplots, figsize=(10, 5))
+    axes = np.ravel(axes)
 
+    ax1 = axes[0]
     ax1.plot(losses)
     ax1.set_xlabel('Epoch')
     ax1.set_ylabel('Loss')
     ax1.set_title("Training Loss")
     ax1.grid()
 
-    ax2.plot(correct_fracs)
-    ax2.set_xlabel('Epoch')
-    ax2.set_ylabel('Correct Sign %')
-    ax2.set_title("Number of Correct Sign Predictions")
-    ax2.grid()
+    if correct_fracs is not None:
+        ax2 = axes[1]
+        ax2.plot(correct_fracs)
+        ax2.set_xlabel('Epoch')
+        ax2.set_ylabel('Correct Sign %')
+        ax2.set_title("Number of Correct Sign Predictions")
+        ax2.grid()
 
     plt.tight_layout()
     if save_path is not None:
@@ -97,7 +114,7 @@ def plot_training_metrics(losses: list[float], correct_fracs: list[float], save_
     else:
         plt.close()
 
-def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
+def save_to_npz(net_object, npz_path: str, verbose: bool = False):
     """
     Saves the Torch model as a .npz file that can be loaded in by the other ray tracing scripts. Runs in 3 stages:
 
@@ -105,7 +122,7 @@ def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
     2) Get all the activation functions and add them to the npz dictionary as well
     3) Finally, add a 'squeeze_last' parameter as the ray-tracing scripts rely on this parameter.
 
-    :param NetObject:   Neural network object to save
+    :param net_object:   Neural network object to save
     :param npz_path:    .npz file path to save the network to
     :param verbose:     If true, prints additional logging information
     :return:
@@ -113,7 +130,7 @@ def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
     npz_dict = {}  # holds network architecture
     if verbose:
         print("Adding optimizable parameters to the npz dictionary")
-    for name, param in NetObject.named_parameters():
+    for name, param in net_object.named_parameters():
         split_name = name.split('.')
         new_base_name = split_name[1].replace('_', '.') + '.'
         is_weight = split_name[2] == 'weight'
@@ -135,7 +152,7 @@ def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
     if verbose:
         print("Adding activation functions to the npz dictionary")
     available_activation_names = [n().__class__.__name__.lower() for n in available_activations]
-    for name, layer in NetObject.model._modules.items():
+    for name, layer in net_object.model._modules.items():
         split_name = name.split('_')
         base_name = split_name[1]
         if base_name in available_activation_names:
@@ -147,7 +164,7 @@ def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
             print(f"Module Value: {layer}")
             print("-" * 30)
 
-    squeeze_last_idx = len(NetObject.model._modules.keys())
+    squeeze_last_idx = len(net_object.model._modules.keys())
     if verbose:
         print(f"Adding squeeze_last at layer index {squeeze_last_idx}")
     squeeze_last_idx_formatted = f"{squeeze_last_idx:04d}.squeeze_last._"
@@ -157,16 +174,16 @@ def save_to_npz(NetObject, npz_path: str, verbose: bool = False):
         print(f"Saving network in .npz format with path {npz_path} \nand dictionary with keys \n{npz_dict.keys()}")
     np.savez(npz_path, **npz_dict)
 
-def batch_count_correct(NetObject, batch_x: Tensor, batch_y: Tensor,
+def batch_count_correct(net_object, batch_x: Tensor, batch_y: Tensor,
                         fit_mode: str) -> Tensor:
     """
     For some batch of inputs and labels, return the number of predictions whose sign is correct.
-    :param NetObject:   Neural network object to evaluate
+    :param net_object:   Neural network object to evaluate
     :param batch_x:     Batch of inputs
     :param batch_y:     Batch of labels
     :return:            Number of predictions whose sign is correct
     """
-    prediction = NetObject.forward(batch_x)
+    prediction = net_object.forward(batch_x)
     if fit_mode in 'occupancy':
         # labels are probabilities, they must be corrected
         is_correct_sign = torch.sign(prediction) == torch.sign(batch_y - 0.5)

@@ -10,7 +10,6 @@ from torch.utils.data import DataLoader, Dataset
 from collections import OrderedDict
 from functools import partial
 from neural_building_blocks import *
-from neural_utils import linear_decay
 
 set_t = {
     'dtype': torch.float32,
@@ -18,6 +17,25 @@ set_t = {
 }
 
 to_numpy = lambda x : x.detach().cpu().numpy()
+
+### Custom LR Schedulers
+def linear_decay(epoch, initial_lr, final_lr, total_epochs, last_decay):
+    """
+
+    :param epoch:
+    :param initial_lr:
+    :param final_lr:
+    :param total_epochs:
+    :param last_decay:
+    :return:
+    """
+    # FIXME: Currently hard-coded to a tailored configuration that shows stable convergence. The parameters should
+    # be modified instead of hard-coded.
+    if epoch < 5000:
+        total_epochs = 5000
+        return 1 - epoch / total_epochs * (1 - final_lr / initial_lr)
+    else:
+        return last_decay
 
 class MLP(nn.Module):
     """
