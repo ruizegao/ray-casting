@@ -59,3 +59,5 @@ render_out.png
 trees/
 meshes/
 cache_bounds/
+sample_inputs/
+thingi10k-mlp/

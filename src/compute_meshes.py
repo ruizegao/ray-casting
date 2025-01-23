@@ -56,7 +56,7 @@ if __name__ == '__main__':
 
         tri_faces = []
         tri_vertices = []
-
+        trimesh_meshes = []
         count = 0
         num_success, num_errors = 0, 0
         for A, b, l, u in zip(As, bs, lower, upper):
@@ -65,6 +65,9 @@ if __name__ == '__main__':
                 o = np.array([0., 0., - b / A[2]])
                 # print(o, -A)
                 mesh = cube.slice_plane(o, -A, cap=True)
+                # mesh.process()
+                if mesh.is_volume:
+                    trimesh_meshes.append(mesh)
                 v = np.array(mesh.vertices)
                 f = np.array(mesh.faces)
                 # print(v.shape, f.shape)
@@ -77,18 +80,28 @@ if __name__ == '__main__':
                 num_errors += 1
                 print(f"Encountered error (count {num_errors}): \n{e}")
 
-        tri_faces = np.concatenate(tri_faces, axis=0)
-        tri_vertices = np.concatenate(tri_vertices, axis=0)
-        end_time = time.time()
-        print(f"Num success: {num_success}, Num errors: {num_errors}")
-        print("total time cost: ", end_time - start_time)
-
-        mesh = {}
-        mesh['vertices'] = tri_vertices
-        mesh['faces'] = tri_faces
-
-        np.savez(args.save_to, **mesh)
+        # tri_faces = np.concatenate(tri_faces, axis=0)
+        # tri_vertices = np.concatenate(tri_vertices, axis=0)
+        # end_time = time.time()
+        # print(f"Num success: {num_success}, Num errors: {num_errors}")
+        # print("total time cost: ", end_time - start_time)
+        #
+        # mesh = {}
+        # mesh['vertices'] = tri_vertices
+        # mesh['faces'] = tri_faces
+        #
+        # np.savez(args.save_to, **mesh)
         # trimesh_mesh = trimesh.Trimesh(vertices=mesh['vertices'], faces=mesh['faces'])
+        trimesh_mesh = trimesh.util.concatenate(trimesh_meshes)
+        trimesh_mesh.process()
+        # components = trimesh_mesh.split(only_watertight=False)
+        # areas = np.array([c.area for c in components], dtype=np.float64)
+        # trimesh_mesh = components[areas.argmax()]
+        print(trimesh_mesh.is_volume)
+        trimesh_mesh.export(args.save_to[:-3] + 'ply', file_type='ply')
+        print("ply saved to " + args.save_to[:-3] + 'ply')
+        trimesh_mesh.export(args.save_to[:-3] + 'obj', file_type='obj')
+        print("obj saved to " + args.save_to[:-3] + 'obj')
         # trimesh_mesh.show()
 
     def register_planes_and_cube_with_polyscope(

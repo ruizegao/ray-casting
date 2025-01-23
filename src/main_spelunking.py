@@ -276,7 +276,7 @@ def main():
     opts['tree_split_aff'] = False
     cast_frustum = False
     cast_opt_based = False
-    mode = 'affine_fixed'
+    mode = 'crown'
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'affine_quad', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
     crown_modes = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
                    'dynamic_forward+backward']
@@ -474,14 +474,19 @@ def main():
     # Visualize the data via quick coarse marching cubes, so we have something to look at
 
     # Construct the regular grid
-    grid_res = 128
+    grid_res = 256
     ax_coords = torch.linspace(-1., 1., grid_res)
     grid_x, grid_y, grid_z = torch.meshgrid(ax_coords, ax_coords, ax_coords, indexing='ij')
     grid = torch.stack((grid_x.flatten(), grid_y.flatten(), grid_z.flatten()), dim=-1)
     delta = (grid[1,2] - grid[0,2]).item()
     print('about to create model')
     if isinstance(implicit_func, CrownImplicitFunction):
-        sdf_vals = implicit_func.torch_forward(grid)
+        batch_size_per_iteration = 64
+        total_samples = grid.shape[0]
+        sdf_vals = torch.empty((total_samples,)).to('cpu')
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            sdf_vals[start_idx:end_idx] = implicit_func.torch_forward(grid[start_idx:end_idx]).squeeze().detach().to('cpu')
         print("model created")
     else:
         sdf_vals = vmap(partial(implicit_func, params))(grid)

@@ -1,3 +1,6 @@
 [submodule "trimesh-ray-optix"]
 	path = trimesh-ray-optix
 	url = https://github.com/lcp29/trimesh-ray-optix
+[submodule "PyMesh"]
+	path = PyMesh
+	url = https://github.com/PyMesh/PyMesh.git

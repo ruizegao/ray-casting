@@ -521,146 +521,6 @@ def construct_adaptive_tree_iter(
         finished_exterior_lower, finished_exterior_upper, N_finished_exterior, \
             continue_splitting)
 
-def construct_adaptive_tree(func, params, lower, upper, node_terminate_thresh=None, split_depth=None,
-                                            compress_after=False, with_childern=False, with_interior_nodes=False,
-                                            with_exterior_nodes=False, offset=0., batch_process_size=2048, max_split_depth=36):
-    # Validate input
-    # ASSUMPTION: all of our bucket sizes larger than batch_process_size must be divisible by batch_process_size
-    for b in bucket_sizes:
-        if b > batch_process_size and (b // batch_process_size) * batch_process_size != b:
-            raise ValueError(
-                f"batch_process_size must be a factor of our bucket sizes, is not a factor of {b} (try a power of 2)")
-    if node_terminate_thresh is None and split_depth is None:
-        raise ValueError("must specify at least one of node_terminate_thresh or split_depth as a terminating condition")
-    if node_terminate_thresh is None:
-        node_terminate_thresh = 9999999999
-
-    d = lower.shape[-1]
-    B = batch_process_size
-
-    print(f"\n == CONSTRUCTING LEVELSET TREE")
-
-    # Initialize data
-    node_lower = lower[None, :]
-    node_upper = upper[None, :]
-    node_valid = torch.ones((1,), dtype=torch.bool)
-    N_curr_nodes = 1
-    finished_interior_lower = torch.zeros((batch_process_size, 3)) if with_interior_nodes else None
-    finished_interior_upper = torch.zeros((batch_process_size, 3)) if with_interior_nodes else None
-    N_finished_interior = 0
-    finished_exterior_lower = torch.zeros((batch_process_size, 3)) if with_exterior_nodes else None
-    finished_exterior_upper = torch.zeros((batch_process_size, 3)) if with_exterior_nodes else None
-    N_finished_exterior = 0
-    N_func_evals = 0
-
-    ## Recursively build the tree
-    i_split = 0
-    n_splits = 99999999 if split_depth is None else split_depth + 1  # 1 extra because last round doesn't split
-    do_continue_splitting = True
-    while do_continue_splitting:
-        if i_split > max_split_depth:
-            break
-        # Reshape in to batches of size <= B
-        init_bucket_size = node_lower.shape[0]
-        this_b = min(B, init_bucket_size)
-        N_func_evals += node_lower.shape[0]
-        # utils.printarr(node_valid, node_lower, node_upper)
-        node_valid = torch.reshape(node_valid, (-1, this_b))
-        node_lower = torch.reshape(node_lower, (-1, this_b, d))
-        node_upper = torch.reshape(node_upper, (-1, this_b, d))
-        nb = node_lower.shape[0]
-        n_occ = int(math.ceil(
-            N_curr_nodes / this_b))  # only the batches which are occupied (since valid nodes are densely packed at the start)
-
-        # Detect when to quit. On the last iteration we need to not do any more splitting, but still process existing nodes one last time
-        quit_next = not do_continue_splitting
-
-        print(
-            f"Adaptive levelset tree. iter: {i_split}  N_curr_nodes: {N_curr_nodes}  bucket size: {init_bucket_size}  batch size: {this_b}  number of batches: {nb}  quit next: {quit_next}  do_continue_splitting: {do_continue_splitting}")
-        # enlarge the finished nodes if needed
-        if with_interior_nodes:
-            while finished_interior_lower.shape[0] - N_finished_interior < N_curr_nodes:
-                finished_interior_lower = utils.resize_array_axis(finished_interior_lower,
-                                                                  2 * finished_interior_lower.shape[0])
-                finished_interior_upper = utils.resize_array_axis(finished_interior_upper,
-                                                                  2 * finished_interior_upper.shape[0])
-        if with_exterior_nodes:
-            while finished_exterior_lower.shape[0] - N_finished_exterior < N_curr_nodes:
-                finished_exterior_lower = utils.resize_array_axis(finished_exterior_lower,
-                                                                  2 * finished_exterior_lower.shape[0])
-                finished_exterior_upper = utils.resize_array_axis(finished_exterior_upper,
-                                                                  2 * finished_exterior_upper.shape[0])
-
-        # map over the batches
-        out_valid = torch.zeros((nb, 2 * this_b), dtype=torch.bool)
-        out_lower = torch.zeros((nb, 2 * this_b, 3))
-        out_upper = torch.zeros((nb, 2 * this_b, 3))
-        total_n_valid = 0
-        for ib in range(n_occ):
-            if i_split <= split_depth:
-                (out_valid, out_lower, out_upper, total_n_valid,
-                    finished_interior_lower, finished_interior_upper, N_finished_interior,
-                    finished_exterior_lower, finished_exterior_upper, N_finished_exterior) \
-                    = \
-                    construct_uniform_unknown_levelset_tree_iter(func, params, do_continue_splitting,
-                                                 node_valid[ib, ...], node_lower[ib, ...], node_upper[ib, ...],
-                                                 ib, out_valid, out_lower, out_upper, total_n_valid,
-                                                 finished_interior_lower, finished_interior_upper, N_finished_interior,
-                                                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
-                                                 offset=offset)
-            else:
-                (out_valid, out_lower, out_upper, total_n_valid,
-                 finished_interior_lower, finished_interior_upper, N_finished_interior,
-                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
-                 do_continue_splitting) \
-                    = \
-                    construct_adaptive_tree_iter(func, params, do_continue_splitting,
-                                                 node_valid[ib, ...], node_lower[ib, ...], node_upper[ib, ...],
-                                                 ib, out_valid, out_lower, out_upper, total_n_valid,
-                                                 finished_interior_lower, finished_interior_upper, N_finished_interior,
-                                                 finished_exterior_lower, finished_exterior_upper, N_finished_exterior,
-                                                 offset=offset)
-
-        node_valid = out_valid
-        node_lower = out_lower
-        node_upper = out_upper
-        N_curr_nodes = total_n_valid
-
-        # flatten back out
-        node_valid = torch.reshape(node_valid, (-1,))
-        node_lower = torch.reshape(node_lower, (-1, d))
-
-
-        node_upper = torch.reshape(node_upper, (-1, d))
-
-        # Compactify and rebucket arrays
-        target_bucket_size = get_next_bucket_size(total_n_valid)
-        node_valid, N_curr_nodes, node_lower, node_upper = compactify_and_rebucket_arrays(node_valid,
-                                                                                          target_bucket_size,
-                                                                                          node_lower, node_upper)
-        i_split += 1
-
-
-    # pack the output in to a dict to support optional outputs
-    out_dict = {
-        'unknown_node_valid': node_valid,
-        'unknown_node_lower': node_lower,
-        'unknown_node_upper': node_upper,
-    }
-
-    if with_interior_nodes:
-        out_dict['interior_node_valid'] = torch.arange(finished_interior_lower.shape[0]) < N_finished_interior
-        out_dict['interior_node_lower'] = finished_interior_lower
-        out_dict['interior_node_upper'] = finished_interior_upper
-
-    if with_exterior_nodes:
-        out_dict['exterior_node_valid'] = torch.arange(finished_exterior_lower.shape[0]) < N_finished_exterior
-        out_dict['exterior_node_lower'] = finished_exterior_lower
-        out_dict['exterior_node_upper'] = finished_exterior_upper
-
-
-    return out_dict
-
 def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256):
     def eval_batch_of_nodes(lower, upper):
         types, crown_ret = func.classify_box(params, lower, upper)
@@ -688,9 +548,12 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
             eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx]))
         # node_type[start_idx:end_idx] = eval_batch_of_nodes(node_lower[start_idx:end_idx], node_upper[start_idx:end_idx])[0]
 
+    # print("ly_pred", (node_lA * node_lower).sum(dim=1)[:5] + node_lb[:5])
+    # print("uy_pred", (node_uA * node_lower).sum(dim=1)[:5] + node_ub[:5])
+
     neg_mask = node_type == SIGN_NEGATIVE
-    neg_mask = torch.full_like(node_type, False, dtype=torch.bool)
     unk_mask = node_type == SIGN_UNKNOWN
+    pos_mask = node_type == SIGN_POSITIVE
 
     if continue_splitting:
         split_mask = unk_mask
@@ -710,10 +573,12 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
         split_node_lower = torch.cat((newA_lower, newB_lower))
         split_node_upper = torch.cat((newA_upper, newB_upper))
 
-        finished_mask = neg_mask
+        # finished_mask = neg_mask
+        finished_mask = torch.full_like(neg_mask, False)
     else:
         split_node_lower, split_node_upper = None, None
-        finished_mask = neg_mask | unk_mask
+        # finished_mask = neg_mask | unk_mask
+        finished_mask = unk_mask
 
     finished_node_lower = node_lower[finished_mask]
     finished_node_upper = node_upper[finished_mask]
@@ -754,8 +619,8 @@ def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, co
 
 
     neg_mask = node_type == SIGN_NEGATIVE
-    neg_mask = torch.full_like(node_type, False, dtype=torch.bool)
     unk_mask = node_type == SIGN_UNKNOWN
+    pos_mask = node_type == SIGN_POSITIVE
     large_dist_mask = get_distance(node_lower, node_upper, node_lA.unsqueeze(-1), node_lb.unsqueeze(-1),
                             node_uA.unsqueeze(-1), node_ub.unsqueeze(-1)) > 0.001
     bad_plane_mask = ((~planes_intersect_cubes(node_lA, node_lb, node_lower, node_upper)) |
@@ -778,10 +643,12 @@ def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, co
         split_node_lower = torch.cat((newA_lower, newB_lower))
         split_node_upper = torch.cat((newA_upper, newB_upper))
 
-        finished_mask = neg_mask | (unk_mask & (~large_dist_mask & ~bad_plane_mask))
+        # finished_mask = neg_mask | (unk_mask & (~large_dist_mask & ~bad_plane_mask))
+        finished_mask = unk_mask & (~large_dist_mask & ~bad_plane_mask)
     else:
         split_node_lower, split_node_upper = None, None
-        finished_mask = neg_mask | unk_mask
+        # finished_mask = neg_mask | unk_mask
+        finished_mask = unk_mask
 
     finished_node_lower = node_lower[finished_mask]
     finished_node_upper = node_upper[finished_mask]
@@ -815,6 +682,7 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         to_split_lower = ret[6]
         to_split_upper = ret[7]
         i_depth += 1
+        print(f'Splitting depth {i_depth}, {to_split_lower.shape[0] if to_split_lower is not None else "N/A"} nodes.')
 
     while i_depth < max_depth:
         if i_depth + 1 == max_depth:
@@ -830,6 +698,7 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         to_split_lower = ret[6]
         to_split_upper = ret[7]
         i_depth += 1
+        print(f'Splitting depth {i_depth}, {to_split_lower.shape[0] if to_split_lower is not None else "N/A"} nodes.')
 
     out_lower = torch.cat(out_lower)
     out_upper = torch.cat(out_upper)

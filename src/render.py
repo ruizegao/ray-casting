@@ -66,8 +66,8 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
     i_func = 1
     for func, params in zip(funcs_tuple, params_tuple):
         if isinstance(func, CrownImplicitFunction):
-            f = partial(func.call_implicit_func, params)
-            # f = func.torch_forward
+            # f = partial(func.call_implicit_func, params)
+            f = func.torch_forward
         else:
             f = partial(func, params)
 
@@ -107,7 +107,7 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='au
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             out_normal[start_idx:end_idx] \
-                = vmap(this_normal_one)(hit_pos[start_idx:end_idx], hit_ids[start_idx:end_idx])
+                = vmap(this_normal_one)(hit_pos[start_idx:end_idx], hit_ids[start_idx:end_idx]).detach().squeeze()
 
         return out_normal
     return vmap(this_normal_one)(hit_pos, hit_ids)
