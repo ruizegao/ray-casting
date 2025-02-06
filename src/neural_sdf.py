@@ -43,7 +43,7 @@ class MLP(nn.Module):
     elu, and tanh.
     """
     def __init__(self, input_dim: int, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
-                 layer_width:int=32, sdf_max: float = 1.0,
+                 layer_width:int=32, sdf_max: float = 1.0, optimizer: str = 'adam',
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
                  with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None,
@@ -147,7 +147,15 @@ class MLP(nn.Module):
         self.fit_mode = fit_mode
         self.lr = lrate
         self.sdf_max = sdf_max
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        optimizer = optimizer.lower()
+        if optimizer == 'adam':
+            self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        elif optimizer == 'sgd':
+            self.optimizer = optim.SGD(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        elif optimizer == 'lbfgs':
+            self.optimizer = optim.LBFGS(self.model.parameters(), lr=lrate)
+        else:
+            raise ValueError(f"Optimizer {optimizer} not recognized.")
 
         # set LR scheduler
         self.scheduler = None
@@ -172,6 +180,24 @@ class MLP(nn.Module):
         :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
         :return:        loss
         """
+
+        if isinstance(self.optimizer, optim.LBFGS):
+            loss = self.optimizer.step(lambda: self._step_closure(x, y, weights))
+        else:
+            loss = self._step_closure(x, y, weights)
+            self.optimizer.step()
+
+        return loss.item()
+
+    def _step_closure(self, x: Tensor, y: Tensor, weights: Tensor):
+        """
+        The actual step optimization is placed into this closure method to enable
+        support with the LBFGS optimizer.
+        :param x:
+        :param y:
+        :param weights:
+        :return:
+        """
         # zero the gradients
         self.optimizer.zero_grad()
 
@@ -184,10 +210,8 @@ class MLP(nn.Module):
 
         # update model
         loss.backward()
-        self.optimizer.step()
 
-        return loss.item()
-
+        return loss
 
 class Siren(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,

@@ -221,6 +221,7 @@ def train_mlp(args: dict):
     positional_prepend = args["positional_prepend"]
 
     # loss / data
+    optimizer = args["optimizer"]
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     n_samples = args["n_samples"]
@@ -288,6 +289,7 @@ def train_mlp(args: dict):
         'positional_count': positional_count,
         'positional_power_start': positional_pow_start,
         'positional_prepend': positional_prepend,
+        'optimizer': optimizer,
         'with_shift': True,
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
@@ -492,7 +494,7 @@ def parse_args() -> dict:
     parser.add_argument("--siren_c3", type=float, default=1e2)
 
     # loss / data
-    parser.add_argument("--fit_mode", type=str, default='sdf',
+    parser.add_argument("--fit_mode", type=str, default='sdf', choices=['sdf', 'occupancy'],
                         help="Type of function to fit. The neural network should be trained to be sdf "
                              "(signed distance function) or occupancy.")
     parser.add_argument("--n_samples", type=int, default=1000000,
@@ -508,6 +510,8 @@ def parse_args() -> dict:
                         help="Number of epochs to train for.")
     parser.add_argument("--batch_size", type=int, default=2048,
                         help="Batch size per epoch.")
+    parser.add_argument("--optimizer", type=str, default='adam', choices=['adam', 'sgd', 'lbfgs'],
+                        help="Optimizer to use for training.")
     parser.add_argument("--init_scale_factor", type=int, default=2,
                         help="For loading a 2D png image to use an SDF, the original image may not produce enough "
                              "samples. In this case, the image will iteratively get refactored until the number of "

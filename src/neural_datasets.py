@@ -149,7 +149,7 @@ class SampleDataset(Dataset):
         Initializes a dataset of SDF/occupancy based samples from a black and white png image. This function
         relies on the gpytoolbox to collect these samples.
         :param sdf_png_path:
-        :param shape_dict: 
+        :param shape_dict:
         :param fit_mode:
         :param minimum_points:
         :param init_scale_factor:
@@ -220,7 +220,7 @@ class SampleDataset(Dataset):
                                                      samp_target[torch.logical_not(close_mask)][:num_left]).reshape(
                                                      num_left, 1)), dim=0)
                 samp_weight = torch.concatenate((9 / 20 * torch.ones((on_surface_points + num_close, 1)),
-                                                 1 / 20 * torch.ones((num_left, 1))), dim=0)
+                                                 1 / 10 * torch.ones((num_left, 1))), dim=0)
             # save inputs and labels
             coords = torch.concatenate((coords, off_surface_coords.cpu()), dim=0)
             # samp_target = samp_target.cpu().reshape(off_surface_points, 1).repeat(2, 1)
@@ -237,7 +237,6 @@ class SampleDataset(Dataset):
             # samp_weight[on_surface_points:, :] = 1/3
         else:
             raise ValueError(f"Fit mode {fit_mode} not recognized. Please select from ['occupancy', 'sdf'].")
-
 
         self.x = coords  # shape (n_samples, 2)
         self.y = samp_target
