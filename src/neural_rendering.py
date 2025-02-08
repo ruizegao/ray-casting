@@ -15,6 +15,15 @@ from auto_LiRPA.perturbations import PerturbationLpNorm
 
 from neural_sdf import MLP, Siren
 from neural_utils import load_net_object
+import crown
+import mlp
+import kd_tree
+from shapely.ops import split, unary_union
+import shapely
+import matplotlib
+from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+import copy
 
 # print(plt.style.available)  # uncomment to view the available plot styles
 plt.rcParams['text.usetex'] = False  # tex not necessary here and may cause error if not installed
@@ -350,7 +359,7 @@ def plot_model_with_bounds(ax, net, save_path: str, rows: int, cols: int, bl_coo
             uA = A_dict[output_name][input_name]['uA']
             ubias = A_dict[output_name][input_name]['ubias']
             # Example diagonal: bottom-left to top-right
-            ax.plot([x_start, x_end], [y_start, y_end], color='red', linewidth=0.7)
+            ax.plot([x_start, x_end], [y_start, y_end], color='red', alpha=0.5, linewidth=0.7)
 
     # Set axis limits and aspect ratio
     ax.set_xlim(x_min, x_max)
@@ -373,6 +382,633 @@ def plot_model_with_bounds(ax, net, save_path: str, rows: int, cols: int, bl_coo
 
     return ax
 
+def project_line_onto_square(a1, a2, b, x1_min, x1_max, x2_min, x2_max):
+    # Define the bounding box (square)
+    square = shapely.geometry.box(x1_min, x2_min, x1_max, x2_max)
+
+    # Define the line equation a1*x1 + a2*x2 + b = 0 in explicit form
+    if a2 != 0:
+        # Express x2 as a function of x1
+        line = shapely.geometry.LineString([
+            (x1_min, (-a1*x1_min - b) / a2),
+            (x1_max, (-a1*x1_max - b) / a2)
+        ])
+    else:
+        # Vertical line case: x1 = constant
+        x1 = -b / a1
+        line = shapely.geometry.LineString([(x1, x2_min), (x1, x2_max)])
+
+    # Intersect the line with the square
+    segment = line.intersection(square)
+
+    return segment
+
+
+def carve(ax, net: MLP, deep=False):
+    # Remove tick labels
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+
+    lower = torch.tensor([-0.55, -0.55])
+    upper = torch.tensor([0.55, 0.55])
+    func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
+    if deep:
+        lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
+            func, net, lower, upper, base_depth=12, max_depth=15, node_dim=2, include_pos_neg=True)
+    else:
+        lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
+            func, net, lower, upper, base_depth=6, max_depth=9, node_dim=2, include_pos_neg=True)
+    lowers = lowers.detach().cpu().numpy()
+    uppers = uppers.detach().cpu().numpy()
+    lAs = lAs.detach().cpu().numpy()
+    lbs = lbs.detach().cpu().numpy()
+    uAs = uAs.detach().cpu().numpy()
+    ubs = ubs.detach().cpu().numpy()
+    pos_lowers = pos_lowers.detach().cpu().numpy()
+    pos_uppers = pos_uppers.detach().cpu().numpy()
+    neg_lowers = neg_lowers.detach().cpu().numpy()
+    neg_uppers = neg_uppers.detach().cpu().numpy()
+
+    # polygon_list = []
+    outer_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    inner_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    for p_l, p_u in zip(pos_lowers, pos_uppers):
+        patch = matplotlib.patches.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])], edgecolor='grey',
+                                           facecolor='none', linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+        outer_shell = outer_shell.difference(shapely.geometry.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])]))
+        inner_shell = inner_shell.difference(shapely.geometry.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])]))
+
+    for n_l, n_u in zip(neg_lowers, neg_uppers):
+        patch = matplotlib.patches.Polygon([n_l, (n_l[0], n_u[1]), n_u, (n_u[0], n_l[1])], edgecolor='grey',
+                                           facecolor='none',  linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+
+    squares = []
+    outer_segments = []
+    outer_segments_lAs = []
+    outer_segments_lbs = []
+    inner_segments = []
+    outer_polygons = []
+    inner_polygons = []
+    inner_segments_uAs = []
+    inner_segments_ubs = []
+
+    for l, u, lA, lb, uA, ub in zip(lowers, uppers, lAs, lbs, uAs, ubs):
+        patch = matplotlib.patches.Polygon([l, (l[0], u[1]), u, (u[0], l[1])], edgecolor='grey', facecolor='none',
+                                           linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+        square = shapely.geometry.Polygon([l, (l[0], u[1]), u, (u[0], l[1])])
+        squares.append(square)
+        outer_line = project_line_onto_square(lA[0], lA[1], lb, -0.55, 0.55, -0.55, 0.55)
+        inner_line = project_line_onto_square(uA[0], uA[1], ub, -0.55, 0.55, -0.55, 0.55)
+
+
+        # For each node and its outer_line segment, get its neighbors that the outer_line segment also intersect with
+        outer_segment = shapely.intersection(square, outer_line)
+        inner_segment = shapely.intersection(square, inner_line)
+        if len(np.array(outer_segment.coords)) == 2:
+            outer_segments.append(outer_segment)
+            outer_segments_lAs.append(lA)
+            outer_segments_lbs.append(lb)
+        if len(np.array(inner_segment.coords)) == 2:
+            inner_segments.append(inner_segment)
+            inner_segments_uAs.append(uA)
+            inner_segments_ubs.append(ub)
+
+        # print(outer_qualified_neighbors)
+        slices1 = split(square, outer_line)
+        slices2 = split(square, inner_line)
+
+        for g in slices1.geoms:
+            if g.geom_type == 'Polygon':
+                c = shapely.centroid(g)
+                c = np.array([c.x, c.y])
+                cls = np.dot(lA, c) + lb
+                if cls > 0.:
+                    outer_shell = outer_shell.difference(g)
+                else:
+                    outer_polygons.append(g)
+
+        for g in slices2.geoms:
+            if g.geom_type == 'Polygon':
+                c = shapely.centroid(g)
+                c = np.array([c.x, c.y])
+                cls = np.dot(uA, c) + ub
+                if cls > 0.:
+                    inner_shell = inner_shell.difference(g)
+                    inner_polygons.append(g)
+
+        for g1 in slices1.geoms:
+            for g2 in slices2.geoms:
+                intersection = shapely.intersection(g1, g2)
+                if g1.geom_type == 'Polygon' and g2.geom_type == 'Polygon':
+                    c1 = shapely.centroid(g1)
+                    c2 = shapely.centroid(g2)
+                    c1 =np.array([c1.x, c1.y])
+                    c2 =np.array([c2.x, c2.y])
+                    cls1 = np.dot(lA, c1) + lb
+                    cls2 = np.dot(uA, c2) + ub
+                    # if cls1 * cls2 < 0:
+                    if cls1 < 0 and cls2 > 0:
+                        patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
+                                                           facecolor='lightblue', linewidth=2)
+                        ax.add_patch(patch)
+                        # patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
+                        #                                    facecolor='lightblue', linewidth=2)
+                        # axins.add_patch(patch)
+                        # polygon_list.append(intersection)
+
+
+    outer_qualified_neighbors = []
+    outer_contact_points = []
+
+    for outer_segment in outer_segments:
+        neighbors_buffer = []
+        points_buffer = []
+        for outer_polygon, lA, lb in zip(outer_polygons, lAs, lbs):
+            segment_polygon_intersection = shapely.intersection(outer_polygon, outer_segment)
+            if segment_polygon_intersection.geom_type == 'Point':
+                p = np.array([segment_polygon_intersection.x, segment_polygon_intersection.y])
+                cls = np.dot(lA, p) + lb
+                if cls <= 0:
+                    neighbors_buffer.append(outer_polygon)
+                    points_buffer.append(segment_polygon_intersection)
+
+        outer_qualified_neighbors.append(neighbors_buffer)
+        outer_contact_points.append(points_buffer)
+
+    inner_qualified_neighbors = []
+    inner_contact_points = []
+
+    for inner_segment in inner_segments:
+        neighbors_buffer = []
+        points_buffer = []
+        for inner_polygon, uA, ub in zip(inner_polygons, uAs, ubs):
+            segment_polygon_intersection = shapely.intersection(inner_polygon, inner_segment)
+            if segment_polygon_intersection.geom_type == 'Point':
+                p = np.array([segment_polygon_intersection.x, segment_polygon_intersection.y])
+                cls = np.dot(uA, p) + ub
+                if cls >= 0:
+                    neighbors_buffer.append(inner_polygon)
+                    points_buffer.append(segment_polygon_intersection)
+
+        inner_qualified_neighbors.append(neighbors_buffer)
+        inner_contact_points.append(points_buffer)
+
+    outer_added_polygons = []
+    for outer_segment, neighbors_buffer, points_buffer, lA, lb in zip(outer_segments, outer_qualified_neighbors,
+                                                                      outer_contact_points, outer_segments_lAs,
+                                                                      outer_segments_lbs):
+        if len(neighbors_buffer) == 2:
+            poly_A = neighbors_buffer[0]
+            poly_B = neighbors_buffer[1]
+            point_A = points_buffer[0]
+            point_B = points_buffer[1]
+            vertices_A = list(poly_A.exterior.coords)
+            vertices_B = list(poly_B.exterior.coords)
+            for v_A in vertices_A:
+                if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                    if np.dot(lA, v_A) + lb > 0.:
+                        point_A_new = shapely.geometry.Point(v_A)
+            for v_B in vertices_B:
+                if point_B.x == v_B[0] or point_B.y == v_B[1]:
+                    if np.dot(lA, v_B) + lb > 0.:
+                        point_B_new = shapely.geometry.Point(v_B)
+
+            added_poly = shapely.geometry.Polygon(
+                ((point_A.x, point_A.y), (point_B.x, point_B.y),
+                 (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
+            )
+            outer_added_polygons.append(added_poly)
+        elif len(neighbors_buffer) == 1:
+            poly_A = neighbors_buffer[0]
+            point_A = points_buffer[0]
+            vertices_A = list(poly_A.exterior.coords)
+            for v_A in vertices_A:
+                if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                    if np.dot(lA, v_A) + lb > 0.:
+                        point_A_new = shapely.geometry.Point(v_A)
+            unchanged_point = outer_segment.boundary.geoms[0] if shapely.equals(point_A,
+                                                                                outer_segment.boundary.geoms[1]) else \
+            outer_segment.boundary.geoms[1]
+            added_poly = shapely.geometry.Polygon(
+                ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
+            )
+            outer_added_polygons.append(added_poly)
+
+    inner_added_polygons = []
+    for inner_segment, neighbors_buffer, points_buffer, uA, ub in zip(inner_segments, inner_qualified_neighbors,
+                                                                      inner_contact_points, inner_segments_uAs,
+                                                                      inner_segments_ubs):
+        if len(neighbors_buffer) == 2:
+            poly_A = neighbors_buffer[0]
+            poly_B = neighbors_buffer[1]
+            point_A = points_buffer[0]
+            point_B = points_buffer[1]
+            vertices_A = list(poly_A.exterior.coords)
+            vertices_B = list(poly_B.exterior.coords)
+            for v_A in vertices_A:
+                if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                    if np.dot(uA, v_A) + ub < 0.:
+                        point_A_new = shapely.geometry.Point(v_A)
+            for v_B in vertices_B:
+                if point_B.x == v_B[0] or point_B.y == v_B[1]:
+                    if np.dot(uA, v_B) + ub < 0.:
+                        point_B_new = shapely.geometry.Point(v_B)
+
+            added_poly = shapely.geometry.Polygon(
+                ((point_A.x, point_A.y), (point_B.x, point_B.y),
+                 (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
+            )
+            inner_added_polygons.append(added_poly)
+        elif len(neighbors_buffer) == 1:
+            poly_A = neighbors_buffer[0]
+            point_A = points_buffer[0]
+            vertices_A = list(poly_A.exterior.coords)
+            for v_A in vertices_A:
+                if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                    if np.dot(uA, v_A) + ub < 0.:
+                        point_A_new = shapely.geometry.Point(v_A)
+            unchanged_point = inner_segment.boundary.geoms[0] if shapely.equals(point_A,
+                                                                                inner_segment.boundary.geoms[1]) else \
+                inner_segment.boundary.geoms[1]
+            added_poly = shapely.geometry.Polygon(
+                ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
+            )
+            inner_added_polygons.append(added_poly)
+
+
+    for poly in outer_added_polygons:
+        patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
+                                           linewidth=2)
+        # ax.add_patch(patch)
+        # outer_shell = outer_shell.union(poly)
+
+
+    for poly in inner_added_polygons:
+        patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
+                                           linewidth=2)
+        # ax.add_patch(patch)
+        # inner_shell = inner_shell.difference(poly)
+
+    if outer_shell.geom_type == 'Polygon':
+        patch = matplotlib.patches.Polygon(outer_shell.exterior.coords, edgecolor='blue', facecolor='none', linewidth=2)
+        ax.add_patch(patch)
+        for hole in outer_shell.interiors:
+            patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+    elif outer_shell.geom_type == 'MultiPolygon':
+        for poly in outer_shell.geoms:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            for hole in poly.interiors:
+                patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                                   linewidth=2)
+                ax.add_patch(patch)
+    else:
+        raise NotImplementedError("Plotting of other geometries not implemented.")
+
+    if inner_shell.geom_type == 'Polygon':
+        patch = matplotlib.patches.Polygon(inner_shell.exterior.coords, edgecolor='orange', facecolor='none', linewidth=2)
+        ax.add_patch(patch)
+        for hole in inner_shell.interiors:
+            patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+    elif inner_shell.geom_type == 'MultiPolygon':
+        for poly in inner_shell.geoms:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='orange', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            for hole in poly.interiors:
+                patch = matplotlib.patches.Polygon(hole.coords, edgecolor='orange', facecolor='none',
+                                                   linewidth=2)
+                ax.add_patch(patch)
+    else:
+        raise NotImplementedError("Plotting of other geometries not implemented.")
+
+    x = np.linspace(-0.55, 0.55, 1250)
+    y = np.linspace(-0.55, 0.55, 1250)
+    xx, yy = np.meshgrid(x, y)
+    grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+    # Compute SDF values for the grid points
+    sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
+
+    # Select points where |SDF| < epsilon
+    near_surface = np.abs(sdf_values) < 0.01
+    surface_points = grid_points[near_surface]
+
+    # Plot the points
+    ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
+
+    # axins.set_xlim(0.3, 0.4)
+    # axins.set_ylim(0.3, 0.4)
+
+    # Indicate the zoom region
+    # ax.indicate_inset_zoom(axins, edgecolor="black")
+
+    return ax
+
+def fill(ax, net: MLP, deep=False):
+    lower = torch.tensor([-0.55, -0.55])
+    upper = torch.tensor([0.55, 0.55])
+    func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
+    if deep:
+        lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
+            func, net, lower, upper, base_depth=12, max_depth=15, node_dim=2, include_pos_neg=True)
+    else:
+        lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
+            func, net, lower, upper, base_depth=6, max_depth=9, node_dim=2, include_pos_neg=True)
+    lowers = lowers.detach().cpu().numpy()
+    uppers = uppers.detach().cpu().numpy()
+    lAs = lAs.detach().cpu().numpy()
+    lbs = lbs.detach().cpu().numpy()
+    uAs = uAs.detach().cpu().numpy()
+    ubs = ubs.detach().cpu().numpy()
+    pos_lowers = pos_lowers.detach().cpu().numpy()
+    pos_uppers = pos_uppers.detach().cpu().numpy()
+    neg_lowers = neg_lowers.detach().cpu().numpy()
+    neg_uppers = neg_uppers.detach().cpu().numpy()
+
+    # polygon_list = []
+    outer_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    inner_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    for p_l, p_u in zip(pos_lowers, pos_uppers):
+        patch = matplotlib.patches.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])], edgecolor='grey',
+                                           facecolor='none', linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+        outer_shell = outer_shell.difference(shapely.geometry.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])]))
+        inner_shell = inner_shell.difference(shapely.geometry.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])]))
+
+    for n_l, n_u in zip(neg_lowers, neg_uppers):
+        patch = matplotlib.patches.Polygon([n_l, (n_l[0], n_u[1]), n_u, (n_u[0], n_l[1])], edgecolor='grey',
+                                           facecolor='none', linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+
+
+    for l, u in zip(lowers, uppers):
+        patch = matplotlib.patches.Polygon([l, (l[0], u[1]), u, (u[0], l[1])], edgecolor='grey', facecolor='lightblue',
+                                           linestyle='--', linewidth=0.5)
+        ax.add_patch(patch)
+        inner_shell = inner_shell.difference(shapely.geometry.Polygon([l, (l[0], u[1]), u, (u[0], l[1])]))
+
+
+    if outer_shell.geom_type == 'Polygon':
+        patch = matplotlib.patches.Polygon(outer_shell.exterior.coords, edgecolor='blue', facecolor='none', linewidth=2)
+        ax.add_patch(patch)
+        for hole in outer_shell.interiors:
+            patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+    elif outer_shell.geom_type == 'MultiPolygon':
+        for poly in outer_shell.geoms:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            for hole in poly.interiors:
+                patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                                   linewidth=2)
+                ax.add_patch(patch)
+    else:
+        raise NotImplementedError("Plotting of other geometries not implemented.")
+
+    if inner_shell.geom_type == 'Polygon':
+        patch = matplotlib.patches.Polygon(inner_shell.exterior.coords, edgecolor='orange', facecolor='none', linewidth=2)
+        ax.add_patch(patch)
+        for hole in inner_shell.interiors:
+            patch = matplotlib.patches.Polygon(hole.coords, edgecolor='blue', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+    elif inner_shell.geom_type == 'MultiPolygon':
+        for poly in inner_shell.geoms:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='orange', facecolor='none',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            for hole in poly.interiors:
+                patch = matplotlib.patches.Polygon(hole.coords, edgecolor='orange', facecolor='none',
+                                                   linewidth=2)
+                ax.add_patch(patch)
+    else:
+        raise NotImplementedError("Plotting of other geometries not implemented.")
+
+
+    x = np.linspace(-0.55, 0.55, 1250)
+    y = np.linspace(-0.55, 0.55, 1250)
+    xx, yy = np.meshgrid(x, y)
+    grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+    # Compute SDF values for the grid points
+    sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
+
+    # Select points where |SDF| < epsilon
+    near_surface = np.abs(sdf_values) < 0.01
+    surface_points = grid_points[near_surface]
+
+    # Plot the points
+    ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
+    return ax
+
+def marching_square(ax, net: MLP, resolution=2**6+1, threshold=0.0):
+    x = np.linspace(-0.55, 0.55, resolution)
+    y = np.linspace(-0.55, 0.55, resolution)
+    xx, yy = np.meshgrid(x, y)
+    sdf_values = np.zeros_like(xx)
+
+    # Evaluate the SDF function at each grid point
+    for i in range(resolution):
+        for j in range(resolution):
+            sdf_values[i, j] = net(torch.tensor((xx[i, j], yy[i, j])).unsqueeze(0).float().cuda()).detach().cpu().numpy().flatten()
+
+    ax.set_xticks(x)
+    ax.set_yticks(y)
+    ax.grid(visible=True, which='both', color='gray', linestyle='--', linewidth=0.5)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    # Use matplotlib's built-in contour to extract and plot the mesh
+    contour = ax.contour(
+        xx, yy, sdf_values, levels=[threshold], colors='blue', linewidths=2, label="SDF Contour"
+    )
+
+    x = np.linspace(-0.55, 0.55, 1250)
+    y = np.linspace(-0.55, 0.55, 1250)
+    xx, yy = np.meshgrid(x, y)
+    grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+    # Compute SDF values for the grid points
+    sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
+
+    # Select points where |SDF| < epsilon
+    near_surface = np.abs(sdf_values) < 0.01
+    surface_points = grid_points[near_surface]
+
+    # Plot the points
+    ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
+
+def dilation_erosion(ax, net: MLP, resolution=2**4+1, threshold=0.0, delta=0.05):
+    x = np.linspace(-0.55, 0.55, resolution)
+    y = np.linspace(-0.55, 0.55, resolution)
+    xx, yy = np.meshgrid(x, y)
+    sdf_values = np.zeros_like(xx)
+
+    # Evaluate the SDF function at each grid point
+    for i in range(resolution):
+        for j in range(resolution):
+            sdf_values[i, j] = net(
+                torch.tensor((xx[i, j], yy[i, j])).unsqueeze(0).float().cuda()).detach().cpu().numpy().flatten()
+
+    ax.set_xticks(x)
+    ax.set_yticks(y)
+    ax.grid(visible=True, which='both', color='gray', linestyle='--', linewidth=0.5)
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+    # Use matplotlib's built-in contour to extract and plot the mesh
+    contour = ax.contour(
+        xx, yy, sdf_values, levels=[threshold-delta, threshold+delta], colors=['orange', 'blue'], linewidths=2, label="SDF Contour"
+    )
+
+    x = np.linspace(-0.55, 0.55, 1250)
+    y = np.linspace(-0.55, 0.55, 1250)
+    xx, yy = np.meshgrid(x, y)
+    grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+    # Compute SDF values for the grid points
+    sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
+
+    # Select points where |SDF| < epsilon
+    near_surface = np.abs(sdf_values) < 0.01
+    surface_points = grid_points[near_surface]
+
+    # Plot the points
+    ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
+
+def dual_contouring(ax, net, resolution=2**6+1, threshold=0.0):
+    """
+    Implement the 2D Dual Contouring algorithm and plot the extracted mesh.
+
+    Parameters:
+    - ax: The matplotlib Axes object where the mesh will be plotted.
+    - sdf_function: A function that computes the SDF value given an (x, y) coordinate.
+    - resolution: The number of points per axis for the sampling grid.
+    - threshold: The SDF value that defines the contour (e.g., 0 for surface extraction).
+    """
+    # Get the limits of the axes
+    x_min, x_max = -0.55, 0.55
+    y_min, y_max = -0.55, 0.55
+
+    # Create a grid of points
+    x = np.linspace(x_min, x_max, resolution)
+    y = np.linspace(y_min, y_max, resolution)
+    dx = (x_max - x_min) / (resolution - 1)
+    dy = (y_max - y_min) / (resolution - 1)
+    xx, yy = np.meshgrid(x, y)
+
+    # Evaluate SDF at grid points
+    sdf_values = np.zeros_like(xx)
+    for i in range(resolution):
+        for j in range(resolution):
+            sdf_values[i, j] = net(torch.tensor((xx[i, j], yy[i, j])).unsqueeze(0).float().cuda()).detach().cpu().numpy()
+
+    # Function to compute SDF gradient at a point
+    def sdf_gradient(point):
+        point_tensor = torch.tensor(point, dtype=torch.float32, requires_grad=True)
+
+        # Evaluate the SDF function
+        sdf_value = net(point_tensor)
+
+        # Compute gradients
+        gradient = torch.autograd.grad(
+            outputs=sdf_value, inputs=point_tensor, grad_outputs=torch.ones_like(sdf_value), create_graph=True
+        )[0]
+
+        # Convert the gradient to a NumPy array
+        return gradient.detach().cpu().numpy()
+
+    # Perform dual contouring
+    vertices = []  # List of dual points
+    edges = []  # List of edges (pairs of vertex indices)
+    vertex_map = {}  # Map from cell index to vertex index for edge creation
+
+    for i in range(resolution - 1):
+        for j in range(resolution - 1):
+            # Extract SDF values for the current cell
+            cell_sdf = [
+                sdf_values[i, j], sdf_values[i + 1, j],
+                sdf_values[i, j + 1], sdf_values[i + 1, j + 1]
+            ]
+            cell_corners = [
+                (xx[i, j], yy[i, j]), (xx[i + 1, j], yy[i + 1, j]),
+                (xx[i, j + 1], yy[i, j + 1]), (xx[i + 1, j + 1], yy[i + 1, j + 1])
+            ]
+
+            # Skip cells where all values are above or below the threshold
+            if all(v > threshold for v in cell_sdf) or all(v < threshold for v in cell_sdf):
+                continue
+
+            # Compute a dual point (intersection point)
+            A = []
+            b = []
+            for idx, sdf_value in enumerate(cell_sdf):
+                if abs(sdf_value - threshold) < 0.005:  # Close to the surface
+                    gradient = sdf_gradient(cell_corners[idx])
+                    A.append(gradient)
+                    b.append(np.dot(gradient, cell_corners[idx]))
+
+            if A:
+                A = np.array(A)
+                b = np.array(b)
+                dual_point = np.linalg.lstsq(A, b, rcond=None)[0]
+                vertex_index = len(vertices)
+                vertices.append(dual_point)
+                vertex_map[(i, j)] = vertex_index
+
+                # Add edges to connect dual points within the cell
+                if (i - 1, j) in vertex_map:
+                    edges.append((vertex_map[(i - 1, j)], vertex_index))
+                if (i, j - 1) in vertex_map:
+                    edges.append((vertex_map[(i, j - 1)], vertex_index))
+
+    # Plot the grid
+    ax.set_xticks(x)
+    ax.set_yticks(y)
+    ax.grid(visible=True, which='both', color='gray', linestyle='--', linewidth=0.5)
+
+    # Remove tick labels
+    ax.set_xticklabels([])
+    ax.set_yticklabels([])
+
+    # Plot the extracted dual points
+    if len(vertices) > 0:
+        vertices = np.array(vertices)
+        ax.scatter(vertices[:, 0], vertices[:, 1], color='blue', s=10, label='Dual Points')
+
+        # Plot the edges connecting dual points
+        for edge in edges:
+            v1, v2 = vertices[edge[0]], vertices[edge[1]]
+            ax.plot([v1[0], v2[0]], [v1[1], v2[1]], color='green', linewidth=0.5)
+
+        ax.legend()
+    else:
+        print("No vertices found! Check the SDF function or grid resolution.")
+
+    x = np.linspace(-0.55, 0.55, 1250)
+    y = np.linspace(-0.55, 0.55, 1250)
+    xx, yy = np.meshgrid(x, y)
+    grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
+
+    # Compute SDF values for the grid points
+    sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
+
+    # Select points where |SDF| < epsilon
+    near_surface = np.abs(sdf_values) < 0.01
+    surface_points = grid_points[near_surface]
+
+    # Plot the points
+    ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
+
 def main(args: dict):
     # extract parsed arguments
     input_file = args['input_file']
@@ -384,6 +1020,7 @@ def main(args: dict):
     x_L = tuple(args['x_L'])
     x_U = tuple(args['x_U'])
     crown_mode = args['crown_mode']
+    deep = args['deep']
 
     # load in the model
     net = load_net_object(input_file, model_type)
@@ -393,44 +1030,149 @@ def main(args: dict):
     sample_model(net, output_file, model_type, dim_samples)
 
     # TODO: Finish the plot_model_with_bounds function
-    # second_output_file = output_file.split('.png')[0] + '_bounded.png'
-    # fig, ax = plt.subplots(figsize=(8, 8))
+    second_output_file = output_file.split('.png')[0] + '_CROWN.png'
+    fig, ax = plt.subplots(figsize=(8, 8))
+    carve(ax, net, deep)
+    plt.xlim(-0.55, 0.55)
+    plt.ylim(-0.55, 0.55)
+
+    if deep:
+        axins = zoomed_inset_axes(ax, 16, loc=10)
+        for patch in ax.patches:
+            patch_cpy = copy.copy(patch)
+            # cut the umbilical cord the hard way
+            patch_cpy.axes = None
+            patch_cpy.figure = None
+            patch_cpy.set_transform(axins.transData)
+            axins.add_patch(patch_cpy)
+
+        for collection in ax.get_children():
+            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+                offsets = collection.get_offsets()
+                colors = collection.get_facecolors()
+                sizes = collection.get_sizes()
+                axins.scatter(offsets[:, 0], offsets[:, 1],
+                              color=colors, s=sizes)
+
+        axins.set_xlim(0.14, 0.15)
+        axins.set_ylim(0.115, 0.125)
+        mark_inset(ax, axins, loc1=2, loc2=4)
+        plt.xticks(visible=False)
+        plt.yticks(visible=False)
+
+    plt.savefig(second_output_file)
+
+    third_output_file = output_file.split('.png')[0] + '_AA.png'
+    fig, ax = plt.subplots(figsize=(8, 8))
+    fill(ax, net, deep)
+    plt.xlim(-0.55, 0.55)
+    plt.ylim(-0.55, 0.55)
+    if deep:
+        axins = zoomed_inset_axes(ax, 16, loc=10)
+
+        for patch in ax.patches:
+            patch_cpy = copy.copy(patch)
+            # cut the umbilical cord the hard way
+            patch_cpy.axes = None
+            patch_cpy.figure = None
+            patch_cpy.set_transform(axins.transData)
+            axins.add_patch(patch_cpy)
+
+        for collection in ax.get_children():
+            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+                offsets = collection.get_offsets()
+                colors = collection.get_facecolors()
+                sizes = collection.get_sizes()
+                axins.scatter(offsets[:, 0], offsets[:, 1],
+                              color=colors, s=sizes)
+            if isinstance(collection, matplotlib.contour.QuadContourSet):
+                collection_cpy = copy.copy(collection)
+                collection_cpy.axes = None
+                collection_cpy.figure = None
+                collection_cpy.set_transform(axins.transData)
+                axins.add_collection(collection_cpy)
+        axins.set_xlim(0.14, 0.15)
+        axins.set_ylim(0.115, 0.125)
+        mark_inset(ax, axins, loc1=2, loc2=4)
+    plt.xticks(visible=False)
+    plt.yticks(visible=False)
+
+    plt.savefig(third_output_file)
+
+    fourth_output_file = output_file.split('.png')[0] + '_MC.png'
+    fig, ax = plt.subplots(figsize=(8, 8))
     # plot_model_with_bounds(ax, net, second_output_file, rows, cols, x_L, x_U, crown_mode)
+    if deep:
+        marching_square(ax, net, resolution=2**7+1)
+    else:
+        marching_square(ax, net, resolution=2**4+1)
+    plt.xlim(-0.55, 0.55)
+    plt.ylim(-0.55, 0.55)
+    if deep:
+        axins = zoomed_inset_axes(ax, 16, loc=10)
+
+        for collection in ax.get_children():
+            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+                offsets = collection.get_offsets()
+                colors = collection.get_facecolors()
+                sizes = collection.get_sizes()
+                axins.scatter(offsets[:, 0], offsets[:, 1],
+                              color=colors, s=sizes)
+            if isinstance(collection, matplotlib.contour.QuadContourSet):
+                collection_cpy = copy.copy(collection)
+                collection_cpy.axes = None
+                collection_cpy.figure = None
+                collection_cpy.set_transform(axins.transData)
+                axins.add_collection(collection_cpy)
+        axins.set_xlim(0.14, 0.15)
+        axins.set_ylim(0.115, 0.125)
+        mark_inset(ax, axins, loc1=2, loc2=4)
+    plt.xticks(visible=False)
+    plt.yticks(visible=False)
+    plt.savefig(fourth_output_file)
+
+    # fifth_output_file = output_file.split('.png')[0] + '_DC.png'
+    # fig, ax = plt.subplots(figsize=(8, 8))
+    # # plot_model_with_bounds(ax, net, second_output_file, rows, cols, x_L, x_U, crown_mode)
+    # dual_contouring(ax, net, resolution=1000)
+    # plt.xlim(-0.55, 0.55)
+    # plt.ylim(-0.55, 0.55)
+    #
+    # plt.savefig(fifth_output_file)
+
+    sixth_output_file = output_file.split('.png')[0] + '_DE.png'
+    fig, ax = plt.subplots(figsize=(8, 8))
+    if deep:
+        dilation_erosion(ax, net, resolution=2**7+1, delta=0.01)
+    else:
+        dilation_erosion(ax, net, resolution=2**4+1, delta=0.3)
+    plt.xlim(-0.55, 0.55)
+    plt.ylim(-0.55, 0.55)
+    if deep:
+        axins = zoomed_inset_axes(ax, 16, loc=10)
+
+        for collection in ax.get_children():
+            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+                offsets = collection.get_offsets()
+                colors = collection.get_facecolors()
+                sizes = collection.get_sizes()
+                axins.scatter(offsets[:, 0], offsets[:, 1],
+                              color=colors, s=sizes)
+            if isinstance(collection, matplotlib.contour.QuadContourSet):
+                collection_cpy = copy.copy(collection)
+                collection_cpy.axes = None
+                collection_cpy.figure = None
+                collection_cpy.set_transform(axins.transData)
+                axins.add_collection(collection_cpy)
+        axins.set_xlim(0.14, 0.15)
+        axins.set_ylim(0.115, 0.125)
+        mark_inset(ax, axins, loc1=2, loc2=4)
+    plt.xticks(visible=False)
+    plt.yticks(visible=False)
+    plt.savefig(sixth_output_file)
 
     return
 
-    # # Example usage
-    # width, height = 500, 500
-    # num_samples = 1000
-    # t_samples = np.linspace(0, 2 * np.pi, num_samples)
-    # center = (0.5, 0.5)
-    # radius = 1.
-    # theta_samples = np.random.uniform(low=0., high=2 * np.pi, size=num_samples)
-    # xv = (radius * np.cos(theta_samples)) + center[0]
-    # yv = (radius * np.sin(theta_samples)) + center[1]
-    # xy_samples = np.stack([xv, yv], axis=1)
-    # print(f"shape xy_samples {xy_samples.shape}")
-    # circle_sdf = init_circle_sdf(center, radius)
-    #
-    # # # Render the parametric image
-    # # image = render_parametric_curve_image(width, height, circle_sdf, t_samples, line_thickness=2, scale=0.45,
-    # #                                       rgb_mode=False)
-    # # img = Image.fromarray(image)
-    # # img.save("../parametric_renderings/parametric_curve.png")
-    # # image = render_parametric_curve_image(width, height, circle_sdf, t_samples, line_thickness=2, scale=0.45,
-    # #                                       rgb_mode=True)
-    # # img = Image.fromarray(image)
-    # # img.save("../parametric_renderings/parametric_curve_rgb.png")
-    #
-    # # Render the sdf image
-    # image = render_sdf_image(width, height, circle_sdf, xy_samples, line_thickness=2, scale=0.45,
-    #                          rgb_mode=False)
-    # img = Image.fromarray(image)
-    # img.save("../parametric_renderings/sdf_curve.png")
-    # # image = render_sdf_image(width, height, circle_sdf, xy_samples, line_thickness=2, scale=0.45,
-    # #                                       rgb_mode=True)
-    # # img = Image.fromarray(image)
-    # # img.save("../parametric_renderings/sdf_curve_rgb.png")
 
 def parse_args() -> dict:
     parser = argparse.ArgumentParser()
@@ -453,7 +1195,7 @@ def parse_args() -> dict:
                         help="Upper right point of the input bounding box.")
     parser.add_argument("--crown_mode", type=str, default='CROWN',
                         help="Bounding method to use on the neural SDF.")
-
+    parser.add_argument("--deep", default=False, action='store_true')
     # Parse arguments
     args = parser.parse_args()
     args_dict = vars(args)

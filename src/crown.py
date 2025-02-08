@@ -48,19 +48,20 @@ def deconstruct_lbias(_x_L, _x_U, _lA, _dm_lb):
 
 class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
-    def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name=''):
+    def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name='', input_dim=3):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
         self.torch_model = crown_func.to(device)
         self.torch_model.eval()
         self.crown_mode = crown_mode
+        self.input_dim = input_dim
+        self.obj_name = obj_name
         self._init_bounded_func()
         self._enable_clipping = enable_clipping
         if enable_clipping:
             self.bounding_method = crown_mode+'_clipping'
         else:
             self.bounding_method = crown_mode
-        self.obj_name = obj_name
 
     def __call__(self, params, x):
         # x_device = x.to(device)
@@ -82,10 +83,10 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
                         'save_loss_graphs': True}
             }
             self.reuse_alpha = True
-            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, 3)), bound_opts= bound_opts if bound_opts else default_bound_opts)
+            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, self.input_dim)), bound_opts= bound_opts if bound_opts else default_bound_opts)
         else:
             self.reuse_alpha = False
-            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, 3)))#, bound_opts={'relu': 'same-slope'})
+            self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, self.input_dim)))#, bound_opts={'relu': 'same-slope'})
 
     def torch_forward(self, x):
         return self.torch_model(x)

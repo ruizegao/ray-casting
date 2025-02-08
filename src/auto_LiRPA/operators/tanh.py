@@ -333,6 +333,28 @@ class BoundTanh(BoundOptimizableActivation):
                 mask=torch.logical_xor(self.mask_both, mask_direct_upper),
                 type='upper', k=k, x0=d_upper, y0=func(d_upper))
 
+            k = dfunc(m)
+            if self.__class__.__name__ == 'BoundSin':
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l < y_u), d_lower > m),
+                    type='lower', k=k, x0=m, y0=y_m)
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l >= y_u), d_lower < m),
+                    type='lower', k=k, x0=m, y0=y_m)
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l < y_u), d_upper < m),
+                    type='upper', k=k, x0=m, y0=y_m)
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l >= y_u), d_upper > m),
+                    type='upper', k=k, x0=m, y0=y_m)
+            elif self.__class__.__name__  == "BoundTanh":
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(self.mask_both, d_lower > m),
+                    type='lower', k=k, x0=m, y0=y_m)
+                self.add_linear_relaxation(
+                    mask=torch.logical_and(self.mask_both, d_upper < m),
+                    type='upper', k=k, x0=m, y0=y_m)
+
     def bound_relax(self, x, init=False, dim_opt=None):
         if init:
             self.init_linear_relaxation(x, dim_opt)

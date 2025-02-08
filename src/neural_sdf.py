@@ -47,7 +47,7 @@ class MLP(nn.Module):
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
                  with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None,
-                 weight_decay: Union[float, int] = 0):
+                 weight_decay: Union[float, int] = 0, **kwargs):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
