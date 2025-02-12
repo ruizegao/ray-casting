@@ -172,6 +172,21 @@ class MLP(nn.Module):
         """
         return self.model(x)
 
+    def forward_with_coords(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+
+        Before the forward pass, clone the input and enable its gradient. Returning this cloned input allows the
+        output of the network to be differentiated w.r.t. the input.
+
+        :param x: (batches, input_dim)
+        :return:
+        """
+        x = x.clone().detach().requires_grad_(True)  # allows to take derivative w.r.t. input
+
+        output = self.forward(x)
+
+        return output, x
+
     def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
         """
         Returns the loss of a single forward pass

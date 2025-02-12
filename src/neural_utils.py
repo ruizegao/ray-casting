@@ -1,5 +1,5 @@
 """
-Addtional utility methods for the SDF/occupancy based neural network architectures.
+Additional utility methods for the SDF/occupancy based neural network architectures.
 """
 import torch
 import torch.nn as nn
@@ -14,7 +14,7 @@ available_activations = [nn.ReLU, nn.ELU, nn.GELU, nn.Sigmoid]  # list of curren
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
-def load_net_object(pth_file: str, model_type: str) -> Union[MLP, Siren]:
+def load_net_object(pth_file: str, model_type: str, device: torch.device = torch.device('cuda')) -> Union[MLP, Siren]:
     """
     A helper function that retrieves a torch network from a .pth file. As a note, it is wise to save the model type
     in the name of the .pth file since it is a required parameter to load the neural network. This is because the
@@ -22,10 +22,11 @@ def load_net_object(pth_file: str, model_type: str) -> Union[MLP, Siren]:
     than try to consolidate them into a single class.
     :param pth_file:    .pth file to load network parameters and weights from.
     :param model_type:  The type of neural network architecture the .pth file is associated with.
-    :return:    Network object
+    :param device:      The device the neural network will be loaded onto.
+    :return:            Network object
     """
     model_type = model_type.lower()
-    pth_dict = torch.load(pth_file, weights_only=True)
+    pth_dict = torch.load(pth_file, weights_only=True, map_location=device)
     state_dict = pth_dict["state_dict"]  # weights and biases
     model_params = pth_dict["model_params"]  # rest of the parameters
     # initialize the NN model based on its type of architecture

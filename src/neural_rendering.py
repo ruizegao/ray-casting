@@ -230,12 +230,13 @@ def render_parametric_curve_image(width, height, curve_fn, t_samples, line_thick
 
     return image
 
-def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_samples: int = 1000):
+def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = False, dim_samples: int = 1000):
     """
     Generates a heat map plot of a neural SDF
-    :param model_pth:   Path to load model from
-    :param save_path:   Path to save plot to
-    :param dim_samples: Number of samples along each dimension
+    :param net:             SDF Net object
+    :param save_path:       Path to save plot to
+    :param show_normals:    If true, also displays the normals of the points on the surface
+    :param dim_samples:     Number of samples along each dimension
     :return:
     """
     # from matplotlib.patches import Circle
@@ -252,13 +253,61 @@ def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_sa
     # Reshape distances back to 2D for plotting
     dist_2d = dist_np.reshape((dim_samples,)*2)
 
+    # Sample directly on the surface if we also want to display the normals of this SDF
+    if show_normals:
+        # function to calculate gradients of y w.r.t. x
+        def _gradient(x: Tensor, y: Tensor, grad_outputs=None):
+            if grad_outputs is None:
+                grad_outputs = torch.ones_like(y)
+            grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+            return grad
+
+        # Initialize a tensor to hold samples on the levelset of the SDF
+        levelset_samples = torch.empty((0, 2), **set_t)
+        levelset_normals = torch.empty((0, 2), **set_t)
+        num_left = dim_samples
+
+        print("'show_normals' set to True, starting to randomly sample SDF until enough levelset samples "
+              "have been acquired.")
+        print(f"num_left: {num_left}")
+        while num_left > 0:
+            # Run indefinitely until we have acquired enough samples on the levelset surface
+            samples = torch.rand((dim_samples**2, 2), **set_t) - 0.5
+
+            # 'forward_with_coords' method allows us to compute the gradients using PyTorch Autograd
+            distances, samples = net.forward_with_coords(samples)
+            normals = _gradient(samples, distances)
+
+            # Use the distances to create a mask that only retain samples and their normals if they are close
+            # to the surface
+            distances = distances.squeeze(1)
+            mask = torch.isclose(distances, torch.zeros_like(distances), atol=1e-5)
+            m_samples = samples[mask]
+            m_normals = normals[mask]
+            m_samples = m_samples[:min(num_left, m_samples.shape[0]), :]
+            m_normals = m_normals[:m_samples.shape[0], :]
+
+            # Append the samples and normals
+            levelset_samples = torch.concatenate((levelset_samples, m_samples), dim=0)
+            levelset_normals = torch.concatenate((levelset_normals, m_normals), dim=0)
+            num_left -= m_samples.shape[0]
+            print(f"num_left: {num_left}")
+
+        print(f"levelset_normals shape: {levelset_normals.shape}")
+
     # Create the plot
     plt.figure(figsize=(8, 6))
     plt.pcolormesh(x_np, y_np, dist_2d, cmap='seismic', shading='auto')
     plt.colorbar(label="Distance")
-    # radius = 0.1
-    # circle = Circle((0, 0), radius, color='black', fill=False, linewidth=2, label='GT')
-    # plt.gca().add_patch(circle)
+    if show_normals:
+        np_samples = to_numpy(levelset_samples)
+        x_samples, y_samples = np_samples[:, 0], np_samples[:, 1]
+        np_normals = to_numpy(levelset_normals)
+        nx, ny = np_normals[:, 0], np_normals[:, 1]
+        plt.scatter(x_samples, y_samples, color="blue", label="Points")
+        # Plot the normal vectors using quiver
+        plt.quiver(x_samples, y_samples, nx, ny, angles="xy",
+                   scale_units="xy", scale=100, color="green")
     # Ensure equal aspect ratio
     plt.axis("equal")
     plt.title("2D Distance Plot")
@@ -386,11 +435,11 @@ def main(args: dict):
     crown_mode = args['crown_mode']
 
     # load in the model
-    net = load_net_object(input_file, model_type)
+    net = load_net_object(input_file, model_type, device=set_t['device'])
     net = net.to(device=set_t['device'])
 
     # sample the model and generate a 2D plot
-    sample_model(net, output_file, model_type, dim_samples)
+    sample_model(net, output_file, dim_samples)
 
     # TODO: Finish the plot_model_with_bounds function
     # second_output_file = output_file.split('.png')[0] + '_bounded.png'
@@ -461,5 +510,6 @@ def parse_args() -> dict:
     return args_dict
 
 if __name__ == "__main__":
+    print(f"set_t: {set_t}")
     parsed_args = parse_args()
     main(parsed_args)
