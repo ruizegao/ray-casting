@@ -47,7 +47,8 @@ class MLP(nn.Module):
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
                  with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None,
-                 weight_decay: Union[float, int] = 0):
+                 clip_gradient_norm: Optional[float] = None, weight_decay: Union[float, int] = 0,
+                 truncate_output: bool = True):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
@@ -82,6 +83,7 @@ class MLP(nn.Module):
             raise ValueError("Activation not recognized. If you wish to use a new activation function, "
                              "feel free to add it to the list in the constructor.")
         activation_fn_name = activation_fn.__class__.__name__.lower()
+        self.clip_gradient_norm = clip_gradient_norm
 
         ## create the network based on the specifications
 
@@ -115,13 +117,17 @@ class MLP(nn.Module):
                 (f'{layer_count_formatted_plus_one}{activation_fn_name}', activation_fn)
             ])
         # create the last layer
+        self.truncate_output = truncate_output
         layer_count = len(layers)
         layer_count_formatted = f"{layer_count:04d}_"
         layer_count_formatted_plus_one = f"{layer_count+1:04d}_"
-        layers.extend([
-            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
-            (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
-        ])
+        if self.truncate_output:
+            layers.extend([
+                (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+                (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
+            ])
+        else:
+            layers.append((layer_count_formatted + 'dense', nn.Linear(layer_width, 1)))
         # set the loss function
         if fit_mode == 'occupancy':
             # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
@@ -200,6 +206,10 @@ class MLP(nn.Module):
             loss = self.optimizer.step(lambda: self._step_closure(x, y, weights))
         else:
             loss = self._step_closure(x, y, weights)
+            # perform gradient clipping (we do not support this for LBFGS)
+            # typically recommended for stable training
+            if self.clip_gradient_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.clip_gradient_norm)
             self.optimizer.step()
 
         return loss.item()
@@ -217,7 +227,10 @@ class MLP(nn.Module):
         self.optimizer.zero_grad()
 
         # pass the batch through the model
-        y_hat = self.forward(x) * self.sdf_max
+        if self.truncate_output:
+            y_hat = self.forward(x) * self.sdf_max
+        else:
+            y_hat = self.forward(x)
 
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)

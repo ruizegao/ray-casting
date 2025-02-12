@@ -222,6 +222,7 @@ def train_mlp(args: dict):
 
     # loss / data
     optimizer = args["optimizer"]
+    clip_gradient_norm = args["clip_gradient_norm"]
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     n_samples = args["n_samples"]
@@ -231,6 +232,7 @@ def train_mlp(args: dict):
     sample_221 = args["sample_221"]
     show_sample_221 = args["show_sample_221"]
     sdf_max = args["sdf_max"]
+    truncate_output = args["truncate_output"]
     # training
     lr = args["lr"]
     batch_size = args["batch_size"]
@@ -285,6 +287,7 @@ def train_mlp(args: dict):
         'n_layers': n_layers,
         'layer_width': layer_width,
         'sdf_max': sdf_max,
+        'truncate_output': truncate_output,
         'use_positional_encoding': positional_encoding,
         'positional_count': positional_count,
         'positional_power_start': positional_pow_start,
@@ -293,6 +296,7 @@ def train_mlp(args: dict):
         'with_shift': True,
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
+        'clip_gradient_norm': clip_gradient_norm
     }
     net_object = MLP(**model_params)
 
@@ -306,6 +310,7 @@ def train_mlp(args: dict):
         'sample_221': sample_221,
         'show_sample_221': show_sample_221,
         'sdf_max': sdf_max,
+        'truncate_outputs': truncate_output,
         'init_scale_factor': init_scale_factor,
         'verbose': verbose
     }
@@ -470,7 +475,11 @@ def parse_args() -> dict:
                         help="Number of layers to use for the network.")
     parser.add_argument("--layer_width", type=int, default=32,
                         help="Number of neurons per layer.")
-    parser.add_argument("--clip_gradient_norm", type=float, default=1.0,
+    parser.add_argument("--truncate_output", action='store_true',
+                        help="Truncates the ground-truth distances to sdf_max and ensures the output of the MLP "
+                             "is in the range [-1, 1]. Otherwise the ground-truth distances are preserved (but still "
+                             "weighted with respect to sdf_max), and the 'tanh' activation is not used at the output.")
+    parser.add_argument("--clip_gradient_norm", type=float,
                         help="Maximum norm of gradients to clip to for aid with training stability.")
     #positional arguments
     parser.add_argument("--positional_encoding", action='store_true',
