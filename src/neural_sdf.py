@@ -43,11 +43,12 @@ class MLP(nn.Module):
     elu, and tanh.
     """
     def __init__(self, input_dim: int, lrate: float, fit_mode: str, activation:str='relu', n_layers:int=8,
-                 layer_width:int=32, sdf_max: float = 1.0,
+                 layer_width:int=32, sdf_max: float = 1.0, optimizer: str = 'adam',
                  use_positional_encoding: bool = False, positional_count: Optional[int] = None,
                  positional_power_start: Optional[int] = None, positional_prepend: bool = False,
                  with_shift: bool = True, step_size: Optional[int] = None, gamma: Optional[float] = None,
-                 weight_decay: Union[float, int] = 0):
+                 clip_gradient_norm: Optional[float] = None, weight_decay: Union[float, int] = 0,
+                 truncate_output: bool = True):
         """
         Constructs a neural network for fitting to an implicit surface. Layers are carefully named as to make it easier
         to convert the network into an .npz file that can be used for ray-casting.
@@ -82,6 +83,7 @@ class MLP(nn.Module):
             raise ValueError("Activation not recognized. If you wish to use a new activation function, "
                              "feel free to add it to the list in the constructor.")
         activation_fn_name = activation_fn.__class__.__name__.lower()
+        self.clip_gradient_norm = clip_gradient_norm
 
         ## create the network based on the specifications
 
@@ -115,13 +117,17 @@ class MLP(nn.Module):
                 (f'{layer_count_formatted_plus_one}{activation_fn_name}', activation_fn)
             ])
         # create the last layer
+        self.truncate_output = truncate_output
         layer_count = len(layers)
         layer_count_formatted = f"{layer_count:04d}_"
         layer_count_formatted_plus_one = f"{layer_count+1:04d}_"
-        layers.extend([
-            (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
-            (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
-        ])
+        if self.truncate_output:
+            layers.extend([
+                (layer_count_formatted + 'dense', nn.Linear(layer_width, 1)),
+                (layer_count_formatted_plus_one + 'tanh', nn.Tanh())
+            ])
+        else:
+            layers.append((layer_count_formatted + 'dense', nn.Linear(layer_width, 1)))
         # set the loss function
         if fit_mode == 'occupancy':
             # We will not apply Sigmoid. The raw logits will be passed to BCE which also applies sigmoid for
@@ -147,7 +153,15 @@ class MLP(nn.Module):
         self.fit_mode = fit_mode
         self.lr = lrate
         self.sdf_max = sdf_max
-        self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        optimizer = optimizer.lower()
+        if optimizer == 'adam':
+            self.optimizer = optim.Adam(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        elif optimizer == 'sgd':
+            self.optimizer = optim.SGD(self.model.parameters(), lr=lrate, weight_decay=weight_decay)
+        elif optimizer == 'lbfgs':
+            self.optimizer = optim.LBFGS(self.model.parameters(), lr=lrate)
+        else:
+            raise ValueError(f"Optimizer {optimizer} not recognized.")
 
         # set LR scheduler
         self.scheduler = None
@@ -164,6 +178,21 @@ class MLP(nn.Module):
         """
         return self.model(x)
 
+    def forward_with_coords(self, x: Tensor) -> Tuple[Tensor, Tensor]:
+        """
+
+        Before the forward pass, clone the input and enable its gradient. Returning this cloned input allows the
+        output of the network to be differentiated w.r.t. the input.
+
+        :param x: (batches, input_dim)
+        :return:
+        """
+        x = x.clone().detach().requires_grad_(True)  # allows to take derivative w.r.t. input
+
+        output = self.forward(x)
+
+        return output, x
+
     def step(self, x: Tensor, y: Tensor, weights: Tensor) -> float:
         """
         Returns the loss of a single forward pass
@@ -172,11 +201,36 @@ class MLP(nn.Module):
         :param weights: (Batch, input size), weights to apply to input samples to correct class imbalance
         :return:        loss
         """
+
+        if isinstance(self.optimizer, optim.LBFGS):
+            loss = self.optimizer.step(lambda: self._step_closure(x, y, weights))
+        else:
+            loss = self._step_closure(x, y, weights)
+            # perform gradient clipping (we do not support this for LBFGS)
+            # typically recommended for stable training
+            if self.clip_gradient_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.clip_gradient_norm)
+            self.optimizer.step()
+
+        return loss.item()
+
+    def _step_closure(self, x: Tensor, y: Tensor, weights: Tensor):
+        """
+        The actual step optimization is placed into this closure method to enable
+        support with the LBFGS optimizer.
+        :param x:
+        :param y:
+        :param weights:
+        :return:
+        """
         # zero the gradients
         self.optimizer.zero_grad()
 
         # pass the batch through the model
-        y_hat = self.forward(x) * self.sdf_max
+        if self.truncate_output:
+            y_hat = self.forward(x) * self.sdf_max
+        else:
+            y_hat = self.forward(x)
 
         # compute the loss
         unweighted_loss = self.loss_fn(y_hat, y)
@@ -184,10 +238,8 @@ class MLP(nn.Module):
 
         # update model
         loss.backward()
-        self.optimizer.step()
 
-        return loss.item()
-
+        return loss
 
 class Siren(nn.Module):
     def __init__(self, in_features: int, hidden_features: int, hidden_layers: int, out_features: int,

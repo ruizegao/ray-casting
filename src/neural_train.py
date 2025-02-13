@@ -1,3 +1,4 @@
+
 """
 Main script for training a neural network to be an SDF or occupancy based network.
 """
@@ -221,6 +222,8 @@ def train_mlp(args: dict):
     positional_prepend = args["positional_prepend"]
 
     # loss / data
+    optimizer = args["optimizer"]
+    clip_gradient_norm = args["clip_gradient_norm"]
     fit_mode = args["fit_mode"]
     n_epochs = args["n_epochs"]
     n_samples = args["n_samples"]
@@ -230,6 +233,7 @@ def train_mlp(args: dict):
     sample_221 = args["sample_221"]
     show_sample_221 = args["show_sample_221"]
     sdf_max = args["sdf_max"]
+    truncate_output = args["truncate_output"]
     # training
     lr = args["lr"]
     batch_size = args["batch_size"]
@@ -284,13 +288,16 @@ def train_mlp(args: dict):
         'n_layers': n_layers,
         'layer_width': layer_width,
         'sdf_max': sdf_max,
+        'truncate_output': truncate_output,
         'use_positional_encoding': positional_encoding,
         'positional_count': positional_count,
         'positional_power_start': positional_pow_start,
         'positional_prepend': positional_prepend,
+        'optimizer': optimizer,
         'with_shift': True,
         'step_size': lr_decay_every,
         'gamma': lr_decay_frac,
+        'clip_gradient_norm': clip_gradient_norm
     }
     net_object = MLP(**model_params)
 
@@ -304,6 +311,7 @@ def train_mlp(args: dict):
         'sample_221': sample_221,
         'show_sample_221': show_sample_221,
         'sdf_max': sdf_max,
+        'truncate_outputs': truncate_output,
         'init_scale_factor': init_scale_factor,
         'verbose': verbose
     }
@@ -468,7 +476,11 @@ def parse_args() -> dict:
                         help="Number of layers to use for the network.")
     parser.add_argument("--layer_width", type=int, default=32,
                         help="Number of neurons per layer.")
-    parser.add_argument("--clip_gradient_norm", type=float, default=1.0,
+    parser.add_argument("--truncate_output", action='store_true',
+                        help="Truncates the ground-truth distances to sdf_max and ensures the output of the MLP "
+                             "is in the range [-1, 1]. Otherwise the ground-truth distances are preserved (but still "
+                             "weighted with respect to sdf_max), and the 'tanh' activation is not used at the output.")
+    parser.add_argument("--clip_gradient_norm", type=float,
                         help="Maximum norm of gradients to clip to for aid with training stability.")
     #positional arguments
     parser.add_argument("--positional_encoding", action='store_true',
@@ -492,7 +504,7 @@ def parse_args() -> dict:
     parser.add_argument("--siren_c3", type=float, default=1e2)
 
     # loss / data
-    parser.add_argument("--fit_mode", type=str, default='sdf',
+    parser.add_argument("--fit_mode", type=str, default='sdf', choices=['sdf', 'occupancy'],
                         help="Type of function to fit. The neural network should be trained to be sdf "
                              "(signed distance function) or occupancy.")
     parser.add_argument("--n_samples", type=int, default=1000000,
@@ -508,6 +520,8 @@ def parse_args() -> dict:
                         help="Number of epochs to train for.")
     parser.add_argument("--batch_size", type=int, default=2048,
                         help="Batch size per epoch.")
+    parser.add_argument("--optimizer", type=str, default='adam', choices=['adam', 'sgd', 'lbfgs'],
+                        help="Optimizer to use for training.")
     parser.add_argument("--init_scale_factor", type=int, default=2,
                         help="For loading a 2D png image to use an SDF, the original image may not produce enough "
                              "samples. In this case, the image will iteratively get refactored until the number of "

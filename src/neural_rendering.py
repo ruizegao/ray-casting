@@ -2,7 +2,7 @@
 Main script for taking a pretrained SDF/occupancy based neural network and visualizing their output.
 """
 import argparse
-
+import tqdm
 import numpy as np
 import torch
 from torch import Tensor
@@ -39,6 +39,7 @@ set_t = {
     'dtype': torch.float32,
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
+gpu_id = torch.cuda.current_device()
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
@@ -239,12 +240,15 @@ def render_parametric_curve_image(width, height, curve_fn, t_samples, line_thick
 
     return image
 
-def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_samples: int = 1000):
+def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = False, normal_scale: float = 1.0,
+                 dim_samples: int = 1000):
     """
     Generates a heat map plot of a neural SDF
-    :param model_pth:   Path to load model from
-    :param save_path:   Path to save plot to
-    :param dim_samples: Number of samples along each dimension
+    :param net:             SDF Net object
+    :param save_path:       Path to save plot to
+    :param show_normals:    If true, also displays the normals of the points on the surface
+    :param normal_scale:    Scale the normals by the given value after they have been normalized
+    :param dim_samples:     Number of samples along each dimension
     :return:
     """
     # from matplotlib.patches import Circle
@@ -260,13 +264,85 @@ def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_sa
 
     # Reshape distances back to 2D for plotting
     dist_2d = dist_np.reshape((dim_samples,)*2)
+
+    # Sample directly on the surface if we also want to display the normals of this SDF
+    if show_normals:
+        # function to calculate gradients of y w.r.t. x
+        def _gradient(x: Tensor, y: Tensor, grad_outputs=None):
+            if grad_outputs is None:
+                grad_outputs = torch.ones_like(y)
+            grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
+            return grad
+
+        # FIXME: This logic is not correct, but it shows that we could handle inputs in an arbitrary range
+        # if isinstance(net, MLP) and not net.truncate_output:
+        #     xl, xu = dist_2d[:, 0].min(), dist_2d[:, 0].max()
+        #     yl, yu = dist_2d[:, 1].min(), dist_2d[:, 1].max()
+        #     x_range = xu - xl
+        #     y_range = yu - yu
+        #     scale = torch.tensor([x_range, y_range], **set_t).reshape(1, 2)
+        #     offset = torch.tensor([xl, yu], **set_t).reshape(1, 2)
+        #     _generate_samples = lambda : torch.rand((dim_samples * 100, 2), **set_t) * scale + offset
+        # else:
+        # generate square number of samples to speed up the process of finding samples on the surface level-set
+        _generate_samples = lambda : torch.rand((dim_samples**2, 2), **set_t) - 0.5
+
+        # Initialize a tensor to hold samples on the levelset of the SDF
+        levelset_samples = torch.empty((0, 2), **set_t)
+        levelset_normals = torch.empty((0, 2), **set_t)
+        num_left = dim_samples
+
+        print("'show_normals' set to True, starting to randomly sample SDF until enough levelset samples "
+              "have been acquired.")
+        num_left_progress_bar = tqdm(range(dim_samples), desc="Surface samples", leave=True)
+        while num_left > 0:
+            # Run indefinitely until we have acquired enough samples on the level-set surface
+            samples = _generate_samples()
+
+            # 'forward_with_coords' method allows us to compute the gradients using PyTorch Autograd
+            distances, samples = net.forward_with_coords(samples)
+            # detach since we don't need to retain the computation graph otherwise we quickly use up a lot of GPU memory
+            normals = _gradient(samples, distances).detach()
+
+            # Use the distances to create a mask that only retain samples and their normals if they are close
+            # to the surface
+            distances = distances.squeeze(1)
+            mask = torch.logical_and((distances >= 0.), (distances <= 1e-6))
+            m_samples = samples[mask]
+            m_normals = normals[mask]
+            m_samples = m_samples[:min(num_left, m_samples.shape[0]), :]
+            m_normals = m_normals[:m_samples.shape[0], :]
+
+            # Append the samples and normals
+            levelset_samples = torch.concatenate((levelset_samples, m_samples), dim=0)
+            levelset_normals = torch.concatenate((levelset_normals, m_normals), dim=0)
+
+            # final updates
+            num_left -= m_samples.shape[0]
+            num_left_progress_bar.update(m_samples.shape[0])
+            num_left_progress_bar.set_postfix({'num_left': num_left})
+
     # Create the plot
     plt.figure(figsize=(8, 6))
-    plt.pcolormesh(x_np, y_np, dist_2d, cmap='seismic', shading='auto')
+    # adjust vmin and vmax to be equal in magnitude so that white contours represent the zero level-set in the plot
+    max_abs = np.abs(dist_2d).max()
+    vmin = -max_abs
+    vmax = max_abs
+    plt.pcolormesh(x_np, y_np, dist_2d, vmin=vmin, vmax=vmax, cmap='seismic', shading='auto')
     plt.colorbar(label="Distance")
-    # radius = 0.1
-    # circle = Circle((0, 0), radius, color='black', fill=False, linewidth=2, label='GT')
-    # plt.gca().add_patch(circle)
+    if show_normals:
+        np_samples = to_numpy(levelset_samples)
+        x_samples, y_samples = np_samples[:, 0], np_samples[:, 1]
+        np_normals = to_numpy(levelset_normals)
+        # Normalize and scale the normals:
+        norms = np.linalg.norm(np_normals, axis=1, keepdims=True)
+        np_normals_normalized = np_normals / (norms + 1e-8)
+        np_normals_scaled = normal_scale * np_normals_normalized
+        nx, ny = np_normals_scaled[:, 0], np_normals_scaled[:, 1]
+        plt.scatter(x_samples, y_samples, color="blue", label="Points")
+        # Plot the normal vectors using quiver
+        plt.quiver(x_samples, y_samples, nx, ny, angles="xy",
+                   scale_units="xy", scale=1, color="green")
     # Ensure equal aspect ratio
     plt.axis("equal")
     plt.title("2D Distance Plot")
@@ -274,112 +350,6 @@ def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_sa
     plt.ylabel("Y")
     plt.savefig(save_path)
     plt.close()
-
-def plot_model_with_bounds(ax, net, save_path: str, rows: int, cols: int, bl_coord: Tuple[float, float],
-                           ur_coord: Tuple[float, float], crown_mode='CROWN', bound_opts: Optional[dict] = None):
-    """
-
-    :param ax:
-    :param net:
-    :param save_path:
-    :param rows:
-    :param cols:
-    :param bl_coord:
-    :param ur_coord:
-    :return:
-    """
-    default_bound_opts = {
-        'optimize_bound_args':
-            {
-                'iteration': 30,
-                'lr_alpha': 1e-1,
-                'keep_best': False,
-                'early_stop_patience': 1e6,
-                'lr_decay': 1,
-                'save_loss_graphs': True}
-    }
-    if crown_mode.lower() == 'alpha-crown':
-        default_bound_opts = {
-            'optimize_bound_args':
-                {
-                    'iteration': 30,
-                    'lr_alpha': 1e-1,
-                    'keep_best': False,
-                    'early_stop_patience': 1e6,
-                    'lr_decay': 1,
-                    'save_loss_graphs': True}
-        }
-        reuse_alpha = True
-        bounded_net = BoundedModule(net, torch.empty((1, 2)), bound_opts=bound_opts if bound_opts else default_bound_opts)
-    else:
-        reuse_alpha = False
-        bounded_net = BoundedModule(net, torch.empty((1, 2)))  # , bound_opts={'relu': 'same-slope'})
-    needed_A_dict = defaultdict(set)
-    output_name = bounded_net.output_name[0]
-    input_name = bounded_net.input_name[0]
-    needed_A_dict[output_name].add(input_name)
-
-    # unpack the bottom left and upper right coordinates
-    x_min, y_min = bl_coord
-    x_max, y_max = ur_coord
-
-    # Calculate step size for each grid cell
-    x_step = (x_max - x_min) / cols
-    y_step = (y_max - y_min) / rows
-
-    # Draw the grid
-    for row in range(rows + 1):
-        y = y_min + row * y_step
-        ax.axhline(y, color='black', linewidth=0.5)
-    for col in range(cols + 1):
-        x = x_min + col * x_step
-        ax.axvline(x, color='black', linewidth=0.5)
-
-    # Add diagonal lines to each cell using custom coordinates
-    for row in range(rows):
-        for col in range(cols):
-            # TODO: This function is not finished as of yet. This section of code should iterate through each
-            # cell, generate a hyperplane on this cell, and display it in the cell if the plane intersects.
-            x_start = x_min + col * x_step
-            x_end = x_start + x_step
-            y_start = y_min + row * y_step
-            y_end = y_start + y_step
-            x_L = torch.tensor([x_start, y_start])
-            x_U = torch.tensor([x_end, y_end])
-            box_center = (x_U + x_L)/2
-            ptb = PerturbationLpNorm(x_L=x_L, x_U=x_U)
-            bounded_x = BoundedTensor(box_center, ptb)
-            result = bounded_net.compute_bounds(x=(bounded_x,), method=crown_mode, needed_A_dict=needed_A_dict,
-                                                bound_lower=True, bound_upper=True,
-                                                return_A=True, reuse_alpha=reuse_alpha)  # dynamic forward
-            may_lower, may_upper, A_dict = result
-            lA = A_dict[output_name][input_name]['lA']
-            lbias = A_dict[output_name][input_name]['lbias']
-            uA = A_dict[output_name][input_name]['uA']
-            ubias = A_dict[output_name][input_name]['ubias']
-            # Example diagonal: bottom-left to top-right
-            ax.plot([x_start, x_end], [y_start, y_end], color='red', alpha=0.5, linewidth=0.7)
-
-    # Set axis limits and aspect ratio
-    ax.set_xlim(x_min, x_max)
-    ax.set_ylim(y_min, y_max)
-    ax.set_aspect('equal')  # Ensures square cells
-
-    # Align tick marks and values with grid lines
-    x_ticks = np.arange(x_min, x_max + x_step, x_step)
-    y_ticks = np.arange(y_min, y_max + y_step, y_step)
-    ax.set_xticks(x_ticks)
-    ax.set_yticks(y_ticks)
-
-    # Add labels for clarity (optional)
-    ax.set_xlabel("X-axis")
-    ax.set_ylabel("Y-axis")
-
-    # Optionally, add tick labels
-    ax.set_xticklabels([f"{x:.1f}" for x in x_ticks])
-    ax.set_yticklabels([f"{y:.1f}" for y in y_ticks])
-
-    return ax
 
 def project_line_onto_square(a1, a2, b, x1_min, x1_max, x2_min, x2_max):
     # Define the bounding box (square)

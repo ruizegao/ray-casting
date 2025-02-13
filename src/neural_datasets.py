@@ -28,6 +28,7 @@ class SampleDataset(Dataset):
             show_sample_221: bool = False,
             shape_dict: Optional[dict] = None,
             init_scale_factor: int = 2,
+            truncate_outputs: bool = True,
             device = torch.device('cuda'),
             verbose=False
     ):
@@ -69,6 +70,7 @@ class SampleDataset(Dataset):
                 'sdf_max': sdf_max,
                 'minimum_points': n_samples,
                 'init_scale_factor': init_scale_factor,
+                'truncate_outputs': truncate_outputs,
                 'device': device
             }
             self._init_from_png(**png_args)
@@ -144,12 +146,12 @@ class SampleDataset(Dataset):
         self.weights = torch.from_numpy(samp_weight).reshape(n_samples, 1)
 
     def _init_from_png(self, sdf_png_path: str, shape_dict: dict, fit_mode: str, minimum_points: int,
-                       init_scale_factor: int, sdf_max: float, device: torch.device):
+                       init_scale_factor: int, sdf_max: float, truncate_outputs: bool, device: torch.device):
         """
         Initializes a dataset of SDF/occupancy based samples from a black and white png image. This function
         relies on the gpytoolbox to collect these samples.
         :param sdf_png_path:
-        :param shape_dict: 
+        :param shape_dict:
         :param fit_mode:
         :param minimum_points:
         :param init_scale_factor:
@@ -214,30 +216,27 @@ class SampleDataset(Dataset):
                 off_surface_coords = torch.concatenate(
                     (off_surface_coords[close_mask][:num_close, :].reshape(num_close, 2),
                      off_surface_coords[torch.logical_not(close_mask)][:num_left, :].reshape(num_left, 2)), dim=0)
-                samp_target = torch.concatenate((torch.zeros((on_surface_points, 1)),
-                                                 samp_target[close_mask].reshape(num_close, 1),
-                                                 sdf_max * torch.sign(
-                                                     samp_target[torch.logical_not(close_mask)][:num_left]).reshape(
+                if truncate_outputs:
+                    # The ground-truth distance for points that are far away get truncated to sdf_max
+                    samp_target = torch.concatenate((torch.zeros((on_surface_points, 1)),
+                                                     samp_target[close_mask].reshape(num_close, 1),
+                                                     sdf_max * torch.sign(
+                                                         samp_target[torch.logical_not(close_mask)][:num_left]).reshape(
+                                                         num_left, 1)), dim=0)
+                else:
+                    # The ground-truth distance for all points are preserved, but we will give points that are far away
+                    # smaller importance
+                    samp_target = torch.concatenate((torch.zeros((on_surface_points, 1)),
+                                                     samp_target[close_mask].reshape(num_close, 1),
+                                                     samp_target[torch.logical_not(close_mask)][:num_left].reshape(
                                                      num_left, 1)), dim=0)
                 samp_weight = torch.concatenate((9 / 20 * torch.ones((on_surface_points + num_close, 1)),
-                                                 1 / 20 * torch.ones((num_left, 1))), dim=0)
+                                                 1 / 10 * torch.ones((num_left, 1))), dim=0)
             # save inputs and labels
             coords = torch.concatenate((coords, off_surface_coords.cpu()), dim=0)
-            # samp_target = samp_target.cpu().reshape(off_surface_points, 1).repeat(2, 1)
-            # samp_target[:on_surface_points, :] = 0.
-            # samp_weight = samp_weight.cpu().reshape(off_surface_points, 1).repeat(2, 1)
-            # samp_weight[:on_surface_points, :] = 9/20
-            # close_mask = (samp_target[on_surface_points:, :].abs() <= 0.05)
-            # num_close = close_mask.to(dtype=int).sum()
             print(f"{num_close} samples are close to the surface.")
-            # off_weights = torch.where(close_mask, 9/20, 1/10)
-            # off_targets = torch.where(close_mask, samp_target[on_surface_points:, :], 0.05*torch.sign(samp_target[on_surface_points:, :]))
-            # samp_target[on_surface_points:, :] = off_targets
-            # samp_weight[on_surface_points:, :] = off_weights
-            # samp_weight[on_surface_points:, :] = 1/3
         else:
             raise ValueError(f"Fit mode {fit_mode} not recognized. Please select from ['occupancy', 'sdf'].")
-
 
         self.x = coords  # shape (n_samples, 2)
         self.y = samp_target
