@@ -278,10 +278,14 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
         # else:
         # generate square number of samples to speed up the process of finding samples on the surface level-set
         _generate_samples = lambda : torch.rand((dim_samples**2, 2), **set_t) - 0.5
+        if isinstance(net, MLP) and net.fit_mode == 'occupancy':
+            _generate_mask = lambda x : torch.logical_and((x >= 0.5), (x <= 0.5 + 1e-3))
+        else:
+            _generate_mask = lambda x : torch.logical_and((x >= 0.), (x <= 1e-6))
 
         # Initialize a tensor to hold samples on the levelset of the SDF
-        levelset_samples = torch.empty((0, 2), **set_t)
-        levelset_normals = torch.empty((0, 2), **set_t)
+        levelset_samples = torch.empty((0, 2), dtype=set_t['dtype'], device=torch.device('cpu'))
+        levelset_normals = torch.empty((0, 2), dtype=set_t['dtype'], device=torch.device('cpu'))
         num_left = dim_samples
 
         print("'show_normals' set to True, starting to randomly sample SDF until enough levelset samples "
@@ -299,15 +303,15 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
             # Use the distances to create a mask that only retain samples and their normals if they are close
             # to the surface
             distances = distances.squeeze(1)
-            mask = torch.logical_and((distances >= 0.), (distances <= 1e-6))
+            mask = _generate_mask(distances)
             m_samples = samples[mask]
             m_normals = normals[mask]
             m_samples = m_samples[:min(num_left, m_samples.shape[0]), :]
             m_normals = m_normals[:m_samples.shape[0], :]
 
             # Append the samples and normals
-            levelset_samples = torch.concatenate((levelset_samples, m_samples), dim=0)
-            levelset_normals = torch.concatenate((levelset_normals, m_normals), dim=0)
+            levelset_samples = torch.concatenate((levelset_samples, m_samples.cpu()), dim=0)
+            levelset_normals = torch.concatenate((levelset_normals, m_normals.cpu()), dim=0)
 
             # final updates
             num_left -= m_samples.shape[0]

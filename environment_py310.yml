@@ -44,6 +44,7 @@ dependencies:
       - fonttools==4.54.1
       - fsspec==2024.9.0
       - genshi==0.7.9
+      - gpytoolbox==0.3.3
       - imageio==2.36.0
       - intel-cmplr-lib-ur==2024.2.1
       - intel-openmp==2024.2.1
@@ -53,6 +54,7 @@ dependencies:
       - jinja2==3.1.4
       - kiwisolver==1.4.7
       - lazy-loader==0.4
+      - libigl==2.5.1
       - manifold==0.2.0
       - mapbox-earcut==1.0.2
       - markupsafe==3.0.2
