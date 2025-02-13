@@ -42,6 +42,8 @@ cache_dir = "cache_bounds/compute_bounds_cache.npz"
 
 to_numpy = lambda x : x.detach().cpu().numpy()  # converts tensor to numpy array
 
+# def surface_normal_loss()
+
 def main():
     parser = argparse.ArgumentParser()
 

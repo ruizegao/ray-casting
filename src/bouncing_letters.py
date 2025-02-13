@@ -309,7 +309,7 @@ class BouncyBalls(object):
             pymunk.Segment(static_body, (300, 500), (500, 400), 0.0),
         ]
         for line in static_lines:
-            line.elasticity = 0.8
+            line.elasticity = 0.9
             line.friction = 0.5
         self._space.add(*static_lines)
 
@@ -363,8 +363,8 @@ class BouncyBalls(object):
         shapes = []
         for vertices in scaled_polygons:
             shape = pymunk.Poly(body, vertices)
-            shape.elasticity = 0.95
-            shape.friction = 0.9
+            shape.elasticity = 0.8
+            shape.friction = 0.5
             shapes.append(shape)
 
         self._space.add(body, *shapes)
@@ -388,19 +388,19 @@ class BouncyBalls(object):
 def main():
     c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
     c_net = c_net.to(device=set_t['device'])
-    c_components = carve(c_net, deep=True)
+    c_components = carve(c_net, deep=False)
     global C_COMP
     C_COMP = [shapely.geometry.Polygon(vertices) for vertices in c_components]
 
     v_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/V_MLP.pth', 'mlp')
     v_net = v_net.to(device=set_t['device'])
-    v_components = carve(v_net, deep=True)
+    v_components = carve(v_net, deep=False)
     global V_COMP
     V_COMP = [shapely.geometry.Polygon(vertices) for vertices in v_components]
 
     i_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/I_MLP.pth', 'mlp')
     i_net = i_net.to(device=set_t['device'])
-    i_components = carve(i_net, deep=True)
+    i_components = carve(i_net, deep=False)
     global I_COMP
     I_COMP = [shapely.geometry.Polygon(vertices) for vertices in i_components]
 

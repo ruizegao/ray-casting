@@ -40,7 +40,7 @@ def create_static_polygons(space):
 
     return shapes_l, shapes_t
 
-def generate_random_circle(space, radius=0.00):
+def generate_random_circle(space, radius=0.05):
     x, y = random.uniform(-0.5, 0.5), random.uniform(-0.5, 0.5)
     body = pymunk.Body(body_type=pymunk.Body.KINEMATIC)
     body.position = (x, y)
@@ -58,9 +58,9 @@ def check_intersection_robust(shape, shapes_l, shapes_t, net):
     for s in shapes_l:
         if shape.shapes_collide(s).points:
             if check_intersection(shape, shapes_t):
-                # if check_intersection_mlp(net, shape.body.position):
-                #     return True
-                return check_intersection_mlp(net, shape.body.position)
+                if check_intersection_mlp(net, shape.body.position):
+                    return True
+                # return check_intersection_mlp(net, shape.body.position)
                 # return True
     return False
 
@@ -72,7 +72,7 @@ def check_intersection_space(space, shape):
                 return True
     return False
 
-def check_intersection_mlp(net, circle_coords, circle_radius=0.00):
+def check_intersection_mlp(net, circle_coords, circle_radius=0.05):
     distance = net(torch.tensor(circle_coords)).item()
     # print(circle_coords, distance)
     return distance <= circle_radius
@@ -119,7 +119,7 @@ def visualize(space):
 
 def main():
     global c_net
-    c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP_new.pth', 'mlp')
+    c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
     c_net = c_net.to(device=set_t['device'])
     c_components = carve(c_net, deep=False)
     global C_COMP_L

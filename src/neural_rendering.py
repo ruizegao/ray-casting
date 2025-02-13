@@ -252,8 +252,8 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
     :return:
     """
     # from matplotlib.patches import Circle
-    x_np = np.linspace(-0.55, 0.55, dim_samples)  # 100 points along the x-axis
-    y_np = np.linspace(-0.55, 0.55, dim_samples)  # 100 points along the y-axis
+    x_np = np.linspace(-0.53, 0.53, dim_samples)  # 100 points along the x-axis
+    y_np = np.linspace(-0.53, 0.53, dim_samples)  # 100 points along the y-axis
     X_np, Y_np = np.meshgrid(x_np, y_np)
     X_np = X_np.flatten()
     Y_np = Y_np.flatten()
@@ -378,8 +378,10 @@ def carve(ax, net: MLP, deep=False):
     ax.set_xticklabels([])
     ax.set_yticklabels([])
 
-    lower = torch.tensor([-0.55, -0.55])
-    upper = torch.tensor([0.55, 0.55])
+    lower = torch.tensor([-0.53, -0.53])
+    upper = torch.tensor([0.53, 0.53])
+    lower = torch.tensor([-0.53, -0.53])
+    upper = torch.tensor([0.53,0.53])
     func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
     if deep:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
@@ -399,8 +401,8 @@ def carve(ax, net: MLP, deep=False):
     neg_uppers = neg_uppers.detach().cpu().numpy()
 
     # polygon_list = []
-    outer_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
-    inner_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    outer_shell = shapely.geometry.Polygon([(-0.53, -0.53), (-0.53, 0.53), (0.53, 0.53), (0.53, -0.53)])
+    inner_shell = shapely.geometry.Polygon([(-0.53, -0.53), (-0.53, 0.53), (0.53, 0.53), (0.53, -0.53)])
     for p_l, p_u in zip(pos_lowers, pos_uppers):
         patch = matplotlib.patches.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])], edgecolor='grey',
                                            facecolor='none', linestyle='--', linewidth=0.5)
@@ -429,8 +431,8 @@ def carve(ax, net: MLP, deep=False):
         ax.add_patch(patch)
         square = shapely.geometry.Polygon([l, (l[0], u[1]), u, (u[0], l[1])])
         squares.append(square)
-        outer_line = project_line_onto_square(lA[0], lA[1], lb, -0.55, 0.55, -0.55, 0.55)
-        inner_line = project_line_onto_square(uA[0], uA[1], ub, -0.55, 0.55, -0.55, 0.55)
+        outer_line = project_line_onto_square(lA[0], lA[1], lb, -0.53, 0.53, -0.53, 0.53)
+        inner_line = project_line_onto_square(uA[0], uA[1], ub, -0.53, 0.53, -0.53, 0.53)
 
 
         # For each node and its outer_line segment, get its neighbors that the outer_line segment also intersect with
@@ -471,22 +473,40 @@ def carve(ax, net: MLP, deep=False):
         for g1 in slices1.geoms:
             for g2 in slices2.geoms:
                 intersection = shapely.intersection(g1, g2)
-                if g1.geom_type == 'Polygon' and g2.geom_type == 'Polygon':
-                    c1 = shapely.centroid(g1)
-                    c2 = shapely.centroid(g2)
-                    c1 =np.array([c1.x, c1.y])
-                    c2 =np.array([c2.x, c2.y])
-                    cls1 = np.dot(lA, c1) + lb
-                    cls2 = np.dot(uA, c2) + ub
-                    # if cls1 * cls2 < 0:
-                    if cls1 < 0 and cls2 > 0:
-                        patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
-                                                           facecolor='lightblue', linewidth=2)
-                        ax.add_patch(patch)
+                # if g1.geom_type == 'Polygon' and g2.geom_type == 'Polygon':
+                #     c1 = shapely.centroid(g1)
+                #     c2 = shapely.centroid(g2)
+                #     c1 =np.array([c1.x, c1.y])
+                #     c2 =np.array([c2.x, c2.y])
+                #     cls1 = np.dot(lA, c1) + lb
+                #     cls2 = np.dot(uA, c2) + ub
+                #     # if cls1 * cls2 < 0:
+                #     if cls1 < 0 and cls2 > 0:
+                #     # if cls1 > 0 and cls2 > 0:
+                #         patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
+                #                                            facecolor='lightblue', linewidth=2)
+                #         ax.add_patch(patch)
+                #         # patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
+                #         #                                    facecolor='lightblue', linewidth=2)
+                #         # axins.add_patch(patch)
+                #         # polygon_list.append(intersection)
+                if intersection.geom_type == 'Polygon':
+                    c = shapely.centroid(intersection)
+                    if not len(list(c.coords)) == 0:
+                        c = np.array([c.x, c.y])
+                        cls1 = np.dot(lA, c) + lb
+                        cls2 = np.dot(uA, c) + ub
+                        # if cls1 * cls2 < 0:
+                        if cls1 < 0 and cls2 > 0:
+                        # if cls1 > 0 and cls2 > 0:
+                            patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
+                                                               facecolor='lightblue', linewidth=2)
+                            ax.add_patch(patch)
                         # patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
                         #                                    facecolor='lightblue', linewidth=2)
                         # axins.add_patch(patch)
                         # polygon_list.append(intersection)
+
 
 
     outer_qualified_neighbors = []
@@ -611,15 +631,15 @@ def carve(ax, net: MLP, deep=False):
     for poly in outer_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        ax.add_patch(patch)
-        outer_shell = outer_shell.union(poly)
+        # ax.add_patch(patch)
+        # outer_shell = outer_shell.union(poly)
 
 
     for poly in inner_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        ax.add_patch(patch)
-        inner_shell = inner_shell.difference(poly)
+        # ax.add_patch(patch)
+        # inner_shell = inner_shell.difference(poly)
 
     if outer_shell.geom_type == 'Polygon':
         patch = matplotlib.patches.Polygon(outer_shell.exterior.coords, edgecolor='blue', facecolor='none', linewidth=2)
@@ -659,8 +679,8 @@ def carve(ax, net: MLP, deep=False):
     else:
         raise NotImplementedError("Plotting of other geometries not implemented.")
 
-    x = np.linspace(-0.55, 0.55, 1250)
-    y = np.linspace(-0.55, 0.55, 1250)
+    x = np.linspace(-0.53, 0.53, 1250)
+    y = np.linspace(-0.53, 0.53, 1250)
     xx, yy = np.meshgrid(x, y)
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
@@ -683,8 +703,8 @@ def carve(ax, net: MLP, deep=False):
     return ax
 
 def fill(ax, net: MLP, deep=False):
-    lower = torch.tensor([-0.55, -0.55])
-    upper = torch.tensor([0.55, 0.55])
+    lower = torch.tensor([-0.53, -0.53])
+    upper = torch.tensor([0.53, 0.53])
     func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
     if deep:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
@@ -704,8 +724,8 @@ def fill(ax, net: MLP, deep=False):
     neg_uppers = neg_uppers.detach().cpu().numpy()
 
     # polygon_list = []
-    outer_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
-    inner_shell = shapely.geometry.Polygon([(-0.55, -0.55), (-0.55, 0.55), (0.55, 0.55), (0.55, -0.55)])
+    outer_shell = shapely.geometry.Polygon([(-0.53, -0.53), (-0.53, 0.53), (0.53, 0.53), (0.53, -0.53)])
+    inner_shell = shapely.geometry.Polygon([(-0.53, -0.53), (-0.53, 0.53), (0.53, 0.53), (0.53, -0.53)])
     for p_l, p_u in zip(pos_lowers, pos_uppers):
         patch = matplotlib.patches.Polygon([p_l, (p_l[0], p_u[1]), p_u, (p_u[0], p_l[1])], edgecolor='grey',
                                            facecolor='none', linestyle='--', linewidth=0.5)
@@ -765,8 +785,8 @@ def fill(ax, net: MLP, deep=False):
         raise NotImplementedError("Plotting of other geometries not implemented.")
 
 
-    x = np.linspace(-0.55, 0.55, 1250)
-    y = np.linspace(-0.55, 0.55, 1250)
+    x = np.linspace(-0.53, 0.53, 1250)
+    y = np.linspace(-0.53, 0.53, 1250)
     xx, yy = np.meshgrid(x, y)
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
@@ -782,8 +802,8 @@ def fill(ax, net: MLP, deep=False):
     return ax
 
 def marching_square(ax, net: MLP, resolution=2**6+1, threshold=0.0):
-    x = np.linspace(-0.55, 0.55, resolution)
-    y = np.linspace(-0.55, 0.55, resolution)
+    x = np.linspace(-0.53, 0.53, resolution)
+    y = np.linspace(-0.53, 0.53, resolution)
     xx, yy = np.meshgrid(x, y)
     sdf_values = np.zeros_like(xx)
 
@@ -802,8 +822,8 @@ def marching_square(ax, net: MLP, resolution=2**6+1, threshold=0.0):
         xx, yy, sdf_values, levels=[threshold], colors='blue', linewidths=2, label="SDF Contour"
     )
 
-    x = np.linspace(-0.55, 0.55, 1250)
-    y = np.linspace(-0.55, 0.55, 1250)
+    x = np.linspace(-0.53, 0.53, 1250)
+    y = np.linspace(-0.53, 0.53, 1250)
     xx, yy = np.meshgrid(x, y)
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
@@ -818,8 +838,8 @@ def marching_square(ax, net: MLP, resolution=2**6+1, threshold=0.0):
     ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
 
 def dilation_erosion(ax, net: MLP, resolution=2**4+1, threshold=0.0, delta=0.05):
-    x = np.linspace(-0.55, 0.55, resolution)
-    y = np.linspace(-0.55, 0.55, resolution)
+    x = np.linspace(-0.53, 0.53, resolution)
+    y = np.linspace(-0.53, 0.53, resolution)
     xx, yy = np.meshgrid(x, y)
     sdf_values = np.zeros_like(xx)
 
@@ -839,8 +859,8 @@ def dilation_erosion(ax, net: MLP, resolution=2**4+1, threshold=0.0, delta=0.05)
         xx, yy, sdf_values, levels=[threshold-delta, threshold+delta], colors=['orange', 'blue'], linewidths=2, label="SDF Contour"
     )
 
-    x = np.linspace(-0.55, 0.55, 1250)
-    y = np.linspace(-0.55, 0.55, 1250)
+    x = np.linspace(-0.53, 0.53, 1250)
+    y = np.linspace(-0.53, 0.53, 1250)
     xx, yy = np.meshgrid(x, y)
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
@@ -865,8 +885,8 @@ def dual_contouring(ax, net, resolution=2**6+1, threshold=0.0):
     - threshold: The SDF value that defines the contour (e.g., 0 for surface extraction).
     """
     # Get the limits of the axes
-    x_min, x_max = -0.55, 0.55
-    y_min, y_max = -0.55, 0.55
+    x_min, x_max = -0.53, 0.53
+    y_min, y_max = -0.53, 0.53
 
     # Create a grid of points
     x = np.linspace(x_min, x_max, resolution)
@@ -963,8 +983,8 @@ def dual_contouring(ax, net, resolution=2**6+1, threshold=0.0):
     else:
         print("No vertices found! Check the SDF function or grid resolution.")
 
-    x = np.linspace(-0.55, 0.55, 1250)
-    y = np.linspace(-0.55, 0.55, 1250)
+    x = np.linspace(-0.53, 0.53, 1250)
+    y = np.linspace(-0.53, 0.53, 1250)
     xx, yy = np.meshgrid(x, y)
     grid_points = np.stack([xx.ravel(), yy.ravel()], axis=-1)
 
@@ -984,6 +1004,8 @@ def main(args: dict):
     output_file = args['output_file']
     model_type = args['model_type']
     dim_samples = args['dim_samples']
+    display_normals = args['display_normals']
+    normal_scale = args['normal_scale']
     rows = args['rows']
     cols = args['cols']
     x_L = tuple(args['x_L'])
@@ -992,18 +1014,25 @@ def main(args: dict):
     deep = args['deep']
 
     # load in the model
-    net = load_net_object(input_file, model_type)
+    net = load_net_object(input_file, model_type, device=set_t['device'])
     net = net.to(device=set_t['device'])
 
     # sample the model and generate a 2D plot
-    sample_model(net, output_file, model_type, dim_samples)
+    sample_model_args = {
+        'net': net,
+        'save_path': output_file,
+        'show_normals': display_normals,
+        'normal_scale': normal_scale,
+        'dim_samples': dim_samples,
+    }
+    sample_model(**sample_model_args)
 
     # TODO: Finish the plot_model_with_bounds function
     second_output_file = output_file.split('.png')[0] + '_CROWN.png'
     fig, ax = plt.subplots(figsize=(8, 8))
     carve(ax, net, deep)
-    plt.xlim(-0.55, 0.55)
-    plt.ylim(-0.55, 0.55)
+    plt.xlim(-0.53, 0.53)
+    plt.ylim(-0.53, 0.53)
 
     if deep:
         axins = zoomed_inset_axes(ax, 16, loc=10)
@@ -1034,8 +1063,8 @@ def main(args: dict):
     third_output_file = output_file.split('.png')[0] + '_AA.png'
     fig, ax = plt.subplots(figsize=(8, 8))
     fill(ax, net, deep)
-    plt.xlim(-0.55, 0.55)
-    plt.ylim(-0.55, 0.55)
+    plt.xlim(-0.53, 0.53)
+    plt.ylim(-0.53, 0.53)
     if deep:
         axins = zoomed_inset_axes(ax, 16, loc=10)
 
@@ -1075,8 +1104,8 @@ def main(args: dict):
         marching_square(ax, net, resolution=2**7+1)
     else:
         marching_square(ax, net, resolution=2**4+1)
-    plt.xlim(-0.55, 0.55)
-    plt.ylim(-0.55, 0.55)
+    plt.xlim(-0.53, 0.53)
+    plt.ylim(-0.53, 0.53)
     if deep:
         axins = zoomed_inset_axes(ax, 16, loc=10)
 
@@ -1104,8 +1133,8 @@ def main(args: dict):
     # fig, ax = plt.subplots(figsize=(8, 8))
     # # plot_model_with_bounds(ax, net, second_output_file, rows, cols, x_L, x_U, crown_mode)
     # dual_contouring(ax, net, resolution=1000)
-    # plt.xlim(-0.55, 0.55)
-    # plt.ylim(-0.55, 0.55)
+    # plt.xlim(-0.53, 0.53)
+    # plt.ylim(-0.53, 0.53)
     #
     # plt.savefig(fifth_output_file)
 
@@ -1115,8 +1144,8 @@ def main(args: dict):
         dilation_erosion(ax, net, resolution=2**7+1, delta=0.01)
     else:
         dilation_erosion(ax, net, resolution=2**4+1, delta=0.3)
-    plt.xlim(-0.55, 0.55)
-    plt.ylim(-0.55, 0.55)
+    plt.xlim(-0.53, 0.53)
+    plt.ylim(-0.53, 0.53)
     if deep:
         axins = zoomed_inset_axes(ax, 16, loc=10)
 
@@ -1146,6 +1175,8 @@ def main(args: dict):
 def parse_args() -> dict:
     parser = argparse.ArgumentParser()
 
+    parser = argparse.ArgumentParser()
+
     parser.add_argument("input_file", type=str,
                         help="The path to the .pth model from the root directory.")
     parser.add_argument("output_file", type=str,
@@ -1154,6 +1185,12 @@ def parse_args() -> dict:
                         help="Must specify if the model is one of the following: [mlp, siren].")
     parser.add_argument("--dim_samples", type=int, default=1000,
                         help="The number of samples to draw from the model along each dimension.")
+    parser.add_argument("--display_normals", action="store_true",
+                        help="Will sample the SDF on the zero level-set and calculate its normals to display in the "
+                             "plot.")
+    parser.add_argument("--normal_scale", type=float, default=1.0,
+                        help="If normals are displayed, then their magnitudes are normalized and multiplied by this "
+                             "scaling factor. This is to help make the normals appear visually clear in the plot.")
     parser.add_argument("--rows", type=int, default=8,
                         help="Number of rows to slice the input region for bounding a neural SDF.")
     parser.add_argument("--cols", type=int, default=8,
