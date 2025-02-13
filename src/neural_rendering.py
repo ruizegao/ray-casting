@@ -9,6 +9,7 @@ from torch import Tensor
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
 import os
+from tqdm import tqdm
 from collections import defaultdict
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
@@ -30,6 +31,7 @@ set_t = {
     'dtype': torch.float32,
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
+gpu_id = torch.cuda.current_device()
 
 to_numpy = lambda x : x.detach().cpu().numpy()
 
@@ -230,12 +232,14 @@ def render_parametric_curve_image(width, height, curve_fn, t_samples, line_thick
 
     return image
 
-def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = False, dim_samples: int = 1000):
+def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = False, normal_scale: float = 1.0,
+                 dim_samples: int = 1000):
     """
     Generates a heat map plot of a neural SDF
     :param net:             SDF Net object
     :param save_path:       Path to save plot to
     :param show_normals:    If true, also displays the normals of the points on the surface
+    :param normal_scale:    Scale the normals by the given value after they have been normalized
     :param dim_samples:     Number of samples along each dimension
     :return:
     """
@@ -262,6 +266,19 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
             grad = torch.autograd.grad(y, [x], grad_outputs=grad_outputs, create_graph=True)[0]
             return grad
 
+        # FIXME: This logic is not correct, but it shows that we could handle inputs in an arbitrary range
+        # if isinstance(net, MLP) and not net.truncate_output:
+        #     xl, xu = dist_2d[:, 0].min(), dist_2d[:, 0].max()
+        #     yl, yu = dist_2d[:, 1].min(), dist_2d[:, 1].max()
+        #     x_range = xu - xl
+        #     y_range = yu - yu
+        #     scale = torch.tensor([x_range, y_range], **set_t).reshape(1, 2)
+        #     offset = torch.tensor([xl, yu], **set_t).reshape(1, 2)
+        #     _generate_samples = lambda : torch.rand((dim_samples * 100, 2), **set_t) * scale + offset
+        # else:
+        # generate square number of samples to speed up the process of finding samples on the surface level-set
+        _generate_samples = lambda : torch.rand((dim_samples**2, 2), **set_t) - 0.5
+
         # Initialize a tensor to hold samples on the levelset of the SDF
         levelset_samples = torch.empty((0, 2), **set_t)
         levelset_normals = torch.empty((0, 2), **set_t)
@@ -269,19 +286,20 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
 
         print("'show_normals' set to True, starting to randomly sample SDF until enough levelset samples "
               "have been acquired.")
-        print(f"num_left: {num_left}")
+        num_left_progress_bar = tqdm(range(dim_samples), desc="Surface samples", leave=True)
         while num_left > 0:
-            # Run indefinitely until we have acquired enough samples on the levelset surface
-            samples = torch.rand((dim_samples**2, 2), **set_t) - 0.5
+            # Run indefinitely until we have acquired enough samples on the level-set surface
+            samples = _generate_samples()
 
             # 'forward_with_coords' method allows us to compute the gradients using PyTorch Autograd
             distances, samples = net.forward_with_coords(samples)
-            normals = _gradient(samples, distances)
+            # detach since we don't need to retain the computation graph otherwise we quickly use up a lot of GPU memory
+            normals = _gradient(samples, distances).detach()
 
             # Use the distances to create a mask that only retain samples and their normals if they are close
             # to the surface
             distances = distances.squeeze(1)
-            mask = torch.isclose(distances, torch.zeros_like(distances), atol=1e-5)
+            mask = torch.logical_and((distances >= 0.), (distances <= 1e-6))
             m_samples = samples[mask]
             m_normals = normals[mask]
             m_samples = m_samples[:min(num_left, m_samples.shape[0]), :]
@@ -290,24 +308,33 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
             # Append the samples and normals
             levelset_samples = torch.concatenate((levelset_samples, m_samples), dim=0)
             levelset_normals = torch.concatenate((levelset_normals, m_normals), dim=0)
-            num_left -= m_samples.shape[0]
-            print(f"num_left: {num_left}")
 
-        print(f"levelset_normals shape: {levelset_normals.shape}")
+            # final updates
+            num_left -= m_samples.shape[0]
+            num_left_progress_bar.update(m_samples.shape[0])
+            num_left_progress_bar.set_postfix({'num_left': num_left})
 
     # Create the plot
     plt.figure(figsize=(8, 6))
-    plt.pcolormesh(x_np, y_np, dist_2d, cmap='seismic', shading='auto')
+    # adjust vmin and vmax to be equal in magnitude so that white contours represent the zero level-set in the plot
+    max_abs = np.abs(dist_2d).max()
+    vmin = -max_abs
+    vmax = max_abs
+    plt.pcolormesh(x_np, y_np, dist_2d, vmin=vmin, vmax=vmax, cmap='seismic', shading='auto')
     plt.colorbar(label="Distance")
     if show_normals:
         np_samples = to_numpy(levelset_samples)
         x_samples, y_samples = np_samples[:, 0], np_samples[:, 1]
         np_normals = to_numpy(levelset_normals)
-        nx, ny = np_normals[:, 0], np_normals[:, 1]
+        # Normalize and scale the normals:
+        norms = np.linalg.norm(np_normals, axis=1, keepdims=True)
+        np_normals_normalized = np_normals / (norms + 1e-8)
+        np_normals_scaled = normal_scale * np_normals_normalized
+        nx, ny = np_normals_scaled[:, 0], np_normals_scaled[:, 1]
         plt.scatter(x_samples, y_samples, color="blue", label="Points")
         # Plot the normal vectors using quiver
         plt.quiver(x_samples, y_samples, nx, ny, angles="xy",
-                   scale_units="xy", scale=100, color="green")
+                   scale_units="xy", scale=1, color="green")
     # Ensure equal aspect ratio
     plt.axis("equal")
     plt.title("2D Distance Plot")
@@ -428,6 +455,8 @@ def main(args: dict):
     output_file = args['output_file']
     model_type = args['model_type']
     dim_samples = args['dim_samples']
+    display_normals = args['display_normals']
+    normal_scale = args['normal_scale']
     rows = args['rows']
     cols = args['cols']
     x_L = tuple(args['x_L'])
@@ -439,7 +468,14 @@ def main(args: dict):
     net = net.to(device=set_t['device'])
 
     # sample the model and generate a 2D plot
-    sample_model(net, output_file, dim_samples)
+    sample_model_args = {
+        'net': net,
+        'save_path': output_file,
+        'show_normals': display_normals,
+        'normal_scale': normal_scale,
+        'dim_samples': dim_samples,
+    }
+    sample_model(**sample_model_args)
 
     # TODO: Finish the plot_model_with_bounds function
     # second_output_file = output_file.split('.png')[0] + '_bounded.png'
@@ -492,6 +528,12 @@ def parse_args() -> dict:
                         help="Must specify if the model is one of the following: [mlp, siren].")
     parser.add_argument("--dim_samples", type=int, default=1000,
                         help="The number of samples to draw from the model along each dimension.")
+    parser.add_argument("--display_normals", action="store_true",
+                        help="Will sample the SDF on the zero level-set and calculate its normals to display in the "
+                             "plot.")
+    parser.add_argument("--normal_scale", type=float, default=1.0,
+                        help="If normals are displayed, then their magnitudes are normalized and multiplied by this "
+                             "scaling factor. This is to help make the normals appear visually clear in the plot.")
     parser.add_argument("--rows", type=int, default=8,
                         help="Number of rows to slice the input region for bounding a neural SDF.")
     parser.add_argument("--cols", type=int, default=8,
