@@ -1,3 +1,6 @@
 [submodule "trimesh-ray-optix"]
 	path = trimesh-ray-optix
 	url = https://github.com/lcp29/trimesh-ray-optix
+[submodule "poly_decomp.py"]
+	path = poly_decomp.py
+	url = https://github.com/wsilva32/poly_decomp.py.git

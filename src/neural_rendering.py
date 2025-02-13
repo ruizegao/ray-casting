@@ -260,7 +260,6 @@ def sample_model(net: Union[MLP, Siren], save_path: str, model_type: str, dim_sa
 
     # Reshape distances back to 2D for plotting
     dist_2d = dist_np.reshape((dim_samples,)*2)
-
     # Create the plot
     plt.figure(figsize=(8, 6))
     plt.pcolormesh(x_np, y_np, dist_2d, cmap='seismic', shading='auto')
@@ -414,7 +413,7 @@ def carve(ax, net: MLP, deep=False):
     func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
     if deep:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
-            func, net, lower, upper, base_depth=12, max_depth=15, node_dim=2, include_pos_neg=True)
+            func, net, lower, upper, base_depth=9, max_depth=12, node_dim=2, include_pos_neg=True)
     else:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
             func, net, lower, upper, base_depth=6, max_depth=9, node_dim=2, include_pos_neg=True)
@@ -642,15 +641,15 @@ def carve(ax, net: MLP, deep=False):
     for poly in outer_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        # ax.add_patch(patch)
-        # outer_shell = outer_shell.union(poly)
+        ax.add_patch(patch)
+        outer_shell = outer_shell.union(poly)
 
 
     for poly in inner_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        # ax.add_patch(patch)
-        # inner_shell = inner_shell.difference(poly)
+        ax.add_patch(patch)
+        inner_shell = inner_shell.difference(poly)
 
     if outer_shell.geom_type == 'Polygon':
         patch = matplotlib.patches.Polygon(outer_shell.exterior.coords, edgecolor='blue', facecolor='none', linewidth=2)
@@ -699,7 +698,7 @@ def carve(ax, net: MLP, deep=False):
     sdf_values = net(torch.from_numpy(grid_points).float().cuda()).detach().cpu().numpy().flatten()
 
     # Select points where |SDF| < epsilon
-    near_surface = np.abs(sdf_values) < 0.01
+    near_surface = np.abs(sdf_values) < 0.0005
     surface_points = grid_points[near_surface]
 
     # Plot the points
@@ -719,7 +718,7 @@ def fill(ax, net: MLP, deep=False):
     func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
     if deep:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
-            func, net, lower, upper, base_depth=12, max_depth=15, node_dim=2, include_pos_neg=True)
+            func, net, lower, upper, base_depth=9, max_depth=12, node_dim=2, include_pos_neg=True)
     else:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
             func, net, lower, upper, base_depth=6, max_depth=9, node_dim=2, include_pos_neg=True)

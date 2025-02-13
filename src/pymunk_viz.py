@@ -269,7 +269,7 @@ def main():
     args = parser.parse_args()
     net = load_net_object(args.input_file, args.model_type)
     net = net.to(device=set_t['device'])
-    concex_polygons = carve(net, deep=args.deep)
+    convex_polygons = carve(net, deep=args.deep)
     pygame.init()
     screen = pygame.display.set_mode((800, 600))
     clock = pygame.time.Clock()
@@ -296,11 +296,18 @@ def main():
     poly_body.position = 600, 400
     # poly = pymunk.Poly.create_box(poly_body, (200, 100), 10)
     # poly.sensor = True
-    convex_polygons = [
-        list(polygon.exterior.coords) for polygon in concex_polygons
-    ]
+    convex_polygons = [poly.buffer(0) for poly in convex_polygons]
+    merged_polygon = shapely.ops.unary_union(convex_polygons)
+    if merged_polygon.geom_type == 'Polygon':
+        scaled_polygons = [scale_polygon(merged_polygon.exterior.coords, 100)]
+    else:
+        scaled_polygons = [scale_polygon(poly.exterior.coords, 100) for poly in merged_polygon.geoms]
 
-    scaled_polygons = [scale_polygon(convex_polygon, 100) for convex_polygon in convex_polygons]
+    # convex_polygons = [
+    #     list(polygon.exterior.coords) for polygon in convex_polygons
+    # ]
+    #
+    # scaled_polygons = [scale_polygon(convex_polygon, 100) for convex_polygon in convex_polygons]
 
     # Create and add each convex polygon to the space
     shapes = []
@@ -309,6 +316,7 @@ def main():
         poly.sensor = True  # Keeps it as a sensor if needed
         shapes.append(poly)
 
+    print("number of polygons added:", len(shapes))
     # Add the body and all shapes at the same time
     space.add(poly_body, *shapes)
 
