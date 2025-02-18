@@ -251,7 +251,7 @@ def cast_rays_shell_based(
     hit_id_out[all_true_hit] = 1.
     end_time = time.time()
     print("total rendering time: ", end_time - start_time)
-    return roots, hit_id_out, torch.zeros((dirs.shape[0],)), 0
+    return roots, hit_id_out, all_true_hit, tri_idx, torch.zeros((dirs.shape[0],)), 0
 
 
 

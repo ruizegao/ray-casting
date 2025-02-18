@@ -5,6 +5,7 @@ import argparse
 import tqdm
 import numpy as np
 import torch
+from sympy import andre
 from torch import Tensor
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
@@ -379,13 +380,11 @@ def carve(ax, net: MLP, deep=False):
     ax.set_yticklabels([])
 
     lower = torch.tensor([-0.53, -0.53])
-    upper = torch.tensor([0.53, 0.53])
-    lower = torch.tensor([-0.53, -0.53])
     upper = torch.tensor([0.53,0.53])
     func = crown.CrownImplicitFunction(mlp.func_from_spec(mode='default'), net, crown_mode='crown', input_dim=2)
     if deep:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
-            func, net, lower, upper, base_depth=9, max_depth=12, node_dim=2, include_pos_neg=True)
+            func, net, lower, upper, base_depth=12, max_depth=15, node_dim=2, include_pos_neg=True)
     else:
         lowers, uppers, lAs, lbs, uAs, ubs, pos_lowers, pos_uppers, neg_lowers, neg_uppers = kd_tree.construct_hybrid_unknown_tree(
             func, net, lower, upper, base_depth=6, max_depth=9, node_dim=2, include_pos_neg=True)
@@ -473,23 +472,6 @@ def carve(ax, net: MLP, deep=False):
         for g1 in slices1.geoms:
             for g2 in slices2.geoms:
                 intersection = shapely.intersection(g1, g2)
-                # if g1.geom_type == 'Polygon' and g2.geom_type == 'Polygon':
-                #     c1 = shapely.centroid(g1)
-                #     c2 = shapely.centroid(g2)
-                #     c1 =np.array([c1.x, c1.y])
-                #     c2 =np.array([c2.x, c2.y])
-                #     cls1 = np.dot(lA, c1) + lb
-                #     cls2 = np.dot(uA, c2) + ub
-                #     # if cls1 * cls2 < 0:
-                #     if cls1 < 0 and cls2 > 0:
-                #     # if cls1 > 0 and cls2 > 0:
-                #         patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
-                #                                            facecolor='lightblue', linewidth=2)
-                #         ax.add_patch(patch)
-                #         # patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
-                #         #                                    facecolor='lightblue', linewidth=2)
-                #         # axins.add_patch(patch)
-                #         # polygon_list.append(intersection)
                 if intersection.geom_type == 'Polygon':
                     c = shapely.centroid(intersection)
                     if not len(list(c.coords)) == 0:
@@ -502,12 +484,6 @@ def carve(ax, net: MLP, deep=False):
                             patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
                                                                facecolor='lightblue', linewidth=2)
                             ax.add_patch(patch)
-                        # patch = matplotlib.patches.Polygon(intersection.exterior.coords, edgecolor='none',
-                        #                                    facecolor='lightblue', linewidth=2)
-                        # axins.add_patch(patch)
-                        # polygon_list.append(intersection)
-
-
 
     outer_qualified_neighbors = []
     outer_contact_points = []
@@ -549,42 +525,52 @@ def carve(ax, net: MLP, deep=False):
     for outer_segment, neighbors_buffer, points_buffer, lA, lb in zip(outer_segments, outer_qualified_neighbors,
                                                                       outer_contact_points, outer_segments_lAs,
                                                                       outer_segments_lbs):
+        endpoint_A = list(outer_segment.coords)[0]
+        endpoint_B = list(outer_segment.coords)[1]
         if len(neighbors_buffer) == 2:
             poly_A = neighbors_buffer[0]
             poly_B = neighbors_buffer[1]
             point_A = points_buffer[0]
             point_B = points_buffer[1]
-            vertices_A = list(poly_A.exterior.coords)
-            vertices_B = list(poly_B.exterior.coords)
-            for v_A in vertices_A:
-                if point_A.x == v_A[0] or point_A.y == v_A[1]:
-                    if np.dot(lA, v_A) + lb > 0.:
-                        point_A_new = shapely.geometry.Point(v_A)
-            for v_B in vertices_B:
-                if point_B.x == v_B[0] or point_B.y == v_B[1]:
-                    if np.dot(lA, v_B) + lb > 0.:
-                        point_B_new = shapely.geometry.Point(v_B)
+            if (point_A.x != endpoint_A[0]) and (point_A.y != endpoint_A[1]) and (point_A.x != endpoint_B[0]) and \
+                (point_A.y != endpoint_B[1]) and (point_B.x != endpoint_A[0]) and (point_B.y != endpoint_A[1]) and \
+                    (point_B.x != endpoint_B[0]) and (point_B.y != endpoint_B[1]):
+                continue
+            else:
+                vertices_A = list(poly_A.exterior.coords)
+                vertices_B = list(poly_B.exterior.coords)
+                for v_A in vertices_A:
+                    if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                        if np.dot(lA, v_A) + lb > 0.:
+                            point_A_new = shapely.geometry.Point(v_A)
+                for v_B in vertices_B:
+                    if point_B.x == v_B[0] or point_B.y == v_B[1]:
+                        if np.dot(lA, v_B) + lb > 0.:
+                            point_B_new = shapely.geometry.Point(v_B)
 
-            added_poly = shapely.geometry.Polygon(
-                ((point_A.x, point_A.y), (point_B.x, point_B.y),
-                 (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
-            )
-            outer_added_polygons.append(added_poly)
+                added_poly = shapely.geometry.Polygon(
+                    ((point_A.x, point_A.y), (point_B.x, point_B.y),
+                     (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
+                )
+                outer_added_polygons.append(added_poly)
         elif len(neighbors_buffer) == 1:
             poly_A = neighbors_buffer[0]
             point_A = points_buffer[0]
-            vertices_A = list(poly_A.exterior.coords)
-            for v_A in vertices_A:
-                if point_A.x == v_A[0] or point_A.y == v_A[1]:
-                    if np.dot(lA, v_A) + lb > 0.:
-                        point_A_new = shapely.geometry.Point(v_A)
-            unchanged_point = outer_segment.boundary.geoms[0] if shapely.equals(point_A,
-                                                                                outer_segment.boundary.geoms[1]) else \
-            outer_segment.boundary.geoms[1]
-            added_poly = shapely.geometry.Polygon(
-                ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
-            )
-            outer_added_polygons.append(added_poly)
+            if (point_A.x != endpoint_A[0]) and (point_A.y != endpoint_A[1]) and (point_A.x != endpoint_B[0]) and \
+                    (point_A.y != endpoint_B[1]):
+                continue
+            else:
+                vertices_A = list(poly_A.exterior.coords)
+                for v_A in vertices_A:
+                    if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                        if np.dot(lA, v_A) + lb > 0.:
+                            point_A_new = shapely.geometry.Point(v_A)
+                unchanged_point = outer_segment.boundary.geoms[0] if shapely.equals(point_A,
+                                                                                    outer_segment.boundary.geoms[1]) else \
+                outer_segment.boundary.geoms[1]
+                added_poly = shapely.geometry.Polygon(
+                    ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
+                )
 
     inner_added_polygons = []
     for inner_segment, neighbors_buffer, points_buffer, uA, ub in zip(inner_segments, inner_qualified_neighbors,
@@ -631,14 +617,14 @@ def carve(ax, net: MLP, deep=False):
     for poly in outer_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        # ax.add_patch(patch)
+        ax.add_patch(patch)
         # outer_shell = outer_shell.union(poly)
 
 
     for poly in inner_added_polygons:
         patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
                                            linewidth=2)
-        # ax.add_patch(patch)
+        ax.add_patch(patch)
         # inner_shell = inner_shell.difference(poly)
 
     if outer_shell.geom_type == 'Polygon':
@@ -1060,74 +1046,74 @@ def main(args: dict):
 
     plt.savefig(second_output_file)
 
-    third_output_file = output_file.split('.png')[0] + '_AA.png'
-    fig, ax = plt.subplots(figsize=(8, 8))
-    fill(ax, net, deep)
-    plt.xlim(-0.53, 0.53)
-    plt.ylim(-0.53, 0.53)
-    if deep:
-        axins = zoomed_inset_axes(ax, 16, loc=10)
+    # third_output_file = output_file.split('.png')[0] + '_AA.png'
+    # fig, ax = plt.subplots(figsize=(8, 8))
+    # fill(ax, net, deep)
+    # plt.xlim(-0.53, 0.53)
+    # plt.ylim(-0.53, 0.53)
+    # if deep:
+    #     axins = zoomed_inset_axes(ax, 16, loc=10)
+    #
+    #     for patch in ax.patches:
+    #         patch_cpy = copy.copy(patch)
+    #         # cut the umbilical cord the hard way
+    #         patch_cpy.axes = None
+    #         patch_cpy.figure = None
+    #         patch_cpy.set_transform(axins.transData)
+    #         axins.add_patch(patch_cpy)
+    #
+    #     for collection in ax.get_children():
+    #         if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+    #             offsets = collection.get_offsets()
+    #             colors = collection.get_facecolors()
+    #             sizes = collection.get_sizes()
+    #             axins.scatter(offsets[:, 0], offsets[:, 1],
+    #                           color=colors, s=sizes)
+    #         if isinstance(collection, matplotlib.contour.QuadContourSet):
+    #             collection_cpy = copy.copy(collection)
+    #             collection_cpy.axes = None
+    #             collection_cpy.figure = None
+    #             collection_cpy.set_transform(axins.transData)
+    #             axins.add_collection(collection_cpy)
+    #     axins.set_xlim(0.14, 0.15)
+    #     axins.set_ylim(0.115, 0.125)
+    #     mark_inset(ax, axins, loc1=2, loc2=4)
+    # plt.xticks(visible=False)
+    # plt.yticks(visible=False)
+    #
+    # plt.savefig(third_output_file)
 
-        for patch in ax.patches:
-            patch_cpy = copy.copy(patch)
-            # cut the umbilical cord the hard way
-            patch_cpy.axes = None
-            patch_cpy.figure = None
-            patch_cpy.set_transform(axins.transData)
-            axins.add_patch(patch_cpy)
-
-        for collection in ax.get_children():
-            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
-                offsets = collection.get_offsets()
-                colors = collection.get_facecolors()
-                sizes = collection.get_sizes()
-                axins.scatter(offsets[:, 0], offsets[:, 1],
-                              color=colors, s=sizes)
-            if isinstance(collection, matplotlib.contour.QuadContourSet):
-                collection_cpy = copy.copy(collection)
-                collection_cpy.axes = None
-                collection_cpy.figure = None
-                collection_cpy.set_transform(axins.transData)
-                axins.add_collection(collection_cpy)
-        axins.set_xlim(0.14, 0.15)
-        axins.set_ylim(0.115, 0.125)
-        mark_inset(ax, axins, loc1=2, loc2=4)
-    plt.xticks(visible=False)
-    plt.yticks(visible=False)
-
-    plt.savefig(third_output_file)
-
-    fourth_output_file = output_file.split('.png')[0] + '_MC.png'
-    fig, ax = plt.subplots(figsize=(8, 8))
-    # plot_model_with_bounds(ax, net, second_output_file, rows, cols, x_L, x_U, crown_mode)
-    if deep:
-        marching_square(ax, net, resolution=2**7+1)
-    else:
-        marching_square(ax, net, resolution=2**4+1)
-    plt.xlim(-0.53, 0.53)
-    plt.ylim(-0.53, 0.53)
-    if deep:
-        axins = zoomed_inset_axes(ax, 16, loc=10)
-
-        for collection in ax.get_children():
-            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
-                offsets = collection.get_offsets()
-                colors = collection.get_facecolors()
-                sizes = collection.get_sizes()
-                axins.scatter(offsets[:, 0], offsets[:, 1],
-                              color=colors, s=sizes)
-            if isinstance(collection, matplotlib.contour.QuadContourSet):
-                collection_cpy = copy.copy(collection)
-                collection_cpy.axes = None
-                collection_cpy.figure = None
-                collection_cpy.set_transform(axins.transData)
-                axins.add_collection(collection_cpy)
-        axins.set_xlim(0.14, 0.15)
-        axins.set_ylim(0.115, 0.125)
-        mark_inset(ax, axins, loc1=2, loc2=4)
-    plt.xticks(visible=False)
-    plt.yticks(visible=False)
-    plt.savefig(fourth_output_file)
+    # fourth_output_file = output_file.split('.png')[0] + '_MC.png'
+    # fig, ax = plt.subplots(figsize=(8, 8))
+    # # plot_model_with_bounds(ax, net, second_output_file, rows, cols, x_L, x_U, crown_mode)
+    # if deep:
+    #     marching_square(ax, net, resolution=2**7+1)
+    # else:
+    #     marching_square(ax, net, resolution=2**4+1)
+    # plt.xlim(-0.53, 0.53)
+    # plt.ylim(-0.53, 0.53)
+    # if deep:
+    #     axins = zoomed_inset_axes(ax, 16, loc=10)
+    #
+    #     for collection in ax.get_children():
+    #         if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+    #             offsets = collection.get_offsets()
+    #             colors = collection.get_facecolors()
+    #             sizes = collection.get_sizes()
+    #             axins.scatter(offsets[:, 0], offsets[:, 1],
+    #                           color=colors, s=sizes)
+    #         if isinstance(collection, matplotlib.contour.QuadContourSet):
+    #             collection_cpy = copy.copy(collection)
+    #             collection_cpy.axes = None
+    #             collection_cpy.figure = None
+    #             collection_cpy.set_transform(axins.transData)
+    #             axins.add_collection(collection_cpy)
+    #     axins.set_xlim(0.14, 0.15)
+    #     axins.set_ylim(0.115, 0.125)
+    #     mark_inset(ax, axins, loc1=2, loc2=4)
+    # plt.xticks(visible=False)
+    # plt.yticks(visible=False)
+    # plt.savefig(fourth_output_file)
 
     # fifth_output_file = output_file.split('.png')[0] + '_DC.png'
     # fig, ax = plt.subplots(figsize=(8, 8))
@@ -1138,36 +1124,36 @@ def main(args: dict):
     #
     # plt.savefig(fifth_output_file)
 
-    sixth_output_file = output_file.split('.png')[0] + '_DE.png'
-    fig, ax = plt.subplots(figsize=(8, 8))
-    if deep:
-        dilation_erosion(ax, net, resolution=2**7+1, delta=0.01)
-    else:
-        dilation_erosion(ax, net, resolution=2**4+1, delta=0.3)
-    plt.xlim(-0.53, 0.53)
-    plt.ylim(-0.53, 0.53)
-    if deep:
-        axins = zoomed_inset_axes(ax, 16, loc=10)
-
-        for collection in ax.get_children():
-            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
-                offsets = collection.get_offsets()
-                colors = collection.get_facecolors()
-                sizes = collection.get_sizes()
-                axins.scatter(offsets[:, 0], offsets[:, 1],
-                              color=colors, s=sizes)
-            if isinstance(collection, matplotlib.contour.QuadContourSet):
-                collection_cpy = copy.copy(collection)
-                collection_cpy.axes = None
-                collection_cpy.figure = None
-                collection_cpy.set_transform(axins.transData)
-                axins.add_collection(collection_cpy)
-        axins.set_xlim(0.14, 0.15)
-        axins.set_ylim(0.115, 0.125)
-        mark_inset(ax, axins, loc1=2, loc2=4)
-    plt.xticks(visible=False)
-    plt.yticks(visible=False)
-    plt.savefig(sixth_output_file)
+    # sixth_output_file = output_file.split('.png')[0] + '_DE.png'
+    # fig, ax = plt.subplots(figsize=(8, 8))
+    # if deep:
+    #     dilation_erosion(ax, net, resolution=2**7+1, delta=0.01)
+    # else:
+    #     dilation_erosion(ax, net, resolution=2**4+1, delta=0.3)
+    # plt.xlim(-0.53, 0.53)
+    # plt.ylim(-0.53, 0.53)
+    # if deep:
+    #     axins = zoomed_inset_axes(ax, 16, loc=10)
+    #
+    #     for collection in ax.get_children():
+    #         if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+    #             offsets = collection.get_offsets()
+    #             colors = collection.get_facecolors()
+    #             sizes = collection.get_sizes()
+    #             axins.scatter(offsets[:, 0], offsets[:, 1],
+    #                           color=colors, s=sizes)
+    #         if isinstance(collection, matplotlib.contour.QuadContourSet):
+    #             collection_cpy = copy.copy(collection)
+    #             collection_cpy.axes = None
+    #             collection_cpy.figure = None
+    #             collection_cpy.set_transform(axins.transData)
+    #             axins.add_collection(collection_cpy)
+    #     axins.set_xlim(0.14, 0.15)
+    #     axins.set_ylim(0.115, 0.125)
+    #     mark_inset(ax, axins, loc1=2, loc2=4)
+    # plt.xticks(visible=False)
+    # plt.yticks(visible=False)
+    # plt.savefig(sixth_output_file)
 
     return
 

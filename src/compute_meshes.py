@@ -109,11 +109,12 @@ if __name__ == '__main__':
         for A1, b1, A2, b2, l, u in zip(A1s, b1s, A2s, b2s, lower, upper):
             try:
                 cube = trimesh.creation.box(bounds=np.stack((l, u)))
-                o1 = np.array([0., 0., - b1 / A1[2]])
-                # print(o, -A)
-                mesh = cube.slice_plane(o1, -A1, cap=True)
+                # o1 = np.array([0., 0., - b1 / A1[2]])
+                # # print(o, -A)
+                # mesh = cube.slice_plane(o1, -A1, cap=True)
+                mesh = cube
                 o2 = np.array([0., 0., - b2 / A2[2]])
-                mesh = mesh.slice_plane(o2, -A2, cap=True)
+                mesh = mesh.slice_plane(o2, A2, cap=True)
                 v = np.array(mesh.vertices)
                 f = np.array(mesh.faces)
                 # print(v.shape, f.shape)

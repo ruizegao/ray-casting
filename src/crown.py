@@ -1,14 +1,6 @@
-import gc
-from functools import partial
-import dataclasses
-from dataclasses import dataclass
 from collections import defaultdict
-
-import numpy as np
-
-from typing import Tuple, Union, Optional
-
-import utils
+from typing import Optional
+import itertools
 import torch
 from torch import Tensor
 import implicit_function
@@ -44,6 +36,156 @@ def deconstruct_lbias(_x_L, _x_U, _lA, _dm_lb):
     _lbias = dm_lb_vect - (_lA.bmm(xhat_vect) - _lA.abs().bmm(eps_vect))
     return _lbias.squeeze(2) # (batch, spec_dim)
 
+# === Surface normal + distance loss
+
+def get_domain_loss(x, ret, output_name, input_name, self):
+    r"""
+    x_L: (batch_size, input_size)
+    x_U: (batch_size, input_size)
+    A: {
+        'lower_A' (and 'upper_A'): (batch_size, output_size, input_size)
+        'lower_b' (and 'upper_b'): (batch_size, output_size)
+        }
+    """
+    x_L = x[0].ptb.x_L
+    x_U = x[0].ptb.x_U
+    A = ret[2][output_name][input_name]
+
+    n_lower = A['lA'].permute(0, 2, 1)
+    d_lower = A['lbias']
+    n_upper = A['uA'].permute(0, 2, 1)
+    d_upper = A['ubias']
+
+    ndim = x_L.shape[-1]
+
+    # Create indices
+    # indices:
+    # [[1, 1],
+    #  [1, 2],
+    #  [2, 1],
+    #  [2, 2]]
+
+    # all_indices (batch_size, 2^(input_size-1)*input_size, input_size):
+    # [[0, 1, 1],
+    #  [0, 1, 2],
+    #  [0, 2, 1],
+    #  [0, 2, 2],
+    #  [1, 0, 1],
+    #  [1, 0, 2],
+    #  ...
+    #  [2, 2, 0]] (repeat batch_size times)
+    # 2^(input_size-1)*input_size is the number of edges
+    binary_numbers = [list(map(int, bits)) for bits in itertools.product('12', repeat=ndim - 1)]
+    indices = torch.tensor(binary_numbers, device=device)
+    indices_with_zeros = []
+    for i in range(ndim):
+        zeros_column = torch.zeros((2 ** (ndim - 1), 1), dtype=int, device=device)
+        new_matrix = torch.cat((indices[:, :i], zeros_column, indices[:, i:]), dim=1)
+        indices_with_zeros.append(new_matrix)
+    all_indices = torch.cat(indices_with_zeros, dim=0)
+    all_indices = all_indices.unsqueeze(0).repeat(x_L.shape[0], 1, 1)
+
+    # input_domain (batch_size, 3, input_size):
+    # [[0,   0,   0  ],
+    #  [x_l, y_l, z_l],
+    #  [x_u, y_u, z_u]]
+    input_domain = torch.stack((torch.zeros_like(x_L), x_L, x_U), dim=1)
+
+    # Two end points for each edge (batch_size, 2^(input_size-1)*input_size, 2)
+    bound_to_check_in_box = torch.zeros(*all_indices.shape[:2], 2, device=device)
+    index_to_check_in_box = (all_indices == 0).nonzero()[:, 2].reshape(bound_to_check_in_box.shape[0], -1)
+    bound_to_check_in_box[:, :, 0] = torch.gather(x_L, dim=1, index=index_to_check_in_box)
+    bound_to_check_in_box[:, :, 1] = torch.gather(x_U, dim=1, index=index_to_check_in_box)
+
+    # All vertices of the box (batch_size, 2^input_size, input_size)
+    binary_numbers = [list(map(int, bits)) for bits in itertools.product('12', repeat=ndim)]
+    vertices_indices = torch.tensor(binary_numbers, device=device).unsqueeze(0).repeat(x_L.shape[0], 1, 1)
+    all_vertices = torch.gather(input_domain, dim=1, index=vertices_indices)
+
+    def _get_hook(n, d):
+        # temp_cofficients[b][i][j] = input_domain[b][all_indices[b][i][j]][j]
+        temp_edge_intersections = torch.gather(input_domain, dim=1, index=all_indices)
+        temp_edge = torch.zeros_like(temp_edge_intersections, device=temp_edge_intersections.device)
+
+        denominators = n.repeat(1, 1, 2 ** (ndim - 1)).flatten(1)
+        intersections = -(torch.bmm(temp_edge_intersections, n).squeeze(-1) + d) / denominators
+        temp_edge[all_indices == 0] = intersections.flatten()
+        edge_intersections = temp_edge_intersections + temp_edge
+
+        valid_intersections = torch.logical_and(intersections >= bound_to_check_in_box[:, :, 0],
+                                                intersections <= bound_to_check_in_box[:, :, 1])
+
+        average_intersections = torch.einsum('bij, bi -> bij', edge_intersections, valid_intersections).mean(dim=1)
+
+        # Now compute the distances from vertices to planes
+        # distance = (ax + by + cz + d) / sqrt(a^2 + b^2 + c^2) (signed)
+        all_distances = (torch.bmm(all_vertices, n).squeeze(-1) + d) / torch.norm(n, dim=1)
+
+        completely_outside = torch.logical_or(torch.all(all_distances >= 0, dim=1),
+                                              torch.all(all_distances <= 0, dim=1))
+
+        shortest_distance, shortest_index = torch.min(torch.abs(all_distances), dim=1)
+
+        # x_h = x - (ax + by + cz + d)/(a^2 + b^2 + c^2) * a
+        feet_perpendicular = all_vertices - (all_distances / torch.norm(n, dim=1)).unsqueeze(-1) * n.unsqueeze(
+            1).squeeze(-1)
+        shortest_feet = feet_perpendicular[torch.arange(feet_perpendicular.shape[0]), shortest_index]
+
+        chosen_feet = torch.einsum('bj, b -> bj', shortest_feet, completely_outside)
+
+        hook = average_intersections + chosen_feet
+        return hook
+
+    hook_lower = _get_hook(-n_lower, d_lower)
+    hook_upper = _get_hook(-n_upper, d_upper)
+    # grad_hook_lower = torch.autograd.functional.jacobian(self.forward, hook_lower)
+    # grad_hook_upper = torch.autograd.functional.jacobian(self.forward, hook_upper)
+    normal_lower = -n_lower.squeeze(-1)
+    normal_upper = -n_upper.squeeze(-1)
+    # grad_hook_lower = torch.ones_like(normal_lower)
+    # grad_hook_upper = torch.ones_like(normal_upper)
+    # print(grad_hook_lower.shape, normal_lower.shape)
+    hook_lower.requires_grad_(True)
+    hook_upper.requires_grad_(True)
+    # print("hook_lower requires_grad:", hook_lower.requires_grad)
+    # print("hook_upper requires_grad:", hook_upper.requires_grad)
+    hook_lower.retain_grad()
+    hook_upper.retain_grad()
+    if hook_lower.grad is not None:
+        hook_lower.grad.zero_()
+    if hook_upper.grad is not None:
+        hook_upper.grad.zero_()
+    # print("hook_lower requires_grad:", hook_lower.requires_grad)
+    # print("hook_upper requires_grad:", hook_upper.requires_grad)
+    outputs = self.forward(torch.cat((hook_lower, hook_upper))).sum()
+    # print("outputs requires_grad:", outputs.requires_grad)
+    outputs.backward(retain_graph=True)
+    grad_hook_lower = hook_lower.grad
+    grad_hook_upper = hook_upper.grad
+    # grad_hook_lower = grad_hook_lower.detach().clone().requires_grad_(True)
+    # grad_hook_upper = grad_hook_upper.detach().clone().requires_grad_(True)
+    # normal_lower = normal_lower.detach().clone().requires_grad_(True)
+    # normal_upper = normal_upper.detach().clone().requires_grad_(True)
+    # if grad_hook_lower.grad is not None:
+    #     grad_hook_lower.grad.zero_()
+    # if grad_hook_upper.grad is not None:
+    #     grad_hook_upper.grad.zero_()
+    if normal_lower.grad is not None:
+        normal_lower.grad.zero_()
+    if normal_upper.grad is not None:
+        normal_upper.grad.zero_()
+    inner_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_upper.detach(), normal_upper))
+    upper_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_lower.detach(), normal_lower))
+    print("inner_normal_loss:", inner_normal_loss.mean().item())
+    print("upper_normal_loss:", upper_normal_loss.mean().item())
+    distance_loss = torch.norm(hook_lower - hook_upper, p=1, dim=1)
+    # print("avg of distance loss", distance_loss.mean())
+    # print(inner_normal_loss.shape, distance_loss.shape)
+    weight_distance_loss = 10.
+    domain_loss = inner_normal_loss + upper_normal_loss + weight_distance_loss * distance_loss
+    # domain_loss = upper_normal_loss + weight_distance_loss * distance_loss
+    return domain_loss
+
 # === Function wrappers
 
 class CrownImplicitFunction(implicit_function.ImplicitFunction):
@@ -72,15 +214,28 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def _init_bounded_func(self, bound_opts: Optional[dict] = None):
 
         if self.crown_mode.lower() == 'alpha-crown':
+            # default_bound_opts = {
+            #     'optimize_bound_args':
+            #         {
+            #             'iteration': 30,
+            #             'lr_alpha': 1e-1,
+            #             'keep_best': False,
+            #             'early_stop_patience': 1e6,
+            #             'lr_decay': 1,
+            #             'save_loss_graphs': True}
+            # }
+
             default_bound_opts = {
-                'optimize_bound_args':
-                    {
-                        'iteration': 30,
-                        'lr_alpha': 1e-1,
-                        'keep_best': False,
-                        'early_stop_patience': 1e6,
-                        'lr_decay': 1,
-                        'save_loss_graphs': True}
+                'sparse_intermediate_bounds': False,
+                'sparse_features_alpha': False,
+                'optimize_bound_args': {
+                    'keep_best': False,
+                    'lr_alpha': 1e-1,
+                    'iteration': 5,
+                    'use_custom_loss': True,
+                    'custom_loss_func': get_domain_loss,
+                    'joint_optimization': True
+                }
             }
             self.reuse_alpha = True
             self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, self.input_dim)), bound_opts= bound_opts if bound_opts else default_bound_opts)

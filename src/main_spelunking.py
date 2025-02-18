@@ -141,7 +141,9 @@ def do_hierarchical_mc(opts, implicit_func, params, n_mc_depth, do_viz_tree, com
 
     tri_inds = torch.reshape(torch.arange(3*tri_pos.shape[0]), (-1,3))
     tri_pos = torch.reshape(tri_pos, (-1,3))
-    ps.register_surface_mesh("extracted mesh", tri_pos.cpu().numpy(), tri_inds.cpu().numpy())
+    tri_dict = {'vertices': tri_pos.detach().cpu().numpy(), 'faces': tri_inds.detach().cpu().numpy()}
+    np.savez('meshes/mesh_fox_mc.npz', **tri_dict)
+    # ps.register_surface_mesh("extracted mesh", tri_pos.cpu().numpy(), tri_inds.cpu().numpy())
 
     # Build the tree all over again so we can visualize it
     if do_viz_tree:

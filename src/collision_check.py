@@ -5,6 +5,7 @@ import shapely
 from neural_utils import load_net_object
 from bouncing_letters import carve, scale_polygon
 import torch
+import torch.nn as nn
 import pygame
 import pymunk.pygame_util
 
@@ -14,6 +15,31 @@ set_t = {
     'dtype': torch.float32,
     'device': torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu'),
 }
+
+
+class StarSDF(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.a = nn.Parameter(torch.tensor(0.1))  # Inner radius
+        self.b = nn.Parameter(torch.tensor(0.2))  # Outer radius
+        self.freq = nn.Parameter(torch.tensor(5.0))  # Number of star spikes
+
+    def forward(self, x):
+        """
+        x: (batch_size, 2) tensor with (x, y) coordinates
+        Returns: (batch_size,) tensor with signed distances
+        """
+        r = torch.sqrt(x.pow(2).sum(dim=-1))  # Compute r = sqrt(x^2 + y^2)
+
+        # Approximate cos(freq * theta) without atan2
+        s = torch.sin(self.freq * torch.abs(x[:, 1]) / (torch.abs(x[:, 0]) + 1e-8))  # Avoid div by zero
+
+        # Star SDF using the estimated shape function
+        sdf = r - (self.a + self.b * s)
+        # sdf = sdf.unsqueeze(-1)
+        # print(sdf.shape)
+        return sdf
+
 
 def create_static_polygons(space):
     poly_body_l = pymunk.Body(body_type=pymunk.Body.STATIC)
@@ -92,7 +118,7 @@ def measure_intersection_time(space, shapes_l, shapes_t, num_trials=10000):
         mlp_flag = check_intersection_mlp(c_net, circle_coords=circle_coords)
         total_time_mlp += time.perf_counter() - start_time_mlp
         if mesh_flag != mlp_flag:
-            print(mesh_flag, mlp_flag)
+            # print(mesh_flag, mlp_flag)
             wrong_check_count += 1
         # print(mesh_flag, mlp_flag)
         # if i != num_trials - 1:
@@ -119,7 +145,8 @@ def visualize(space):
 
 def main():
     global c_net
-    c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
+    # c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
+    c_net = StarSDF()
     c_net = c_net.to(device=set_t['device'])
     c_components = carve(c_net, deep=False)
     global C_COMP_L

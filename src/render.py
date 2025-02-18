@@ -25,6 +25,14 @@ device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 
+HIT_EPS = 0.001
+FD_OFFSET = torch.tensor((
+                (+HIT_EPS, -HIT_EPS, -HIT_EPS),
+                (-HIT_EPS, -HIT_EPS, +HIT_EPS),
+                (-HIT_EPS, +HIT_EPS, -HIT_EPS),
+                (+HIT_EPS, +HIT_EPS, +HIT_EPS),
+            ))
+
 # theta_x/y should be
 def camera_ray(look_dir, up_dir, left_dir, fov_deg_x, fov_deg_y, theta_x, theta_y):
     ray_image_plane_pos = look_dir \
@@ -61,13 +69,13 @@ def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
     return ray_roots, ray_dirs
 
 
-def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='autodiff'):
+def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='finite_differences'):
     grad_out = torch.zeros(3)
     i_func = 1
     for func, params in zip(funcs_tuple, params_tuple):
         if isinstance(func, CrownImplicitFunction):
-            f = partial(func.call_implicit_func, params)
-            # f = func.torch_forward
+            # f = partial(func.call_implicit_func, params)
+            f = func.torch_forward
         else:
             f = partial(func, params)
 
@@ -78,15 +86,10 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
         elif method == 'finite_differences':
             # 'tetrahedron' central differences approximation
             # see e.g. https://www.iquilezles.org/www/articles/normalsSDF/normalsSDF.htm
-            offsets = torch.tensor((
-                (+eps, -eps, -eps),
-                (-eps, -eps, +eps),
-                (-eps, +eps, -eps),
-                (+eps, +eps, +eps),
-            ))
-            x_pts = hit_pos[None, :] + offsets
-            samples = vmap(f)(x_pts)
-            grad = torch.sum(offsets * samples[:, None], dim=0)
+
+            x_pts = hit_pos[None, :] + FD_OFFSET
+            samples = vmap(f)(x_pts).squeeze(1).detach()
+            grad = torch.sum(FD_OFFSET * samples[:, None], dim=0)
 
         else:
             raise ValueError("unrecognized method")
@@ -98,12 +101,22 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='auto
     return grad_out
 
 
-def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='autodiff'):
+def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='finite_differences'):
     this_normal_one = lambda p, id: outward_normal(funcs_tuple, params_tuple, p, id, eps, method=method)
     if method == 'autodiff':
         total_samples = hit_pos.shape[0]
         out_normal = torch.empty_like(hit_pos)
         batch_size_per_iteration = 256
+        for start_idx in range(0, total_samples, batch_size_per_iteration):
+            end_idx = min(start_idx + batch_size_per_iteration, total_samples)
+            out_normal[start_idx:end_idx] \
+                = vmap(this_normal_one)(hit_pos[start_idx:end_idx], hit_ids[start_idx:end_idx])
+
+        return out_normal
+    elif method == 'finite_differences':
+        total_samples = hit_pos.shape[0]
+        out_normal = torch.empty_like(hit_pos)
+        batch_size_per_iteration = 2**19
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             out_normal[start_idx:end_idx] \
@@ -282,20 +295,28 @@ def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, u
     vertices = mesh_npz['vertices'].astype(np.float32)
     faces = mesh_npz['faces'].astype(np.int32)
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    face_normals = torch.tensor(mesh.face_normals).cuda().float()
     # mesh.show()
     intersector = RayMeshIntersector(mesh)
     # compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
     compiled_cast_rays_shell_based = queries.cast_rays_shell_based
 
     # hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-    hit_pos, hit_ids, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    hit_pos, hit_ids, hit, tri_idx, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
-    hit_pos, hit_ids, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    hit_pos, hit_ids, hit, tri_idx, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
 
-    hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='autodiff')
+    time_render_start = time.time()
+    # hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
+    hit_normals = torch.zeros_like(ray_dirs)
+    hit_normals[hit] = face_normals[tri_idx]
+    time_normals_done = time.time()
+    print("Normals calculated: ", time_normals_done - time_render_start)
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
                             shading_color_func=shading_color_func)
     img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
+    time_render_end = time.time()
+    print("Rendering time:", time_render_end - time_render_start)
 
     if tonemap:
         # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
