@@ -529,12 +529,12 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
 
 def construct_dynamic_unknown_tree_iter(func, params, node_lower, node_upper, continue_splitting, batch_size=256, node_dim=3, include_pos_neg=False):
     def eval_batch_of_nodes(lower, upper):
-        if continue_splitting:
-            types, crown_ret = func.classify_box(params, lower, upper)
-        else:
-            func.change_mode('alpha-crown')
-            types, crown_ret = func.classify_box(params, lower, upper, use_custom_loss=True)
-        # types, crown_ret = func.classify_box(params, lower, upper)
+        # if continue_splitting:
+        #     types, crown_ret = func.classify_box(params, lower, upper)
+        # else:
+        #     func.change_mode('alpha-crown')
+        #     types, crown_ret = func.classify_box(params, lower, upper, use_custom_loss=True)
+        types, crown_ret = func.classify_box(params, lower, upper)
         types = types.squeeze(-1).detach()
         lAs = crown_ret['lA'].squeeze(1).detach()
         lbs = crown_ret['lbias'].squeeze(1).detach()

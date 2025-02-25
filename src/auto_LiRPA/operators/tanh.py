@@ -355,10 +355,29 @@ class BoundTanh(BoundOptimizableActivation):
                     mask=torch.logical_and(self.mask_both, d_upper < m),
                     type='upper', k=k, x0=m, y0=y_m)
 
+    def bound_relax_impl_post(self, x, func, dfunc):
+        if self.opt_stage not in ['opt', 'reuse']:
+            lower, upper = x.lower, x.upper
+            m = (lower + upper) / 2
+            y_m = func(m)
+            k = dfunc(m)
+            d_lower, d_upper = self.generate_d_lower_upper(lower, upper)
+
+            self.add_linear_relaxation(
+                mask=torch.logical_and(self.mask_both, d_lower >= m),
+                type='lower', k=k, x0=m, y0=y_m)
+            self.add_linear_relaxation(
+                mask=torch.logical_and(self.mask_both, d_upper < m),
+                type='upper', k=k, x0=m, y0=y_m)
+
     def bound_relax(self, x, init=False, dim_opt=None):
         if init:
             self.init_linear_relaxation(x, dim_opt)
-        self.bound_relax_impl(x, self.activation_forward, self.activation_backward)
+        if self.activation_bound_option == 'same-slope':
+            self.bound_relax_impl_same_slope(x, self.activation_forward, self.activation_backward)
+        else:
+            self.bound_relax_impl(x, self.activation_forward, self.activation_backward)
+            self.bound_relax_impl_post(x, self.activation_forward, self.activation_backward)
 
     def get_split_mask(self, lower, upper, input_index):
         assert input_index == 0

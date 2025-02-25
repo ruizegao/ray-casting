@@ -78,25 +78,45 @@ class BoundSin(BoundOptimizableNonLinear):
         return
 
     def branch_input_domain(self, lb, ub):
-        lb_cycles = torch.floor((lb + 0.5 * torch.pi) / (2 * torch.pi)) * (2 * torch.pi)
-        lb_clamped = lb - lb_cycles
-        ub_cycles = torch.floor((ub + 0.5 * torch.pi) / (2 * torch.pi)) * (2 * torch.pi)
-        ub_clamped = ub - ub_cycles
+        lb_clamped = lb - torch.floor(lb / (2 * torch.pi)) * (2 * torch.pi)
+        ub_clamped = ub - torch.floor(ub / (2 * torch.pi)) * (2 * torch.pi)
+        mask_lb_1 = torch.logical_and(lb_clamped >= 0, lb_clamped < torch.pi / 2)
+        mask_lb_2 = torch.logical_and(lb_clamped >= torch.pi / 2, lb_clamped < torch.pi)
+        mask_lb_3 = torch.logical_and(lb_clamped >= torch.pi, lb_clamped < 3 * torch.pi / 2)
+        mask_lb_4 = torch.logical_and(lb_clamped >= 3 * torch.pi / 2, lb_clamped < 2 * torch.pi)
+
+        mask_ub_1 = torch.logical_and(ub_clamped >= 0, ub_clamped < torch.pi / 2)
+        mask_ub_2 = torch.logical_and(ub_clamped >= torch.pi / 2, ub_clamped < torch.pi)
+        mask_ub_3 = torch.logical_and(ub_clamped >= torch.pi, ub_clamped < 3 * torch.pi / 2)
+        mask_ub_4 = torch.logical_and(ub_clamped >= 3 * torch.pi / 2, ub_clamped < 2 * torch.pi)
 
         self.sigmoid_like_mask = ub - lb <= torch.pi
-        self.sigmoid_like_mask = torch.logical_and(self.sigmoid_like_mask, torch.logical_or(
-            torch.logical_and(lb_clamped <= 0.5 * torch.pi, ub_clamped <= 0.5 * torch.pi),
-            torch.logical_and(lb_clamped >= 0.5 * torch.pi, ub_clamped >= 0.5 * torch.pi)))
+        self.sigmoid_like_mask = torch.logical_and(
+            self.sigmoid_like_mask,
+            torch.logical_or(
+                torch.logical_and(
+                    torch.logical_or(mask_lb_2, mask_lb_3),
+                    torch.logical_or(mask_ub_2, mask_ub_3)
+                ),
+                torch.logical_and(
+                    torch.logical_or(mask_lb_1, mask_lb_4),
+                    torch.logical_or(mask_ub_1, mask_ub_4)
+                )
+            )
+        )
         self.branch_mask = torch.logical_not(self.sigmoid_like_mask)
 
-        self.mask_neg = torch.logical_and((self.d2_act_func(lb) >= 0),
-            torch.logical_and((self.d2_act_func(ub) >= 0),
-            self.sigmoid_like_mask))
-        self.mask_pos = torch.logical_and((self.d2_act_func(lb) < 0),
-            torch.logical_and((self.d2_act_func(ub) < 0),
-            self.sigmoid_like_mask))
+        self.mask_neg = torch.logical_and(torch.logical_or(mask_lb_3, mask_lb_4),
+                                          torch.logical_and(torch.logical_or(mask_ub_3, mask_ub_4),
+                                                            self.sigmoid_like_mask))
+
+        self.mask_pos = torch.logical_and(torch.logical_or(mask_lb_1, mask_lb_2),
+                                          torch.logical_and(torch.logical_or(mask_ub_1, mask_ub_2),
+                                                            self.sigmoid_like_mask))
+
         self.mask_both = torch.logical_xor(self.sigmoid_like_mask,
-            torch.logical_or(self.mask_neg, self.mask_pos))
+                                           torch.logical_or(self.mask_neg, self.mask_pos))
+
         self.convex_concave = self.d2_act_func(lb) >= 0
 
     def generate_d_lower_upper(self, lower, upper):
@@ -145,6 +165,43 @@ class BoundSin(BoundOptimizableNonLinear):
         d_lower += (torch.pi - torch.index_select(self.d_lower, 0, index).view(upper.shape)
                     + k_tensor * 2 * torch.pi) * case4_mask
         return d_lower, d_upper
+
+    def bound_relax_impl_post(self, x, func, dfunc):
+        if self.opt_stage not in ['opt', 'reuse']:
+            lower, upper = x.lower, x.upper
+            y_l, y_u = func(lower), func(upper)
+            m = (lower + upper) / 2
+            y_m = func(m)
+            k = dfunc(m)
+            d_lower, d_upper = self.generate_d_lower_upper(lower, upper)
+
+            self.add_linear_relaxation(
+                mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l < y_u), d_lower >= m),
+                type='lower', k=k, x0=m, y0=y_m)
+            self.add_linear_relaxation(
+                mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l >= y_u), d_lower < m),
+                type='lower', k=k, x0=m, y0=y_m)
+            self.add_linear_relaxation(
+                mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l < y_u), d_upper < m),
+                type='upper', k=k, x0=m, y0=y_m)
+            self.add_linear_relaxation(
+                mask=torch.logical_and(torch.logical_and(self.sigmoid_like_mask, y_l >= y_u), d_upper >= m),
+                type='upper', k=k, x0=m, y0=y_m)
+
+    def bound_relax(self, x, init=False, dim_opt=None):
+        if init:
+            self.init_linear_relaxation(x, dim_opt)
+        lb = x.lower
+        ub = x.upper
+        self.generate_inflections(lb, ub)
+        self.branch_input_domain(lb, ub)
+        super().bound_relax_impl(x, self.act_func, self.d_act_func)
+        self.bound_relax_impl_post(x, self.act_func, self.d_act_func)
+        lower_slope, lower_bias, upper_slope, upper_bias = self.bound_relax_branch(lb, ub)
+        self.lw = self.lw * self.sigmoid_like_mask + self.branch_mask * lower_slope
+        self.lb = self.lb * self.sigmoid_like_mask + self.branch_mask * lower_bias
+        self.uw = self.uw * self.sigmoid_like_mask + self.branch_mask * upper_slope
+        self.ub = self.ub * self.sigmoid_like_mask + self.branch_mask * upper_bias
 
     @staticmethod
     def arcsin(c):
