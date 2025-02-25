@@ -294,22 +294,30 @@ def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, u
     mesh_npz = np.load(load_from)
     vertices = mesh_npz['vertices'].astype(np.float32)
     faces = mesh_npz['faces'].astype(np.int32)
+    print(len(faces))
     mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+    vertices = torch.from_numpy(vertices).cuda().float()
+    faces = torch.from_numpy(faces).cuda().int()
     face_normals = torch.tensor(mesh.face_normals).cuda().float()
+    # vertex_normals = torch.tensor(mesh.vertex_normals).cuda().float()
+    vertex_normals = outward_normals(funcs_tuple, params_tuple, vertices, torch.ones_like(vertices), opts['hit_eps'], method='finite_differences')
     # mesh.show()
     intersector = RayMeshIntersector(mesh)
     # compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
     compiled_cast_rays_shell_based = queries.cast_rays_shell_based
 
     # hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-    hit_pos, hit_ids, hit, tri_idx, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
-    hit_pos, hit_ids, hit, tri_idx, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-
+    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
     time_render_start = time.time()
     # hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
     hit_normals = torch.zeros_like(ray_dirs)
-    hit_normals[hit] = face_normals[tri_idx]
+    # hit_normals[hit] = face_normals[tri_idx]
+    tri_v = faces[tri_idx]
+    tri_norm = vertex_normals[tri_v]
+    hit_norm = uv[:, :1] * tri_norm[:, 0] + uv[:, 1:] * tri_norm[:, 1] + (1 - uv[:, :1] - uv[:, 1:]) * tri_norm[:, 2]
+    hit_normals[hit] = hit_norm
     time_normals_done = time.time()
     print("Normals calculated: ", time_normals_done - time_render_start)
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,

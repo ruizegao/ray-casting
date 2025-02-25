@@ -118,7 +118,7 @@ def main():
         print(f"Not using cache, computing bounds and saving to (and potentially overwriting) {cache_dir}")
         # out_dict = construct_uniform_unknown_levelset_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
         # out_dict = construct_adaptive_tree(implicit_func, params, lower, upper, split_depth=split_depth, with_interior_nodes=True)
-        node_lower, node_upper, lAs, lbs, uAs, ubs = construct_hybrid_unknown_tree(implicit_func, params, lower, upper, base_depth=split_depth, max_depth=max_split_depth, delta=0.001, batch_size=args.batch_size)
+        node_lower, node_upper, lAs, lbs, uAs, ubs, pos_lower, pos_upper, neg_lower, neg_upper = construct_hybrid_unknown_tree(implicit_func, params, lower, upper, base_depth=split_depth, max_depth=max_split_depth, delta=0.001, batch_size=args.batch_size, include_pos_neg=True)
         lAs = lAs.cpu().numpy()
         lbs = lbs.cpu().numpy()
         uAs = uAs.cpu().numpy()
@@ -167,19 +167,6 @@ def main():
     node_lower_valid = node_lower[node_valid]
     node_upper_valid = node_upper[node_valid]
     num_valid = node_valid.sum().item()
-    # lAs = np.empty_like(to_numpy(node_lower_valid))
-    # lbs = np.empty((num_valid,))
-    # uAs = np.empty_like(to_numpy(node_lower_valid))
-    # ubs = np.empty((num_valid,))
-    # for start_idx in range(0, num_valid, batch_size):
-    #     end_idx = min(start_idx + batch_size, num_valid)
-    #     i = start_idx // batch_size
-    #     print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
-    #     out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx], node_upper_valid[start_idx:end_idx], swap_loss=True)
-    #     lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
-    #     lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
-    #     uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
-    #     ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
 
     first_stage_time = time.time() - start_time
     print("First pass time: ", first_stage_time)
@@ -235,45 +222,6 @@ def main():
         second_stage_time = time.time() - start_time
         print("Second pass time: ", second_stage_time)
 
-        # TODO: Potentially remove this third pass altogether. It does not seem to provide any meaningful benefit
-        ### third, we do a final pass of CROWN with two plane constraints ###
-
-        # new_bound_opt_args = {
-        #         'save_loss_graphs': True,
-        #         'perpendicular_multiplier': 100,
-        # }
-        # opt_bound_args.update(new_bound_opt_args)
-        # alpha_bound_params.update({'optimize_bound_args': opt_bound_args})
-        # implicit_func.change_mode("alpha-crown", alpha_bound_params)
-        #
-        # for start_idx in range(0, num_valid, batch_size):
-        #     end_idx = min(start_idx + batch_size, num_valid)
-        #     i = start_idx // batch_size
-        #     print(f"i: {i} | start_idx: {start_idx}, end_idx: {end_idx}, num_valid: {num_valid}")
-        #     out_type, crown_ret = implicit_func.classify_box(params, node_lower_valid[start_idx:end_idx],
-        #                                                      node_upper_valid[start_idx:end_idx], swap_loss=True,
-        #                                                      use_custom_loss=USE_CUSTOM_LOSS_OPTION,
-        #                                                      plane_constraints_lower=torch.from_numpy(
-        #                                                          plane_constraints_lower[start_idx:end_idx]),
-        #                                                      plane_constraints_upper=torch.from_numpy(
-        #                                                          plane_constraints_upper[start_idx:end_idx]),
-        #                                                      # plane_constraints_lower=None,
-        #                                                      # plane_constraints_upper=None,
-        #                                                      )
-        #     lAs[start_idx:end_idx] = to_numpy(crown_ret['lA'].squeeze(1))
-        #     lbs[start_idx:end_idx] = to_numpy(crown_ret['lbias'].squeeze(1))
-        #     uAs[start_idx:end_idx] = to_numpy(crown_ret['uA'].squeeze(1))
-        #     ubs[start_idx:end_idx] = to_numpy(crown_ret['ubias'].squeeze(1))
-        #
-        # new_plane_constraints_lower = np.concatenate((lAs, lbs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
-        # new_plane_constraints_upper = np.concatenate((uAs, ubs.reshape(-1, 1)), axis=-1).reshape(num_valid, 1, 4)
-        #
-        # plane_constraints_lower = np.concatenate((plane_constraints_lower, new_plane_constraints_lower), axis=1)
-        # plane_constraints_upper = np.concatenate((plane_constraints_upper, new_plane_constraints_upper), axis=1)
-
-        # third_stage_time = time.time() - start_time
-        # print("Third pass time: ", third_stage_time)
-
     # save all bounds and node bounds to .npz to later compute the mesh of the object
     out_valid = {
         'lower': to_numpy(node_lower_valid),
@@ -284,6 +232,10 @@ def main():
         'lb': lbs,
         'uA': uAs,
         'ub': ubs,
+        'pos_lower': to_numpy(pos_lower),
+        'pos_upper': to_numpy(pos_upper),
+        'neg_lower': to_numpy(neg_lower),
+        'neg_upper': to_numpy(neg_upper),
         'plane_constraints_lower': plane_constraints_lower[:, 1:, :],  # the first plane constraint is lA, lb so skip
         'plane_constraints_upper': plane_constraints_upper[:, 1:, :],  # the first plane constraint is lA, lb so skip
     }

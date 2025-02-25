@@ -7,3 +7,6 @@
 [submodule "auto_LiRPA"]
 	path = auto_LiRPA
 	url = https://github.com/Verified-Intelligence/auto_LiRPA
+[submodule "bounding-mesh"]
+	path = bounding-mesh
+	url = https://github.com/gaschler/bounding-mesh.git

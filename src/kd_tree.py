@@ -1584,7 +1584,7 @@ def sample_surface(func, params, lower, upper, n_samples, width, rngkey, n_node_
             break
 
     func_with_params = partial(func, params)
-    print((vmap(func_with_params)(found_sample_points) ** 2).sum().sqrt() / n_samples)
+    print((vmap(func_with_params)(found_sample_points)).abs().mean())
     return found_sample_points
 
 

@@ -68,7 +68,7 @@ def project_line_onto_square(a1, a2, b, x1_min, x1_max, x2_min, x2_max):
 
     return segment
 
-def carve(net: MLP, deep=False):
+def carve(net: MLP, deep=False, smoothify=True, return_merged=False):
     print("Carving")
     lower = torch.tensor([-0.55, -0.55])
     upper = torch.tensor([0.55, 0.55])
@@ -157,68 +157,70 @@ def carve(net: MLP, deep=False):
         largest_component = max(merged.geoms, key=lambda p: p.area)
     else:
         largest_component = merged  # If only one component exists, return all
-
+    if return_merged:
+        return largest_component
     convex_poly_list = [poly for poly in convex_poly_list if poly.intersects(largest_component)]
     outer_polygons = [poly for poly in outer_polygons if poly.intersects(largest_component)]
     # print("existing # of polygons", len(convex_poly_list))
     # print("existing # of outer polygons", len(outer_polygons))
-    outer_qualified_neighbors = []
-    outer_contact_points = []
+    if smoothify:
+        outer_qualified_neighbors = []
+        outer_contact_points = []
 
-    for outer_segment in outer_segments:
-        neighbors_buffer = []
-        points_buffer = []
-        for outer_polygon, lA, lb in zip(outer_polygons, lAs, lbs):
-            segment_polygon_intersection = shapely.intersection(outer_polygon, outer_segment)
-            if segment_polygon_intersection.geom_type == 'Point':
-                p = np.array([segment_polygon_intersection.x, segment_polygon_intersection.y])
-                cls = np.dot(lA, p) + lb
-                if cls <= 0:
-                    neighbors_buffer.append(outer_polygon)
-                    points_buffer.append(segment_polygon_intersection)
-        outer_qualified_neighbors.append(neighbors_buffer)
-        outer_contact_points.append(points_buffer)
+        for outer_segment in outer_segments:
+            neighbors_buffer = []
+            points_buffer = []
+            for outer_polygon, lA, lb in zip(outer_polygons, lAs, lbs):
+                segment_polygon_intersection = shapely.intersection(outer_polygon, outer_segment)
+                if segment_polygon_intersection.geom_type == 'Point':
+                    p = np.array([segment_polygon_intersection.x, segment_polygon_intersection.y])
+                    cls = np.dot(lA, p) + lb
+                    if cls <= 0:
+                        neighbors_buffer.append(outer_polygon)
+                        points_buffer.append(segment_polygon_intersection)
+            outer_qualified_neighbors.append(neighbors_buffer)
+            outer_contact_points.append(points_buffer)
 
-    for outer_segment, neighbors_buffer, points_buffer, lA, lb in zip(outer_segments, outer_qualified_neighbors,
-                                                                      outer_contact_points, outer_segments_lAs,
-                                                                      outer_segments_lbs):
-        if len(neighbors_buffer) == 2:
-            poly_A = neighbors_buffer[0]
-            poly_B = neighbors_buffer[1]
-            point_A = points_buffer[0]
-            point_B = points_buffer[1]
-            vertices_A = list(poly_A.exterior.coords)
-            vertices_B = list(poly_B.exterior.coords)
-            for v_A in vertices_A:
-                if point_A.x == v_A[0] or point_A.y == v_A[1]:
-                    if np.dot(lA, v_A) + lb > 0.:
-                        point_A_new = shapely.geometry.Point(v_A)
-            for v_B in vertices_B:
-                if point_B.x == v_B[0] or point_B.y == v_B[1]:
-                    if np.dot(lA, v_B) + lb > 0.:
-                        point_B_new = shapely.geometry.Point(v_B)
+        for outer_segment, neighbors_buffer, points_buffer, lA, lb in zip(outer_segments, outer_qualified_neighbors,
+                                                                          outer_contact_points, outer_segments_lAs,
+                                                                          outer_segments_lbs):
+            if len(neighbors_buffer) == 2:
+                poly_A = neighbors_buffer[0]
+                poly_B = neighbors_buffer[1]
+                point_A = points_buffer[0]
+                point_B = points_buffer[1]
+                vertices_A = list(poly_A.exterior.coords)
+                vertices_B = list(poly_B.exterior.coords)
+                for v_A in vertices_A:
+                    if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                        if np.dot(lA, v_A) + lb > 0.:
+                            point_A_new = shapely.geometry.Point(v_A)
+                for v_B in vertices_B:
+                    if point_B.x == v_B[0] or point_B.y == v_B[1]:
+                        if np.dot(lA, v_B) + lb > 0.:
+                            point_B_new = shapely.geometry.Point(v_B)
 
-            added_poly = shapely.geometry.Polygon(
-                ((point_A.x, point_A.y), (point_B.x, point_B.y),
-                 (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
-            )
-            convex_poly_list.append(added_poly.buffer(0))
-        elif len(neighbors_buffer) == 1:
-            poly_A = neighbors_buffer[0]
-            point_A = points_buffer[0]
-            vertices_A = list(poly_A.exterior.coords)
-            for v_A in vertices_A:
-                if point_A.x == v_A[0] or point_A.y == v_A[1]:
-                    if np.dot(lA, v_A) + lb > 0.:
-                        point_A_new = shapely.geometry.Point(v_A)
-            unchanged_point = outer_segment.boundary.geoms[0] if shapely.equals(point_A,
-                                                                                outer_segment.boundary.geoms[1]) else \
-            outer_segment.boundary.geoms[1]
-            added_poly = shapely.geometry.Polygon(
-                ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
-            )
-            convex_poly_list.append(added_poly.buffer(0))
-    # print("Updated # of polygons", len(convex_poly_list))
+                added_poly = shapely.geometry.Polygon(
+                    ((point_A.x, point_A.y), (point_B.x, point_B.y),
+                     (point_B_new.x, point_B_new.y), (point_A_new.x, point_A_new.y))
+                )
+                convex_poly_list.append(added_poly.buffer(0))
+            elif len(neighbors_buffer) == 1:
+                poly_A = neighbors_buffer[0]
+                point_A = points_buffer[0]
+                vertices_A = list(poly_A.exterior.coords)
+                for v_A in vertices_A:
+                    if point_A.x == v_A[0] or point_A.y == v_A[1]:
+                        if np.dot(lA, v_A) + lb > 0.:
+                            point_A_new = shapely.geometry.Point(v_A)
+                unchanged_point = outer_segment.boundary.geoms[0] if shapely.equals(point_A,
+                                                                                    outer_segment.boundary.geoms[1]) else \
+                outer_segment.boundary.geoms[1]
+                added_poly = shapely.geometry.Polygon(
+                    ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
+                )
+                convex_poly_list.append(added_poly.buffer(0))
+        # print("Updated # of polygons", len(convex_poly_list))
 
     return convex_poly_list
 
@@ -253,13 +255,13 @@ class BouncyBalls(object):
     def __init__(self) -> None:
         # Space
         self._space = pymunk.Space()
-        self._space.gravity = (0.0, 900.0)
+        self._space.gravity = (0.0, 500.0)
 
         # Physics
         # Time step
-        self._dt = 1.0 / 60.0
+        self._dt = 1.0 / 120.0
         # Number of physics steps per screen frame
-        self._physics_steps_per_frame = 1
+        self._physics_steps_per_frame = 2
 
         # pygame
         pygame.init()
@@ -305,12 +307,13 @@ class BouncyBalls(object):
         """
         static_body = self._space.static_body
         static_lines = [
-            pymunk.Segment(static_body, (100, 400), (300, 500), 0.0),
-            pymunk.Segment(static_body, (300, 500), (500, 400), 0.0),
+            pymunk.Segment(static_body, (100, 500), (500, 500), 0.0),
+            # pymunk.Segment(static_body, (100, 500), (100, 400), 0.0),
+            # pymunk.Segment(static_body, (500, 500), (500, 400), 0.0),
         ]
         for line in static_lines:
             line.elasticity = 0.9
-            line.friction = 0.5
+            line.friction = 0.8
         self._space.add(*static_lines)
 
     def _process_events(self) -> None:
@@ -347,7 +350,7 @@ class BouncyBalls(object):
         Create a letter.
         :return:
         """
-        mass = 50
+        mass = 25
 
         # Convert to pymunk-friendly format
         complex_polygon = random.choice([I_COMP, C_COMP, C_COMP, V_COMP])
@@ -363,8 +366,8 @@ class BouncyBalls(object):
         shapes = []
         for vertices in scaled_polygons:
             shape = pymunk.Poly(body, vertices)
-            shape.elasticity = 0.8
-            shape.friction = 0.5
+            shape.elasticity = 0.9
+            shape.friction = 0.8
             shapes.append(shape)
 
         self._space.add(body, *shapes)

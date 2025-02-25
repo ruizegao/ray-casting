@@ -374,7 +374,7 @@ def project_line_onto_square(a1, a2, b, x1_min, x1_max, x2_min, x2_max):
     return segment
 
 
-def carve(ax, net: MLP, deep=False):
+def carve(ax, net: MLP, deep=False, smoothify=False):
     # Remove tick labels
     ax.set_xticklabels([])
     ax.set_yticklabels([])
@@ -571,6 +571,7 @@ def carve(ax, net: MLP, deep=False):
                 added_poly = shapely.geometry.Polygon(
                     ((unchanged_point.x, unchanged_point.y), (point_A.x, point_A.y), (point_A_new.x, point_A_new.y))
                 )
+                outer_added_polygons.append(added_poly)
 
     inner_added_polygons = []
     for inner_segment, neighbors_buffer, points_buffer, uA, ub in zip(inner_segments, inner_qualified_neighbors,
@@ -613,19 +614,19 @@ def carve(ax, net: MLP, deep=False):
             )
             inner_added_polygons.append(added_poly)
 
+    if smoothify:
+        for poly in outer_added_polygons:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            outer_shell = outer_shell.union(poly)
 
-    for poly in outer_added_polygons:
-        patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
-                                           linewidth=2)
-        ax.add_patch(patch)
-        # outer_shell = outer_shell.union(poly)
 
-
-    for poly in inner_added_polygons:
-        patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
-                                           linewidth=2)
-        ax.add_patch(patch)
-        # inner_shell = inner_shell.difference(poly)
+        for poly in inner_added_polygons:
+            patch = matplotlib.patches.Polygon(poly.exterior.coords, edgecolor='none', facecolor='lightblue',
+                                               linewidth=2)
+            ax.add_patch(patch)
+            inner_shell = inner_shell.difference(poly)
 
     if outer_shell.geom_type == 'Polygon':
         patch = matplotlib.patches.Polygon(outer_shell.exterior.coords, edgecolor='blue', facecolor='none', linewidth=2)
@@ -1016,7 +1017,7 @@ def main(args: dict):
     # TODO: Finish the plot_model_with_bounds function
     second_output_file = output_file.split('.png')[0] + '_CROWN.png'
     fig, ax = plt.subplots(figsize=(8, 8))
-    carve(ax, net, deep)
+    carve(ax, net, deep, smoothify=False)
     plt.xlim(-0.53, 0.53)
     plt.ylim(-0.53, 0.53)
 

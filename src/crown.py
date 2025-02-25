@@ -174,16 +174,20 @@ def get_domain_loss(x, ret, output_name, input_name, self):
         normal_lower.grad.zero_()
     if normal_upper.grad is not None:
         normal_upper.grad.zero_()
-    inner_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_upper.detach(), normal_upper))
-    upper_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_lower.detach(), normal_lower))
-    print("inner_normal_loss:", inner_normal_loss.mean().item())
-    print("upper_normal_loss:", upper_normal_loss.mean().item())
+
+    # inner_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_upper.detach(), normal_upper))
+    # upper_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(grad_hook_lower.detach(), normal_lower))
+    gt_normal = (grad_hook_lower.data + grad_hook_upper.data) / 2.
+    inner_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(gt_normal, normal_upper))
+    upper_normal_loss = torch.abs(1. - torch.nn.functional.cosine_similarity(gt_normal, normal_lower))
+    # print("inner_normal_loss:", inner_normal_loss.mean().item())
+    # print("upper_normal_loss:", upper_normal_loss.mean().item())
     distance_loss = torch.norm(hook_lower - hook_upper, p=1, dim=1)
     # print("avg of distance loss", distance_loss.mean())
     # print(inner_normal_loss.shape, distance_loss.shape)
-    weight_distance_loss = 10.
-    domain_loss = inner_normal_loss + upper_normal_loss + weight_distance_loss * distance_loss
-    # domain_loss = upper_normal_loss + weight_distance_loss * distance_loss
+    weight_distance_loss = 5.
+    # domain_loss = inner_normal_loss + upper_normal_loss + weight_distance_loss * distance_loss
+    domain_loss = weight_distance_loss * distance_loss
     return domain_loss
 
 # === Function wrappers
@@ -231,7 +235,7 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
                 'optimize_bound_args': {
                     'keep_best': False,
                     'lr_alpha': 1e-1,
-                    'iteration': 5,
+                    'iteration': 10,
                     'use_custom_loss': True,
                     'custom_loss_func': get_domain_loss,
                     'joint_optimization': True
