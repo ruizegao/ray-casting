@@ -10,6 +10,7 @@ import pygame
 import pymunk
 import pymunk.util
 import pymunk.pygame_util
+import pygame.gfxdraw
 from pymunk import Vec2d
 import numpy as np
 import torch
@@ -34,6 +35,12 @@ from mpl_toolkits.axes_grid1.inset_locator import mark_inset
 import copy
 
 global I_COMP, C_COMP, V_COMP
+
+LETTER_COLORS = {
+    'I': (255, 0, 0, 255),   # Red
+    'C': (0, 255, 0, 255),   # Green
+    'V': (0, 0, 255, 255)    # Blue
+}
 
 try:
     plt.style.use("seaborn-white")
@@ -307,9 +314,9 @@ class BouncyBalls(object):
         """
         static_body = self._space.static_body
         static_lines = [
-            pymunk.Segment(static_body, (100, 500), (500, 500), 0.0),
-            # pymunk.Segment(static_body, (100, 500), (100, 400), 0.0),
-            # pymunk.Segment(static_body, (500, 500), (500, 400), 0.0),
+            pymunk.Segment(static_body, (50, 500), (550, 500), 1.0),
+            pymunk.Segment(static_body, (50, 500), (50, 400), 1.0),
+            pymunk.Segment(static_body, (550, 500), (550, 400), 1.0),
         ]
         for line in static_lines:
             line.elasticity = 0.9
@@ -353,7 +360,7 @@ class BouncyBalls(object):
         mass = 25
 
         # Convert to pymunk-friendly format
-        complex_polygon = random.choice([I_COMP, C_COMP, C_COMP, V_COMP])
+        complex_polygon, color = random.choice([(I_COMP, LETTER_COLORS['I']), (C_COMP, LETTER_COLORS['C']), (C_COMP, LETTER_COLORS['C']), (V_COMP, LETTER_COLORS['V'])])
         scaled_polygons = [scale_polygon(polygon.exterior.coords, 50) for polygon in complex_polygon]
 
         # Create body with appropriate moment of inertia
@@ -368,6 +375,7 @@ class BouncyBalls(object):
             shape = pymunk.Poly(body, vertices)
             shape.elasticity = 0.9
             shape.friction = 0.8
+            shape.color = color
             shapes.append(shape)
 
         self._space.add(body, *shapes)
@@ -385,7 +393,32 @@ class BouncyBalls(object):
         Draw the objects.
         :return: None
         """
-        self._space.debug_draw(self._draw_options)
+        # self._space.debug_draw(self._draw_options)
+        self._screen.fill((255, 255, 255))
+
+        for shape in self._space.shapes:
+            if isinstance(shape, pymunk.Poly):  # For polygons
+                # Get the points of the polygon shape
+                points = [(p.rotated(shape.body.angle)[0] + shape.body.position[0], p.rotated(shape.body.angle)[1] + shape.body.position[1]) for p in shape.get_vertices()]
+                # Draw the polygon with anti-aliasing (using aapolygon for smoothness)
+                pygame.gfxdraw.aapolygon(self._screen, points, shape.color)  # Blue
+                pygame.gfxdraw.filled_polygon(self._screen, points, shape.color)  # Fill with blue
+
+            elif isinstance(shape, pymunk.Circle):  # For circles
+                # Get the center and radius of the circle
+                center = (int(shape.body.position.x), int(shape.body.position.y))
+                radius = int(shape.radius)
+
+                # Draw the circle using pygame.draw
+                pygame.draw.circle(self._screen, shape.color, center, radius)  # Red circle
+
+            elif isinstance(shape, pymunk.Segment):  # For line segments
+                # Get the start and end points of the segment
+                start = (int(shape.a.x), int(shape.a.y))
+                end = (int(shape.b.x), int(shape.b.y))
+
+                # Draw the segment (line) using pygame.draw
+                pygame.draw.line(self._screen, (0, 0, 0), start, end, int(2*shape.radius))  # Green line
 
 
 def main():

@@ -24,11 +24,9 @@ def generate_circles(N=10000):
     return centers, radii
 
 def detect_circles_polygon_collision(centers, radii, polygon, bb):
-    if shapely.distance(centers, bb) > radii:
-        return np.array(False)
-
-    distance = shapely.distance(centers, polygon)
-    return distance <= radii
+    collide = shapely.distance(centers, bb) <= radii
+    collide[collide] = shapely.distance(centers[collide], polygon) <= radii[collide]
+    return collide
 
 def check_intersection(shape, shapes):
     for s in shapes:
@@ -36,33 +34,23 @@ def check_intersection(shape, shapes):
             return True
     return False
 
-def check_intersection_robust(shape, shapes_l, shapes_t, net):
-    for s in shapes_l:
-        if shape.shapes_collide(s).points:
-            if check_intersection(shape, shapes_t):
-                if check_intersection_mlp(net, shape.body.position):
-                    return True
-                # return check_intersection_mlp(net, shape.body.position)
-                # return True
-    return False
-
 def check_intersection_mlp(centers, centers_shape, radii, radii_numpy, net, bb):
-    if shapely.distance(centers_shape, bb) > radii_numpy:
-        return torch.tensor(False)
-    distance = net(centers).squeeze()
-    return distance <= radii
+    collide = torch.from_numpy(shapely.distance(centers_shape, bb) <= radii_numpy)
+    collide_out = collide.clone()
+    collide_out[collide] = net(centers[collide]).squeeze() <= radii[collide]
+    return collide_out
 
-def measure_intersection_time(polygon_t, bb, num_trials=10000):
+def measure_intersection_time(polygon_t, bb, num_trials=1):
     total_time_mesh = 0
     total_time_mlp = 0
     centers, radii = generate_circles(N=num_trials)
     centers_torch, radii_torch = torch.from_numpy(centers).float().cpu(), torch.from_numpy(radii).float().cpu()
     centers = np.array([shapely.Point(p) for p in centers])
     start_time_mesh = time.perf_counter()
-    mesh_flags = np.array([detect_circles_polygon_collision(center, radius, polygon_t, bb) for center, radius in zip(centers, radii)])
+    mesh_flags = detect_circles_polygon_collision(centers, radii, polygon_t, bb)
     total_time_mesh += time.perf_counter() - start_time_mesh
     start_time_mlp = time.perf_counter()
-    mlp_flags = torch.tensor([check_intersection_mlp(center_torch, center, radius_torch, radius, c_net, bb) for center_torch, center, radius_torch, radius in zip(centers_torch, centers, radii_torch, radii)]).float()
+    mlp_flags = check_intersection_mlp(centers_torch, centers, radii_torch, radii, c_net, bb)
     total_time_mlp += time.perf_counter() - start_time_mlp
     wrong_check_count = (mesh_flags != mlp_flags.detach().cpu().numpy()).sum()
 
