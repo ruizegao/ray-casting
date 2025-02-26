@@ -7,13 +7,10 @@ import numpy as np
 import torch
 from sympy import andre
 from torch import Tensor
+import torch.nn as nn
+import torch.nn.functional as F
 from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
-import os
-from collections import defaultdict
-from auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.perturbations import PerturbationLpNorm
-
 from neural_sdf import MLP, Siren
 from neural_utils import load_net_object
 import crown
@@ -985,6 +982,64 @@ def dual_contouring(ax, net, resolution=2**6+1, threshold=0.0):
     # Plot the points
     ax.scatter(surface_points[:, 0], surface_points[:, 1], color='red', alpha=0.5, s=1, label='SDF ≈ 0')
 
+class StarSDF(nn.Module):
+    def __init__(self, radius=0.5, rounding_factor=0.4):
+        """
+        A parametric SDF for a 5-point star shape with sharp corners.
+
+        :param radius: Outer radius of the star
+        :param rounding_factor: Factor for smoothing the star edges
+        """
+        super().__init__()
+        self.radius = radius
+        self.rounding_factor = rounding_factor
+
+    def forward(self, x):
+        """
+        Compute the signed distance function for a 5-point star shape.
+
+        :param x: A tensor of shape (..., 2) representing 2D coordinates.
+        :return: A tensor of the same batch shape as x[..., 0] with SDF values.
+        """
+        k1 = torch.tensor([0.809016994375, -0.587785252292], dtype=x.dtype, device=x.device)
+        k2 = torch.tensor([-k1[0], k1[1]], dtype=x.dtype, device=x.device)
+
+        p = x.clone()
+        p[:, 0] = torch.abs(p[:, 0])
+        p -= 2.0 * torch.clamp(torch.sum(k1 * p, dim=-1, keepdim=True), min=0.0) * k1
+        p -= 2.0 * torch.clamp(torch.sum(k2 * p, dim=-1, keepdim=True), min=0.0) * k2
+        p[:, 0] = torch.abs(p[:, 0])
+        p[:, 1] -= self.radius
+
+        ba = self.rounding_factor * torch.tensor([-k1[1], k1[0]], dtype=x.dtype, device=x.device) - torch.tensor([0, 1],
+                                                                                                                 dtype=x.dtype,
+                                                                                                                 device=x.device)
+        h = torch.clamp(torch.sum(p * ba, dim=-1, keepdim=True) / torch.sum(ba * ba), min=0.0, max=self.radius)
+
+        return torch.norm(p - ba * h, dim=-1) * torch.sign(p[:, 1] * ba[0] - p[:, 0] * ba[1])
+
+
+def star_sdf(x, radius=0.5, rounding_factor=0.5):
+
+    k1 = torch.tensor([0.809016994375, -0.587785252292], dtype=x.dtype, device=x.device)
+    k2 = torch.tensor([-k1[0], k1[1]], dtype=x.dtype, device=x.device)
+
+    p = x.clone()
+    p[:, 0] = torch.abs(p[:, 0])
+    p -= 2.0 * torch.clamp(torch.sum(k1 * p, dim=-1, keepdim=True), min=0.0) * k1
+    p -= 2.0 * torch.clamp(torch.sum(k2 * p, dim=-1, keepdim=True), min=0.0) * k2
+    p[:, 0] = torch.abs(p[:, 0])
+    p[:, 1] -= radius
+
+    ba = rounding_factor * torch.tensor([-k1[1], k1[0]], dtype=x.dtype, device=x.device) - torch.tensor([0, 1],
+                                                                                                             dtype=x.dtype,
+                                                                                                             device=x.device)
+    h = torch.clamp(torch.sum(p * ba, dim=-1, keepdim=True) / torch.sum(ba * ba), min=0.0, max=radius)
+
+    return torch.norm(p - ba * h, dim=-1) * torch.sign(p[:, 1] * ba[0] - p[:, 0] * ba[1])
+
+
+
 def main(args: dict):
     # extract parsed arguments
     input_file = args['input_file']
@@ -1002,7 +1057,8 @@ def main(args: dict):
 
     # load in the model
     net = load_net_object(input_file, model_type, device=set_t['device'])
-    net = net.to(device=set_t['device'])
+    net = star_sdf
+    # net = net.to(device=set_t['device'])
 
     # sample the model and generate a 2D plot
     sample_model_args = {
@@ -1015,37 +1071,37 @@ def main(args: dict):
     sample_model(**sample_model_args)
 
     # TODO: Finish the plot_model_with_bounds function
-    second_output_file = output_file.split('.png')[0] + '_CROWN.png'
-    fig, ax = plt.subplots(figsize=(8, 8))
-    carve(ax, net, deep, smoothify=False)
-    plt.xlim(-0.53, 0.53)
-    plt.ylim(-0.53, 0.53)
-
-    if deep:
-        axins = zoomed_inset_axes(ax, 16, loc=10)
-        for patch in ax.patches:
-            patch_cpy = copy.copy(patch)
-            # cut the umbilical cord the hard way
-            patch_cpy.axes = None
-            patch_cpy.figure = None
-            patch_cpy.set_transform(axins.transData)
-            axins.add_patch(patch_cpy)
-
-        for collection in ax.get_children():
-            if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
-                offsets = collection.get_offsets()
-                colors = collection.get_facecolors()
-                sizes = collection.get_sizes()
-                axins.scatter(offsets[:, 0], offsets[:, 1],
-                              color=colors, s=sizes)
-
-        axins.set_xlim(0.14, 0.15)
-        axins.set_ylim(0.115, 0.125)
-        mark_inset(ax, axins, loc1=2, loc2=4)
-        plt.xticks(visible=False)
-        plt.yticks(visible=False)
-
-    plt.savefig(second_output_file)
+    # second_output_file = output_file.split('.png')[0] + '_CROWN.png'
+    # fig, ax = plt.subplots(figsize=(8, 8))
+    # carve(ax, net, deep, smoothify=False)
+    # plt.xlim(-0.53, 0.53)
+    # plt.ylim(-0.53, 0.53)
+    #
+    # if deep:
+    #     axins = zoomed_inset_axes(ax, 16, loc=10)
+    #     for patch in ax.patches:
+    #         patch_cpy = copy.copy(patch)
+    #         # cut the umbilical cord the hard way
+    #         patch_cpy.axes = None
+    #         patch_cpy.figure = None
+    #         patch_cpy.set_transform(axins.transData)
+    #         axins.add_patch(patch_cpy)
+    #
+    #     for collection in ax.get_children():
+    #         if isinstance(collection, matplotlib.collections.PathCollection):  # This ensures it's a scatter plot
+    #             offsets = collection.get_offsets()
+    #             colors = collection.get_facecolors()
+    #             sizes = collection.get_sizes()
+    #             axins.scatter(offsets[:, 0], offsets[:, 1],
+    #                           color=colors, s=sizes)
+    #
+    #     axins.set_xlim(0.14, 0.15)
+    #     axins.set_ylim(0.115, 0.125)
+    #     mark_inset(ax, axins, loc1=2, loc2=4)
+    #     plt.xticks(visible=False)
+    #     plt.yticks(visible=False)
+    #
+    # plt.savefig(second_output_file)
 
     # third_output_file = output_file.split('.png')[0] + '_AA.png'
     # fig, ax = plt.subplots(figsize=(8, 8))

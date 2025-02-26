@@ -10,3 +10,6 @@
 [submodule "bounding-mesh"]
 	path = bounding-mesh
 	url = https://github.com/gaschler/bounding-mesh.git
+[submodule "Verifier_Development"]
+	path = Verifier_Development
+	url = https://github.com/Verified-Intelligence/Verifier_Development.git

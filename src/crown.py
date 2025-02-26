@@ -302,19 +302,12 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
             }
             result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
                                                       bound_lower=True, bound_upper=True,
-                                                      return_A=return_A, needed_A_dict=needed_A_dict,
-                                                      use_clip_domains=False, decision_thresh=offset,
-                                                      custom_loss_func_params=custom_loss_func_params,
-                                                      swap_loss=swap_loss
+                                                      return_A=return_A, needed_A_dict=needed_A_dict
                                                       )
         else:
             result = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode,
                                                                     bound_lower=True, bound_upper=True,
-                                                                    return_A=return_A, needed_A_dict=needed_A_dict,
-                                                                    use_clip_domains=False, decision_thresh=offset,
-                                                                    swap_loss=swap_loss,
-                                                                    plane_constraints_lower=plane_constraints_lower,
-                                                                    plane_constraints_upper=plane_constraints_upper
+                                                                    return_A=return_A, needed_A_dict=needed_A_dict
                                                       )
 
         # unpack the returned dictionary
