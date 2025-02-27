@@ -34,100 +34,7 @@ set_t = {
 }
 gpu_id = torch.cuda.current_device()
 
-to_numpy = lambda x : x.detach().cpu().numpy()
-
-class BaseExactSDF(ABC):
-    """
-    Abstract Base Class with bare minimum methods that an exact SDF object should implement.
-    """
-    def __init__(self):
-        pass
-
-    @abstractmethod
-    def generate_vertices(self, num_samples: int, *args, **kwargs) -> Tensor:
-        """
-        Should generate a set of samples on the zero level-set
-        """
-        ...
-
-    @abstractmethod
-    def query_sdf(self, pts: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
-        """
-        Should return the signed distance for a batch of vertices and potentially their normals.
-        """
-        ...
-
-    def __call__(self, pts: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
-        """
-        A forward call on the object for a set of points.
-        :param pts:         Points to query SDF with.
-        :param kwargs:      Additional arguments.
-        :return:            The signed distance results.
-        """
-        return self.query_sdf(pts)
-
-class StarExactSDF(BaseExactSDF):
-    def __init__(self, radius: float=0.5, rounding_factor: float=0.5,
-                  k11: float = 0.809016994375, k12: float = -0.587785252292):
-        super().__init__()
-        self._radius = radius
-        self._k11 = k11
-        self._k12 = k12
-        self._rounding_factor = rounding_factor
-        self._k11 = k11
-        self._k12 = k12
-
-    def generate_vertices(self, num_samples: int, *args, **kwargs) -> Tensor:
-        """
-
-        :param num_samples:
-        :param which_device:
-        :return:
-        """
-        return torch.empty((0,))
-
-    def query_sdf(self, pts: Tensor) -> Tuple[Tensor, Optional[Tensor]]:
-        """
-
-        :param pts:
-        :return:
-        """
-        k1 = torch.tensor([self._k11, self._k12]).to(pts)
-        k2 = torch.tensor([-k1[0], k1[1]]).to(pts)
-
-        p = pts.clone()
-        p[:, 0] = torch.abs(p[:, 0])
-        p -= 2.0 * torch.clamp(torch.sum(k1 * p, dim=-1, keepdim=True), min=0.0) * k1
-        p -= 2.0 * torch.clamp(torch.sum(k2 * p, dim=-1, keepdim=True), min=0.0) * k2
-        p[:, 0] = torch.abs(p[:, 0])
-        p[:, 1] -= self._radius
-
-        ba = self._rounding_factor * torch.tensor([-k1[1], k1[0]]).to(pts) - torch.tensor([0, 1]).to(pts)
-        h = torch.clamp(torch.sum(p * ba, dim=-1, keepdim=True) / torch.sum(ba * ba), min=0.0, max=self._radius)
-
-        return torch.norm(p - ba * h, dim=-1) * torch.sign(p[:, 1] * ba[0] - p[:, 0] * ba[1]), None
-
-def init_star_sdf(radius: float=0.5, rounding_factor: float=0.5,
-                  k11: float = 0.809016994375, k12: float = -0.587785252292):
-
-    def star_sdf(pts: Tensor) -> Tensor:
-
-        k1 = torch.tensor([k11, k12]).to(pts)
-        k2 = torch.tensor([-k1[0], k1[1]]).to(pts)
-
-        p = pts.clone()
-        p[:, 0] = torch.abs(p[:, 0])
-        p -= 2.0 * torch.clamp(torch.sum(k1 * p, dim=-1, keepdim=True), min=0.0) * k1
-        p -= 2.0 * torch.clamp(torch.sum(k2 * p, dim=-1, keepdim=True), min=0.0) * k2
-        p[:, 0] = torch.abs(p[:, 0])
-        p[:, 1] -= radius
-
-        ba = rounding_factor * torch.tensor([-k1[1], k1[0]]).to(pts) - torch.tensor([0, 1]).to(pts)
-        h = torch.clamp(torch.sum(p * ba, dim=-1, keepdim=True) / torch.sum(ba * ba), min=0.0, max=radius)
-
-        return torch.norm(p - ba * h, dim=-1) * torch.sign(p[:, 1] * ba[0] - p[:, 0] * ba[1])
-
-    return star_sdf
+to_numpy = lambda x : x.detach().cpu().numpy() if isinstance(x, Tensor) else x
 
 def init_circle_sdf(center, r):
     def circle_sdf(pts):
@@ -323,7 +230,7 @@ def render_parametric_curve_image(width, height, curve_fn, t_samples, line_thick
     return image
 
 def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = False, normal_scale: float = 1.0,
-                 l_range: float = -0.55,u_range: float = 0.55,
+                 l_range: float = -0.55,u_range: float = 0.55, generate_n_random_samples: Optional[int] = None,
                  dim_samples: int = 1000, normal_samples: int = 1000):
     """
     Generates a heat map plot of a neural SDF
@@ -369,7 +276,8 @@ def sample_model(net: Union[MLP, Siren], save_path: str, show_normals: bool = Fa
         #     _generate_samples = lambda : torch.rand((dim_samples * 100, 2), **set_t) * scale + offset
         # else:
         # generate square number of samples to speed up the process of finding samples on the surface level-set
-        _generate_samples = lambda : torch.rand((normal_samples, 2), **set_t) * (u_range - l_range) + l_range
+        gs = generate_n_random_samples if generate_n_random_samples is not None else normal_samples
+        _generate_samples = lambda : torch.rand((gs, 2), **set_t) * (u_range - l_range) + l_range
         if isinstance(net, MLP) and net.fit_mode == 'occupancy':
             _generate_mask = lambda x : torch.logical_and((x >= 0.5), (x <= 0.5 + 1e-3))
         else:
@@ -556,6 +464,7 @@ def main(args: dict):
     normal_scale = args['normal_scale']
     l_range = args['l_range']
     u_range = args['u_range']
+    generate_n_random_samples = args['generate_n_random_samples']
     rows = args['rows']
     cols = args['cols']
     x_L = tuple(args['x_L'])
@@ -576,6 +485,7 @@ def main(args: dict):
         'normal_samples': normal_samples,
         'l_range': l_range,
         'u_range': u_range,
+        'generate_n_random_samples': generate_n_random_samples
     }
     sample_model(**sample_model_args)
 
@@ -634,6 +544,10 @@ def parse_args() -> dict:
     parser.add_argument("--normal_samples", type=int, default=1000,
                         help="The number of samples to draw from the model that lie on the surface to plot their "
                              "normals.")
+    parser.add_argument("--generate_n_random_samples", type=int,
+                        help="The number of samples to randomly generate per iteration to help gather the normal"
+                             "samples. This helps with more flexibility if you do not want many surface normal samples"
+                             "but you need to generally sample a lot to get surface level samples.")
     parser.add_argument("--display_normals", action="store_true",
                         help="Will sample the SDF on the zero level-set and calculate its normals to display in the "
                              "plot.")
