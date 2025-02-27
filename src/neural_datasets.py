@@ -11,6 +11,7 @@ from warnings import warn
 from tqdm import tqdm
 from PIL import Image
 from gpytoolbox import png2poly, edge_indices, normalize_points, signed_distance
+from neural_exact_sdf import BaseExactSDF, get_sdf_choice
 
 import igl, geometry
 
@@ -76,7 +77,17 @@ class SampleDataset(Dataset):
             }
             self._init_from_png(**png_args)
         else:
-            raise ValueError(f"Input file {input_file} is not a .obj or .png file.")
+            # We assume that the user is given the name of an exact sdf function to use that should be
+            # defined in neural_exact_sdf.py.
+            exact_sdf_args = {
+                'sdf_name': input_file,
+                'fit_mode': fit_mode,
+                'sdf_max': sdf_max,
+                'n_samples': n_samples,
+                'truncate_outputs': truncate_outputs,
+                'device': device,
+            }
+            self._init_from_exact_sdf(**exact_sdf_args)
 
     def _init_from_obj(
             self,
@@ -177,7 +188,6 @@ class SampleDataset(Dataset):
         self._on_surface_points = on_surface_points
 
         ### for mlp
-        # off_surface_points = 3 * on_surface_points if fit_mode == 'sdf' else on_surface_points
         close_surface_points = on_surface_points
         off_surface_points = close_surface_points // 2
         n_samples = on_surface_points + close_surface_points + off_surface_points
@@ -222,7 +232,7 @@ class SampleDataset(Dataset):
                 # append them to our previous collection
                 close_surface_coords = torch.concatenate((close_surface_coords, close_samples), dim=0)
                 close_surface_dist = torch.concatenate((close_surface_dist, close_dist), dim=0)
-
+                num_close_left -= close_samples.shape[0]
             # append far samples if we require more
             if num_off_left > 0:
                 # retain only the necessary amount of samples
@@ -235,7 +245,7 @@ class SampleDataset(Dataset):
                 # append them to our previous collection
                 off_surface_coords = torch.cat((off_surface_coords, far_samples), dim=0)
                 off_surface_dist = torch.cat((off_surface_dist, far_dist), dim=0)
-
+                num_off_left -= far_samples.shape[0]
             # update the number of samples we need
             num_left = num_close_left + num_off_left
             num_left_progress_bar.update(close_surface_coords.shape[0] + off_surface_coords.shape[0])
@@ -271,6 +281,135 @@ class SampleDataset(Dataset):
             # use a 9:9:2 ratio split, giving more importance to samples on and close to the surface
             samp_weight = torch.full((n_samples, 1), 9/20, dtype=torch.float32, device=torch.device('cpu'))
             samp_weight[on_surface_points + close_surface_points:, :] = 1/10
+        else:
+            raise ValueError(f"Fit mode {fit_mode} not recognized. Please select from ['occupancy', 'sdf'].")
+
+        self.x = coords  # shape (n_samples, 2)
+        self.y = samp_target
+        self.weights = samp_weight
+
+    def _init_from_exact_sdf(self, sdf_name: str, fit_mode: str, sdf_max: float, n_samples: int,
+                             truncate_outputs: bool, device: torch.device):
+        """
+
+        :param sdf_name:
+        :param fit_mode:
+        :param sdf_max:
+        :param n_samples:
+        :param truncate_outputs:
+        :param device:
+        :return:
+        """
+
+        # If the 'input_file' was not an exact sdf object either, we will throw an error at this point
+        exact_sdf_obj = get_sdf_choice(sdf_name)
+        self._exact_sdf = exact_sdf_obj
+        # generate samples on the zero level-set
+        coords, _ = exact_sdf_obj.generate_vertices(n_samples)
+        on_surface_points = coords.shape[0]
+
+        # normalize the coordinates and send them to the CPU
+        # self._coords = self._coords_normalization(coords, keep_aspect_ratio).to(device='cpu')
+        coords = coords.cpu()  # shape (on_surface_samples, 2)
+        self._coords = coords
+
+        self._on_surface_points = on_surface_points
+
+        ### for mlp
+        close_surface_points = on_surface_points
+        off_surface_points = close_surface_points // 2
+        n_samples = on_surface_points + close_surface_points + off_surface_points
+
+        # set up tensors to hold samples that are not on the surface
+        num_left = close_surface_points + off_surface_points
+        off_surface_coords = torch.empty((0, 2), dtype=coords.dtype, device=torch.device('cpu'))
+        close_surface_coords = torch.empty((0, 2), dtype=coords.dtype, device=torch.device('cpu'))
+        off_surface_dist = torch.empty((0, 1), dtype=coords.dtype, device=torch.device('cpu'))
+        close_surface_dist = torch.empty((0, 1), dtype=coords.dtype, device=torch.device('cpu'))
+        num_left_progress_bar = tqdm(range(n_samples - on_surface_points), desc="Generating sdf samples", leave=True)
+        while num_left > 0:
+            # generate random samples in the range [-1.5, 1.5]
+            # curr_samples = torch.rand((close_surface_points + off_surface_points, 2)).to(device=device) * 2 - 1
+            curr_samples = (torch.rand((close_surface_points + off_surface_points, 2)).to(device=device) * 2 - 1) * 1.5
+
+            # calculate the signed distance of these random samples
+            curr_sdf, _ = self._exact_sdf(curr_samples)
+
+            # create a mask for samples that are close to the surface based on the sdf_max threshold
+            close_mask = (curr_sdf.abs() <= sdf_max)
+            far_mask = torch.logical_not(close_mask)
+
+            # calculate the number of samples that are close and how many more we need
+            num_close = close_mask.to(dtype=torch.int).sum().item()
+            num_close_left = close_surface_points - close_surface_coords.shape[0]
+
+            # calculate the number of samples that are far and how many more we need
+            num_off = curr_samples.shape[0] - num_close
+            num_off_left = off_surface_points - off_surface_coords.shape[0]
+
+            # separate the samples and signed distances using this mask
+            close_samples = curr_samples[close_mask]
+            close_dist = curr_sdf[close_mask]
+            far_samples = curr_samples[far_mask]
+            far_dist = curr_sdf[far_mask]
+
+            # append close samples if we require more
+            if num_close_left > 0:
+                # retain only the necessary amount of samples
+                close_samples = close_samples[:min(num_close_left, num_close), :].cpu()
+                close_dist = close_dist[:close_samples.shape[0]].unsqueeze(1).cpu()
+                # append them to our previous collection
+                close_surface_coords = torch.concatenate((close_surface_coords, close_samples), dim=0)
+                close_surface_dist = torch.concatenate((close_surface_dist, close_dist), dim=0)
+                num_close_left -= close_samples.shape[0]
+            # append far samples if we require more
+            if num_off_left > 0:
+                # retain only the necessary amount of samples
+                far_samples = far_samples[:min(num_off_left, num_off), :].cpu()
+                far_dist = far_dist[:far_samples.shape[0]]
+                if truncate_outputs:
+                    # if true, then the far samples should be truncated to the sdf_max threshold
+                    far_dist = sdf_max * torch.sign(far_dist)
+                far_dist = far_dist.unsqueeze(1).cpu()
+                # append them to our previous collection
+                off_surface_coords = torch.cat((off_surface_coords, far_samples), dim=0)
+                off_surface_dist = torch.cat((off_surface_dist, far_dist), dim=0)
+                num_off_left -= far_samples.shape[0]
+            # update the number of samples we need
+            num_left = num_close_left + num_off_left
+            num_left_progress_bar.update(close_surface_coords.shape[0] + off_surface_coords.shape[0])
+            num_left_progress_bar.set_postfix({
+                'num_left': num_left, 'num_close_left': num_close_left, 'num_far_left': num_off_left})
+
+        samp_SDF = torch.cat((close_surface_dist, off_surface_dist), dim=0)
+
+        if fit_mode == 'occupancy':
+            # apply label and calculate sample weight to correct class imbalance
+            other_samp_target = (samp_SDF > 0) * 1.0
+            n_pos = torch.sum(other_samp_target > 0)
+            n_neg = other_samp_target.shape[0] - n_pos
+            w_pos = n_neg / (n_pos + n_neg)
+            w_neg = n_pos / (n_pos + n_neg)
+            other_samp_weight = torch.where(other_samp_target > 0, w_pos, w_neg)
+
+            coords = torch.concatenate((coords, close_surface_coords, off_surface_coords), dim=0)
+            samp_target = torch.zeros((n_samples, 1), dtype=other_samp_target.dtype, device=torch.device('cpu'))
+            samp_target[on_surface_points:, :] = other_samp_target
+            samp_weight = torch.ones((n_samples, 1), dtype=other_samp_weight.dtype, device=torch.device('cpu'))
+            samp_weight[on_surface_points:, :] = other_samp_weight
+        elif fit_mode == 'sdf':
+
+            # the coordinates should now hold all samples
+            other_samp_target = samp_SDF
+            coords = torch.concatenate((coords, close_surface_coords, off_surface_coords), dim=0)
+
+            # the targets should be updated for all samples
+            samp_target = torch.zeros((n_samples, 1), dtype=other_samp_target.dtype, device=torch.device('cpu'))
+            samp_target[on_surface_points:, :] = other_samp_target
+
+            # use a 9:9:2 ratio split, giving more importance to samples on and close to the surface
+            samp_weight = torch.full((n_samples, 1), 9 / 20, dtype=torch.float32, device=torch.device('cpu'))
+            samp_weight[on_surface_points + close_surface_points:, :] = 1 / 10
         else:
             raise ValueError(f"Fit mode {fit_mode} not recognized. Please select from ['occupancy', 'sdf'].")
 
