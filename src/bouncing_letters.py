@@ -1,27 +1,11 @@
-"""Very simple example that does not depend on any third party library such
-as pygame or pyglet like the other examples.
-"""
-
-import random
-import sys
-import math
-
 import pygame
 import pymunk
 import pymunk.util
 import pymunk.pygame_util
 import pygame.gfxdraw
-from pymunk import Vec2d
 import numpy as np
 import torch
-from torch import Tensor
-from typing import Tuple, Union, Optional
 import matplotlib.pyplot as plt
-import os
-from collections import defaultdict
-from auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.perturbations import PerturbationLpNorm
-import argparse
 from neural_sdf import MLP, Siren
 from neural_utils import load_net_object
 import crown
@@ -29,10 +13,7 @@ import mlp
 import kd_tree
 from shapely.ops import split, unary_union
 import shapely
-import matplotlib
-from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
-from mpl_toolkits.axes_grid1.inset_locator import mark_inset
-import copy
+import imageio.v2 as imageio
 
 global I_COMP, C_COMP, V_COMP
 
@@ -272,7 +253,7 @@ class BouncyBalls(object):
 
         # pygame
         pygame.init()
-        self._screen = pygame.display.set_mode((600, 600))
+        self._screen = pygame.display.set_mode((608, 608))
         self._clock = pygame.time.Clock()
 
         self._draw_options = pymunk.pygame_util.DrawOptions(self._screen)
@@ -293,6 +274,7 @@ class BouncyBalls(object):
         :return: None
         """
         # Main loop
+        frames = []
         while self._running:
             # Progress time forward
             for x in range(self._physics_steps_per_frame):
@@ -302,10 +284,18 @@ class BouncyBalls(object):
             self._update_letters()
             self._clear_screen()
             self._draw_objects()
+            frames.append(pygame.surfarray.array3d(self._screen))
             pygame.display.flip()
             # Delay fixed time between frames
             self._clock.tick(50)
             pygame.display.set_caption("fps: " + str(self._clock.get_fps()))
+
+        print(f'{len(frames)} frames saved.')
+        writer = imageio.get_writer('output.mp4', fps=60)
+
+        for im in frames:
+            writer.append_data(np.transpose(im, axes=(1, 0, 2)))
+        writer.close()
 
     def _add_static_scenery(self) -> None:
         """
@@ -357,11 +347,11 @@ class BouncyBalls(object):
         Create a letter.
         :return:
         """
-        mass = 25
+        mass = 300
 
         # Convert to pymunk-friendly format
         complex_polygon, color = random.choice([(I_COMP, LETTER_COLORS['I']), (C_COMP, LETTER_COLORS['C']), (C_COMP, LETTER_COLORS['C']), (V_COMP, LETTER_COLORS['V'])])
-        scaled_polygons = [scale_polygon(polygon.exterior.coords, 50) for polygon in complex_polygon]
+        scaled_polygons = [scale_polygon(polygon.exterior.coords, 60) for polygon in complex_polygon]
 
         # Create body with appropriate moment of inertia
         inertia = sum(pymunk.moment_for_poly(mass / len(scaled_polygons), vertices) for vertices in scaled_polygons)
@@ -424,19 +414,19 @@ class BouncyBalls(object):
 def main():
     c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
     c_net = c_net.to(device=set_t['device'])
-    c_components = carve(c_net, deep=False)
+    c_components = carve(c_net, deep=True)
     global C_COMP
     C_COMP = [shapely.geometry.Polygon(vertices) for vertices in c_components]
 
     v_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/V_MLP.pth', 'mlp')
     v_net = v_net.to(device=set_t['device'])
-    v_components = carve(v_net, deep=False)
+    v_components = carve(v_net, deep=True)
     global V_COMP
     V_COMP = [shapely.geometry.Polygon(vertices) for vertices in v_components]
 
     i_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/I_MLP.pth', 'mlp')
     i_net = i_net.to(device=set_t['device'])
-    i_components = carve(i_net, deep=False)
+    i_components = carve(i_net, deep=True)
     global I_COMP
     I_COMP = [shapely.geometry.Polygon(vertices) for vertices in i_components]
 

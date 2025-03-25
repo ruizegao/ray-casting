@@ -28,12 +28,6 @@ def detect_circles_polygon_collision(centers, radii, polygon, bb):
     collide[collide] = shapely.distance(centers[collide], polygon) <= radii[collide]
     return collide
 
-def check_intersection(shape, shapes):
-    for s in shapes:
-        if shape.shapes_collide(s).points:
-            return True
-    return False
-
 def check_intersection_mlp(centers, centers_shape, radii, radii_numpy, net, bb):
     collide = torch.from_numpy(shapely.distance(centers_shape, bb) <= radii_numpy)
     collide_out = collide.clone()
@@ -63,11 +57,13 @@ def main():
     c_polygon_t = carve(c_net, deep=True, smoothify=False, return_merged=True)
     bounding_box = shapely.envelope(c_polygon_t)
     c_net.cpu()
-    avg_time_mesh, avg_time_mlp, wrong_results = measure_intersection_time(c_polygon_t, bounding_box)
+    num_trials = 1000
+    avg_time_mesh, avg_time_mlp, wrong_results = measure_intersection_time(c_polygon_t, bounding_box, num_trials=num_trials)
     print(f'Average intersection check time: {avg_time_mesh:.6f} seconds')
-
     # avg_time_mlp = measure_intersection_time_mlp(num_trials=1000)
     print(f'Average intersection check time with MLP: {avg_time_mlp:.6f} seconds')
+    print(f'{avg_time_mesh * num_trials * 1000:.3f}')
+    print(f'{avg_time_mlp * num_trials * 1000:.3f}')
     print(f'Number of incorrect checks: {wrong_results}')
 
 if __name__ == "__main__":

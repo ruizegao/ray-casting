@@ -92,8 +92,7 @@ def sample_points_from_mesh(vertices, faces, num_samples):
         vertices_wp, faces_wp, None, sampled_points, random_u_wp, random_v_wp, selected_faces_wp
     ], device=device)
     time_elapsed = time.time() - time_start
-    print("Total sampling time: ", time_elapsed)
-    print("Average sampling time: ", time_elapsed / num_samples)
+    print(f'Total sampling time: {time_elapsed * 1000:.3f} ms')
     return torch.tensor(sampled_points.numpy(), device=device)
 
 
@@ -110,7 +109,9 @@ if __name__ == '__main__':
     tri_vertices = mesh_dict['vertices']
     tri_faces = mesh_dict['faces']
     trimesh_mesh = trimesh.Trimesh(tri_vertices, tri_faces)
-    samples = sample_points_from_mesh(torch.from_numpy(tri_vertices), torch.from_numpy(tri_faces), 60000)
+    samples = sample_points_from_mesh(torch.from_numpy(tri_vertices), torch.from_numpy(tri_faces), 10000)
+    samples = sample_points_from_mesh(torch.from_numpy(tri_vertices), torch.from_numpy(tri_faces), 10000)
+    samples = sample_points_from_mesh(torch.from_numpy(tri_vertices), torch.from_numpy(tri_faces), 10000)
     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode='crown')
     implicit_func.torch_model.cuda()
     sdfs = implicit_func.torch_model(samples.float().cuda())

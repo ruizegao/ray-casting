@@ -1,6 +1,8 @@
 import os
 import sys
 import gc
+from typing import Optional, Tuple
+
 import functorch
 import torch
 import scipy
@@ -17,6 +19,9 @@ import affine
 import trimesh
 import matplotlib.pyplot as plt
 import sys, os, time, math
+import jax
+import jax.numpy as jnp
+
 os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 
 from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
@@ -45,7 +50,6 @@ def camera_ray(look_dir, up_dir, left_dir, fov_deg_x, fov_deg_y, theta_x, theta_
 
     return ray_dir
 
-
 def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
     D = res  # image dimension
     R = res * res  # number of rays
@@ -61,7 +65,7 @@ def generate_camera_rays(eye_pos, look_dir, up_dir, res=1024, fov_deg=30.):
 
     # Orthornormal camera frame
     up_dir = up_dir - torch.dot(look_dir, up_dir) * look_dir
-    up_dir = geometry.normalize(up_dir)
+    up_dir /= torch.norm(up_dir)
     left_dir = torch.cross(look_dir, up_dir)
 
     ray_dirs = vmap(partial(camera_ray, look_dir, up_dir, left_dir, fov_deg, fov_deg))(cam_x, cam_y)
@@ -100,7 +104,6 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='fini
 
     return grad_out
 
-
 def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='finite_differences'):
     this_normal_one = lambda p, id: outward_normal(funcs_tuple, params_tuple, p, id, eps, method=method)
     if method == 'autodiff':
@@ -116,7 +119,8 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
     elif method == 'finite_differences':
         total_samples = hit_pos.shape[0]
         out_normal = torch.empty_like(hit_pos)
-        batch_size_per_iteration = 2**19
+        batch_size_per_iteration = 2**18
+        # batch_size_per_iteration = 2**12
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
             out_normal[start_idx:end_idx] \
@@ -124,7 +128,6 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
 
         return out_normal
     return vmap(this_normal_one)(hit_pos, hit_ids)
-
 
 def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, branching_method, opts,
                  shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
@@ -162,13 +165,6 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
         hit_ids = hit_ids.transpose().flatten()
         counts = counts.transpose().flatten()
 
-    elif tree_based:
-        with Timer("opt_based raycast"):
-            # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_cw(funcs_tuple, params_tuple, ray_roots, ray_dirs)
-            t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
-                                                                              ray_dirs, load_from=load_from, save_to=save_to)
-            # t_raycast, hit_ids, counts, n_eval = queries.cast_rays_parameterized(funcs_tuple, params_tuple, ray_roots, ray_dirs, opts)
-            torch.cuda.synchronize()
     else:
         # == Standard raycasting
         with Timer("raycast"):
@@ -234,11 +230,6 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
         hit_ids = hit_ids.transpose().flatten()
         counts = counts.transpose().flatten()
 
-    elif tree_based:
-        t_raycast, hit_ids, counts, n_eval = queries.cast_rays_tree_based(funcs_tuple, params_tuple, ray_roots,
-                                                                          ray_dirs, batch_size=batch_size,
-                                                                          enable_clipping=enable_clipping, load_from=load_from, save_to=save_to)
-        torch.cuda.synchronize()
     elif shell_based:
         t_raycast, hit_ids, counts, n_eval = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots,
                                                                           ray_dirs, batch_size=batch_size,
@@ -270,70 +261,95 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
 
     return img, depth, counts, hit_ids, n_eval, -1
 
-def render_image_mesh(funcs_tuple, params_tuple, load_from, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
-                      shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+
+def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
+                      shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), approx=False, delta=0.001, matcaps=None, tonemap=False,
                       shading_color_func=None):
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
-    if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
 
     # wrap in tuples if single was passed
     if not isinstance(funcs_tuple, tuple):
         funcs_tuple = (funcs_tuple,)
     if not isinstance(params_tuple, tuple):
         params_tuple = (params_tuple,)
-    if not isinstance(shading_color_tuple[0], tuple):
-        shading_color_tuple = (shading_color_tuple,)
-
-    L = len(funcs_tuple)
-    if (len(params_tuple) != L) or (len(shading_color_tuple) != L):
-        raise ValueError("render_image tuple arguments should all be same length")
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
 
-    mesh_npz = np.load(load_from)
-    vertices = mesh_npz['vertices'].astype(np.float32)
-    faces = mesh_npz['faces'].astype(np.int32)
-    print(len(faces))
-    mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-    vertices = torch.from_numpy(vertices).cuda().float()
-    faces = torch.from_numpy(faces).cuda().int()
-    face_normals = torch.tensor(mesh.face_normals).cuda().float()
-    # vertex_normals = torch.tensor(mesh.vertex_normals).cuda().float()
-    vertex_normals = outward_normals(funcs_tuple, params_tuple, vertices, torch.ones_like(vertices), opts['hit_eps'], method='finite_differences')
-    # mesh.show()
-    intersector = RayMeshIntersector(mesh)
-    # compiled_cast_rays_shell_based = torch.compile(queries.cast_rays_shell_based)
-    compiled_cast_rays_shell_based = queries.cast_rays_shell_based
+    if approx:
+        vertex_normals = outward_normals(funcs_tuple, params_tuple, vertices, torch.ones_like(vertices), opts['hit_eps'], method='finite_differences')
 
-    # hit_pos, hit_ids, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
-    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
-    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = compiled_cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector)
+    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, torch.empty_like(ray_roots), torch.empty_like(ray_dirs), intersector, approx, delta)
+
     time_render_start = time.time()
-    # hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
-    hit_normals = torch.zeros_like(ray_dirs)
-    # hit_normals[hit] = face_normals[tri_idx]
-    tri_v = faces[tri_idx]
-    tri_norm = vertex_normals[tri_v]
-    hit_norm = uv[:, :1] * tri_norm[:, 0] + uv[:, 1:] * tri_norm[:, 1] + (1 - uv[:, :1] - uv[:, 1:]) * tri_norm[:, 2]
-    hit_normals[hit] = hit_norm
-    time_normals_done = time.time()
-    print("Normals calculated: ", time_normals_done - time_render_start)
+    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector, approx, delta)
+    if approx:
+        hit_normals = torch.zeros_like(ray_dirs)
+        tri_v = faces[tri_idx]
+        tri_norm = vertex_normals[tri_v]
+        hit_norm = uv[:, :1] * tri_norm[:, 0] + uv[:, 1:] * tri_norm[:, 1] + (1 - uv[:, :1] - uv[:, 1:]) * tri_norm[:, 2]
+        hit_normals[hit] = hit_norm
+    else:
+        hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
+
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
                             shading_color_func=shading_color_func)
     img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
-    time_render_end = time.time()
-    print("Rendering time:", time_render_end - time_render_start)
 
     if tonemap:
         # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
         img = tonemap_image(img)
 
     img = img.reshape(res, res, 3)
+    time_render_end = time.time()
+    print("Time rendering:", time_render_end - time_render_start)
 
-    return img
+    return img, time_render_end - time_render_start
 
+def render_image_de(funcs_tuple, params_tuple, faces, vertices, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
+                      shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), matcaps=None, tonemap=False,
+                      shading_color_func=None):
+    if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
+    if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
+
+    # wrap in tuples if single was passed
+    if not isinstance(funcs_tuple, tuple):
+        funcs_tuple = (funcs_tuple,)
+    if not isinstance(params_tuple, tuple):
+        params_tuple = (params_tuple,)
+
+    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
+    time_render_start = time.time()
+
+    hit_first, front, tri_idx, location_first, uv = intersector.intersects_closest(
+        ray_roots, ray_dirs, stream_compaction=False
+    )
+
+    hit_second, front, tri_idx, location_second, uv = intersector.intersects_closest(
+        location_first + 1e-6, ray_dirs, stream_compaction=False
+    )
+
+    hit = hit_first & hit_second
+
+    hit_pos = (location_first + location_second) / 2.
+    hit_ids = torch.zeros(ray_roots.shape[0])
+    hit_ids[hit] = 1.
+
+    hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
+
+    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+                            shading_color_func=shading_color_func)
+    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
+
+    if tonemap:
+        # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
+        img = tonemap_image(img)
+
+    img = img.reshape(res, res, 3)
+    time_render_end = time.time()
+    print("Time rendering:", time_render_end - time_render_start)
+
+    return img, time_render_end - time_render_start
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure
@@ -343,115 +359,164 @@ def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = torch.pow(img, 1.0 / gamma)
     return img
 
+@torch.jit.script
+def shade_image(shading: str, ray_dirs: torch.Tensor, hit_pos: torch.Tensor, hit_normals: torch.Tensor,
+                hit_ids: torch.Tensor, up_dir: torch.Tensor, matcaps: torch.Tensor,
+                shading_color_tuple: torch.Tensor, shading_color_func=None) -> torch.Tensor:
+    # compute matcap coordinates
+    ray_up = (up_dir - (up_dir * ray_dirs).sum(dim=-1, keepdim=True) * ray_dirs)
+    ray_up = ray_up / ray_up.norm(p=2, dim=-1, keepdim=True)
+    ray_left = torch.cross(ray_dirs, ray_up, dim=-1)
+    matcap_u = torch.einsum('ij,ij->i', -ray_left, hit_normals)
+    matcap_v = torch.einsum('ij,ij->i', ray_up, hit_normals)
 
-def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
-                shading_color_func=None):
-    # Simple shading
-    if shading == "normal":
-        hit_color = (hit_normals + 1.) / 2.  # map normals to [0,1]
+    matcap_u *= 0.98
+    matcap_v *= 0.98
 
-    elif shading == "matcap_color":
+    matcap_x = (matcap_u + 1.) / 2. * matcaps[0].shape[0]
+    matcap_y = (-matcap_v + 1.) / 2. * matcaps[0].shape[1]
+    matcap_coords = torch.stack((matcap_x, matcap_y), dim=-1)
 
-        # compute matcap coordinates
-        ray_up = vmap(partial(geometry.orthogonal_dir, up_dir))(ray_dirs)
-        ray_left = vmap(torch.cross)(ray_dirs, ray_up)
-        matcap_u = vmap(torch.dot)(-ray_left, hit_normals)
-        matcap_v = vmap(torch.dot)(ray_up, hit_normals)
+    x = matcap_coords[:, 0].long().clamp(0, matcaps[0].shape[0] - 1)
+    y = matcap_coords[:, 1].long().clamp(0, matcaps[0].shape[1] - 1)
 
-        # pull inward slightly to avoid indexing off the matcap image
-        matcap_u *= .98
-        matcap_v *= .98
+    mat_r = matcaps[0][x, y]
+    mat_g = matcaps[1][x, y]
+    mat_b = matcaps[2][x, y]
+    mat_k = matcaps[3][x, y]
 
-        # remap to image indices 
-        matcap_x = (matcap_u + 1.) / 2. * matcaps[0].shape[0]
-        matcap_y = (-matcap_v + 1.) / 2. * matcaps[0].shape[1]
-        matcap_coords = torch.stack((matcap_x, matcap_y), dim=0)
+    shading_color = torch.ones_like(hit_pos)
+    # if shading_color_func is None:
+    i_func = 1
+    for c in shading_color_tuple:
+        mask = (hit_ids == i_func).unsqueeze(-1)
+        # shading_color = torch.where(mask, torch.tensor(c, dtype=shading_color.dtype, device=shading_color.device), shading_color)
+        shading_color = torch.where(mask, c, shading_color)
+        i_func += 1
+    # else:
+    #     shading_color = shading_color_func(hit_pos)
 
-        def sample_matcap(matcap, coords):
-            import torch.nn.functional as F
-            def map_coordinates(input, coordinates, order=1, mode='nearest', cval=0.0):
-                assert order == 1, "Only order=1 (linear interpolation) is supported."
-                assert mode in ['nearest', 'constant'], "Only 'nearest' and 'constant' modes are supported."
+    c_r, c_g, c_b = shading_color[:, 0], shading_color[:, 1], shading_color[:, 2]
+    c_k = 1. - (c_r + c_b + c_g)
 
-                def get_pixel_value(img, x, y, mode, cval):
-                    if mode == 'nearest':
-                        x = torch.clamp(x, 0, img.shape[0] - 1)
-                        y = torch.clamp(y, 0, img.shape[1] - 1)
-                        return img[x.long(), y.long()]
-                    elif mode == 'constant':
-                        mask = (x >= 0) & (x < img.shape[0]) & (y >= 0) & (y < img.shape[1])
-                        x = torch.clamp(x, 0, img.shape[0] - 1)
-                        y = torch.clamp(y, 0, img.shape[1] - 1)
-                        return torch.where(mask, img[x.long(), y.long()], torch.tensor(cval, dtype=img.dtype))
+    c_r = c_r[:, None]
+    c_g = c_g[:, None]
+    c_b = c_b[:, None]
+    c_k = c_k[:, None]
 
-                x_coords = coordinates[0]
-                y_coords = coordinates[1]
-
-                x0 = torch.floor(x_coords).long()
-                x1 = x0 + 1
-                y0 = torch.floor(y_coords).long()
-                y1 = y0 + 1
-
-                x0 = x0.float()
-                x1 = x1.float()
-                y0 = y0.float()
-                y1 = y1.float()
-
-                Ia = get_pixel_value(input, x0, y0, mode, cval)
-                Ib = get_pixel_value(input, x0, y1, mode, cval)
-                Ic = get_pixel_value(input, x1, y0, mode, cval)
-                Id = get_pixel_value(input, x1, y1, mode, cval)
-
-                wa = (x1 - x_coords) * (y1 - y_coords)
-                wb = (x1 - x_coords) * (y_coords - y0)
-                wc = (x_coords - x0) * (y1 - y_coords)
-                wd = (x_coords - x0) * (y_coords - y0)
-
-                output = wa * Ia + wb * Ib + wc * Ic + wd * Id
-                return output
-
-            # m = lambda X : scipy.ndimage.map_coordinates(X, coords.cpu(), order=1, mode='nearest')
-            m = lambda X: map_coordinates(X, coords, order=1, mode='nearest')
-            return vmap(m, in_dims=-1, out_dims=-1)(matcap)
-
-        # fetch values
-        mat_r = sample_matcap(matcaps[0], matcap_coords)
-        mat_g = sample_matcap(matcaps[1], matcap_coords)
-        mat_b = sample_matcap(matcaps[2], matcap_coords)
-        mat_k = sample_matcap(matcaps[3], matcap_coords)
-
-        # find the appropriate shading color
-        def get_shade_color(hit_pos, hit_id):
-            shading_color = torch.ones(3)
-
-            if shading_color_func is None:
-                # use the tuple of constant colors
-                i_func = 1
-                for c in shading_color_tuple:
-                    shading_color = torch.where(hit_id == i_func, torch.tensor(c), shading_color)
-                    i_func += 1
-            else:
-                # look up varying color
-                shading_color = shading_color_func(hit_pos)
-
-            return shading_color
-
-        shading_color = vmap(get_shade_color)(hit_pos, hit_ids)
-
-        c_r, c_g, c_b = shading_color[:, 0], shading_color[:, 1], shading_color[:, 2]
-        c_k = 1. - (c_r + c_b + c_g)
-
-        c_r = c_r[:, None]
-        c_g = c_g[:, None]
-        c_b = c_b[:, None]
-        c_k = c_k[:, None]
-
-        hit_color = c_r * mat_r + c_b * mat_b + c_g * mat_g + c_k * mat_k
-
-    else:
-        raise RuntimeError("Unrecognized shading parameter")
+    hit_color = c_r * mat_r + c_b * mat_b + c_g * mat_g + c_k * mat_k
 
     return hit_color
+
+
+# def shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
+#                             shading_color_func):
+#     # Simple shading
+#     if shading == "normal":
+#         hit_color = (hit_normals + 1.) / 2.  # map normals to [0,1]
+#
+#     elif shading == "matcap_color":
+#
+#         # compute matcap coordinates
+#         ray_up = vmap(partial(geometry.orthogonal_dir, up_dir))(ray_dirs)
+#         ray_left = vmap(torch.cross)(ray_dirs, ray_up)
+#         matcap_u = vmap(torch.dot)(-ray_left, hit_normals)
+#         matcap_v = vmap(torch.dot)(ray_up, hit_normals)
+#
+#         # pull inward slightly to avoid indexing off the matcap image
+#         matcap_u *= .98
+#         matcap_v *= .98
+#
+#         # remap to image indices
+#         matcap_x = (matcap_u + 1.) / 2. * matcaps[0].shape[0]
+#         matcap_y = (-matcap_v + 1.) / 2. * matcaps[0].shape[1]
+#         matcap_coords = torch.stack((matcap_x, matcap_y), dim=0)
+#
+#         def sample_matcap(matcap, coords):
+#             import torch.nn.functional as F
+#             def map_coordinates(input, coordinates, order=1, mode='nearest', cval=0.0):
+#                 assert order == 1, "Only order=1 (linear interpolation) is supported."
+#                 assert mode in ['nearest', 'constant'], "Only 'nearest' and 'constant' modes are supported."
+#
+#                 def get_pixel_value(img, x, y, mode, cval):
+#                     if mode == 'nearest':
+#                         x = torch.clamp(x, 0, img.shape[0] - 1)
+#                         y = torch.clamp(y, 0, img.shape[1] - 1)
+#                         return img[x.long(), y.long()]
+#                     elif mode == 'constant':
+#                         mask = (x >= 0) & (x < img.shape[0]) & (y >= 0) & (y < img.shape[1])
+#                         x = torch.clamp(x, 0, img.shape[0] - 1)
+#                         y = torch.clamp(y, 0, img.shape[1] - 1)
+#                         return torch.where(mask, img[x.long(), y.long()], torch.tensor(cval, dtype=img.dtype))
+#
+#                 x_coords = coordinates[0]
+#                 y_coords = coordinates[1]
+#
+#                 x0 = torch.floor(x_coords).long()
+#                 x1 = x0 + 1
+#                 y0 = torch.floor(y_coords).long()
+#                 y1 = y0 + 1
+#
+#                 x0 = x0.float()
+#                 x1 = x1.float()
+#                 y0 = y0.float()
+#                 y1 = y1.float()
+#
+#                 Ia = get_pixel_value(input, x0, y0, mode, cval)
+#                 Ib = get_pixel_value(input, x0, y1, mode, cval)
+#                 Ic = get_pixel_value(input, x1, y0, mode, cval)
+#                 Id = get_pixel_value(input, x1, y1, mode, cval)
+#
+#                 wa = (x1 - x_coords) * (y1 - y_coords)
+#                 wb = (x1 - x_coords) * (y_coords - y0)
+#                 wc = (x_coords - x0) * (y1 - y_coords)
+#                 wd = (x_coords - x0) * (y_coords - y0)
+#
+#                 output = wa * Ia + wb * Ib + wc * Ic + wd * Id
+#                 return output
+#
+#             # m = lambda X : scipy.ndimage.map_coordinates(X, coords.cpu(), order=1, mode='nearest')
+#             m = lambda X: map_coordinates(X, coords, order=1, mode='nearest')
+#             return vmap(m, in_dims=-1, out_dims=-1)(matcap)
+#
+#         # fetch values
+#         mat_r = sample_matcap(matcaps[0], matcap_coords)
+#         mat_g = sample_matcap(matcaps[1], matcap_coords)
+#         mat_b = sample_matcap(matcaps[2], matcap_coords)
+#         mat_k = sample_matcap(matcaps[3], matcap_coords)
+#
+#         # find the appropriate shading color
+#         def get_shade_color(hit_pos, hit_id):
+#             shading_color = torch.ones(3)
+#
+#             if shading_color_func is None:
+#                 # use the tuple of constant colors
+#                 i_func = 1
+#                 for c in shading_color_tuple:
+#                     shading_color = torch.where(hit_id == i_func, torch.tensor(c), shading_color)
+#                     i_func += 1
+#             else:
+#                 # look up varying color
+#                 shading_color = shading_color_func(hit_pos)
+#
+#             return shading_color
+#
+#         shading_color = vmap(get_shade_color)(hit_pos, hit_ids)
+#
+#         c_r, c_g, c_b = shading_color[:, 0], shading_color[:, 1], shading_color[:, 2]
+#         c_k = 1. - (c_r + c_b + c_g)
+#
+#         c_r = c_r[:, None]
+#         c_g = c_g[:, None]
+#         c_b = c_b[:, None]
+#         c_k = c_k[:, None]
+#
+#         hit_color = c_r * mat_r + c_b * mat_b + c_g * mat_g + c_k * mat_k
+#
+#     else:
+#         raise RuntimeError("Unrecognized shading parameter")
+#
+#     return hit_color
 
 
 # create camera parameters looking in a direction

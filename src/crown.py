@@ -197,8 +197,13 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
     def __init__(self, implicit_func, crown_func, crown_mode='CROWN', enable_clipping=False, obj_name='', input_dim=3):
         super().__init__("classify-and-distance")
         self.implicit_func = implicit_func
+
         self.torch_model = crown_func.to(device)
+
         self.torch_model.eval()
+        scripted_model = torch.jit.script(crown_func)
+        self.scripted_model = scripted_model.to(device)
+
         self.crown_mode = crown_mode
         self.input_dim = input_dim
         self.obj_name = obj_name
@@ -249,6 +254,9 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
     def torch_forward(self, x):
         return self.torch_model(x)
+
+    def script_forward(self, x):
+        return self.scripted_model(x)
 
     def call_implicit_func(self, params, x):
         return self.implicit_func(params, x)

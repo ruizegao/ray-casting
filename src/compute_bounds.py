@@ -19,7 +19,7 @@ import polyscope as ps
 from skimage import measure
 from mesh_utils import *
 # import trimesh
-from auto_LiRPA.hyperplane_volume_intersection import custom_loss_batch_estimate_volume
+# from auto_LiRPA.hyperplane_volume_intersection import custom_loss_batch_estimate_volume
 
 # Config
 
@@ -50,8 +50,8 @@ def main():
     parser.add_argument("save_to", type=str)
     parser.add_argument("--mode", type=str, default='crown')
     parser.add_argument("--res", type=int, default=1024)
-    parser.add_argument("--split_depth", type=int, default=21)
-    parser.add_argument("--max_split_depth", type=int, default=36)
+    parser.add_argument("--split_depth", type=int, default=24)
+    parser.add_argument("--max_split_depth", type=int, default=33)
     parser.add_argument("--batch_size", type=int, default=256)
     parser.add_argument("--alpha_pass", action='store_true')
     parser.add_argument("--use_cache", action='store_true')
@@ -189,8 +189,8 @@ def main():
             'save_loss_graphs': True,
             'swap_loss_iter': 10
         }
-        if USE_CUSTOM_LOSS_OPTION:
-            opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})
+        # if USE_CUSTOM_LOSS_OPTION:
+        #     opt_bound_args.update({'use_custom_loss': True, 'custom_loss_func': custom_loss_batch_estimate_volume})
         alpha_bound_params = {'optimize_bound_args': opt_bound_args}
         implicit_func.change_mode("alpha-crown", alpha_bound_params)
 

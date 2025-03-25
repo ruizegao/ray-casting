@@ -9,6 +9,7 @@ import numpy as np
 import functorch
 # Imports from this project
 from utils import *
+import jax.numpy as jnp
 import affine
 import slope_interval
 from auto_LiRPA import BoundedModule, BoundedTensor
@@ -354,15 +355,21 @@ def dense(in_dim, out_dim, with_bias=True, A=None, b=None):
 
 opt_params['dense'] = ['A', 'b']
 
+# def default_dense(input, A, b):
+#     if not isinstance(input, Tensor):
+#         input = torch.tensor(input, device=device)
+#     if not isinstance(A, Tensor):
+#         A = torch.tensor(jax.device_get(A).copy(), dtype=input[0].dtype, device=input[0].device)
+#     out = torch.matmul(input, A)
+#     if b is not None:
+#         if not isinstance(b, Tensor):
+#             b = torch.tensor(jax.device_get(b).copy(), dtype=input[0].dtype, device=input[0].device)
+#         out += b
+#     return out
+
 def default_dense(input, A, b):
-    if not isinstance(input, Tensor):
-        input = torch.tensor(input, device=device)
-    if not isinstance(A, Tensor):
-        A = torch.tensor(jax.device_get(A).copy(), dtype=input[0].dtype, device=input[0].device)
-    out = torch.matmul(input, A)
+    out = jnp.dot(input, A)
     if b is not None:
-        if not isinstance(b, Tensor):
-            b = torch.tensor(jax.device_get(b).copy(), dtype=input[0].dtype, device=input[0].device)
         out += b
     return out
 apply_func['default']['dense'] = default_dense
@@ -413,6 +420,26 @@ def sin():
 def default_sin(input):
     return np.sin(input)
 apply_func['default']['sin'] = default_sin
+
+# def relu():
+#     return {"relu._" : jnp.array([])}
+# def default_relu(input):
+#     return jax.nn.relu(input)
+# apply_func['default']['relu'] = default_relu
+#
+# def elu():
+#     return {"elu._" : jnp.array([])}
+# def default_elu(input):
+#     return jax.nn.elu(input)
+# apply_func['default']['elu'] = default_elu
+#
+#
+# def sin():
+#     return {"sin._" : jnp.array([])}
+# def default_sin(input):
+#     return jnp.sin(input)
+# apply_func['default']['sin'] = default_sin
+
 
 # == Positional encoding
 

@@ -1,35 +1,12 @@
-import sys
-
-from functools import partial
-from os.path import split
-
-import math
-import numpy as np
-import matplotlib.pyplot as plt
-import torch
-import torch.optim as optim
-import torch.nn.functional as F
-from PIL.ImageChops import offset
-from mkl_random import normal
 from torch import Tensor
-import functorch
 from functorch import vmap
-from sympy.geometry import plane
 import time
 import utils
 import render
 import geometry
-from typing import Tuple, Union
 from bucketing import *
-import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 from crown import CrownImplicitFunction
-from mlp import func_as_torch
-from auto_LiRPA import BoundedModule, BoundedTensor
-from auto_LiRPA.perturbations import PerturbationLpNorm
-from kd_tree import construct_uniform_unknown_levelset_tree, construct_full_uniform_unknown_levelset_tree, construct_full_non_uniform_unknown_levelset_tree
-# import trimesh
-import os
 from typing import Tuple, Callable
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
@@ -56,148 +33,13 @@ def get_default_cast_opts():
     return d
 
 
-def primary_dim(vec):
-    return vec.abs().argmax(keepdim=True)
-
-
-def find_ray_plane_intersection_with_depth(plane, plane_dim, root, dir):
-    t = (plane - root[plane_dim]) / dir[plane_dim]
-    return root + t * dir, t
-
-
-def find_rays_plane_intersection_with_depth(roots, dirs, plane, plane_dim):
-    return vmap(partial(find_ray_plane_intersection_with_depth, plane, plane_dim))(roots, dirs)
-
-
-def cast_rays_tree_based(
-        func_tuple,
-        params_tuple,
-        roots,
-        dirs,
-        branching_method: str = "naive",
-        delta=0.001,
-        batch_size=None,
-        enable_clipping=False,
-        load_from=None,
-        save_to=None
-) -> Tuple[Tensor, Tensor, Tensor, float]:
-    """
-
-    kD Tree based method for ray casting.
-
-    :param func_tuple:
-    :param params_tuple:
-    :param roots:
-    :param dirs:
-    :param branching_method:    Specified branching heuristic to decide which dimension to split upon
-    :param delta:
-    :param batch_size:          If not None, nodes are processed in batches
-    :param enable_clipping:     If true, builds a non-uniform kD tree using clipping
-    :return:
-    """
-    t0 = time.time()
-    split_depth = 3 * 6
-    func = func_tuple[0]
-    tree_file = f'./tree/{func.obj_name}_{func.bounding_method}.npz'
-    params = params_tuple[0]
-    data_bound = 1.
-    lower = torch.tensor((-data_bound, -data_bound, -data_bound)) #+ torch.ones(3)
-    upper = torch.tensor((data_bound, data_bound, data_bound)) #+ torch.ones(3)
-    center = (lower + upper) / 2.
-    print("branching method: ", branching_method)
-    if load_from:
-        node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree, lAs, lbs, uAs, ubs, node_guaranteed = [
-            torch.from_numpy(val).to(device) for val in np.load(load_from).values()]
-        split_depth = int(math.log2(len(node_guaranteed)))
-    else:
-        if enable_clipping:
-            node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_non_uniform_unknown_levelset_tree(
-                func, params, lower.unsqueeze(0), upper.unsqueeze(0), branching_method=branching_method, split_depth=split_depth, batch_size=batch_size)
-        else:
-            node_lower_tree, node_upper_tree, node_type_tree, split_dim_tree, split_val_tree = construct_full_uniform_unknown_levelset_tree(
-                func, params, lower.unsqueeze(0), upper.unsqueeze(0), split_depth=split_depth, batch_size=batch_size)
-
-        if save_to:
-            tree = {}
-            tree['node_lower'] = node_lower_tree.detach().cpu().numpy()
-            tree['node_upper'] = node_upper_tree.detach().cpu().numpy()
-            tree['node_type'] = node_type_tree.detach().cpu().numpy()
-            tree['split_dim'] = split_dim_tree.detach().cpu().numpy()
-            tree['split_val'] = split_val_tree.detach().cpu().numpy()
-            np.savez(save_to, **tree)
-    t1 = time.time()
-    print("tree building time: ", t1 - t0)
-    t_out = torch.zeros((dirs.shape[0],))
-    hit_id_out = torch.zeros((dirs.shape[0],))
-    is_hit = torch.full((dirs.shape[0],), False)
-    not_hit = torch.full((dirs.shape[0],), True)
-    hit_node = torch.full((dirs.shape[0],), False)
-    miss_node = torch.full((dirs.shape[0],), True)
-    node_lower_last_layer = node_lower_tree[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
-    node_upper_last_layer = node_upper_tree[2 ** split_depth - 1: 2 ** (split_depth + 1) - 1]
-    node_valid = torch.logical_not(torch.isnan(node_lower_last_layer[:, 0]))
-    primary_dimension = vmap(primary_dim)(dirs).flatten().mode().values
-    node_lower_unknown_leaf = node_lower_last_layer[node_valid]
-    node_upper_unknown_leaf = node_upper_last_layer[node_valid]
-    # for n_l, n_u in zip(node_lower_unknown_leaf, node_upper_unknown_leaf):
-    #     print(n_l, n_u, func.bound_box(params, n_l, n_u))
-
-    if roots[0][primary_dimension] > center[primary_dimension]:
-        all_interaction_planes = node_upper_unknown_leaf[:, primary_dimension].flatten().unique().flip(0)
-    else:
-        all_interaction_planes = node_lower_unknown_leaf[:, primary_dimension].flatten().unique()
-
-    leaf_mask = torch.isnan(node_lower_tree[:, 0])
-
-    t2 = time.time()
-    print("vectors initialization time: ", t2 - t1)
-
-    def traverse_tree(points):
-        # print("*******")
-        node_idx = torch.zeros((points.shape[0],), dtype=torch.int64)
-        while True:
-            terminate = torch.logical_and(leaf_mask[node_idx * 2 + 1], leaf_mask[node_idx * 2 + 2])
-            if terminate.all():
-                return node_type_tree[node_idx]
-            split_mask = (points < node_upper_tree[node_idx * 2 + 1]).all(dim=1)
-            left_child_mask = torch.logical_and(torch.logical_not(terminate), split_mask)
-            right_child_mask = torch.logical_and(torch.logical_not(terminate), torch.logical_not(split_mask))
-            node_idx = torch.where(left_child_mask, node_idx * 2 + 1, node_idx)
-            node_idx = torch.where(right_child_mask, node_idx * 2 + 2, node_idx)
-
-    for plane, next_plane in zip(all_interaction_planes, all_interaction_planes[1:]):
-        rays_plane_intersection, t = find_rays_plane_intersection_with_depth(roots, dirs, (plane + next_plane) / 2,
-                                                                             primary_dimension)
-        point_types = traverse_tree(rays_plane_intersection)
-        new_hit_node = point_types.int() == SIGN_UNKNOWN
-        t_out = torch.where(torch.logical_and(miss_node, new_hit_node), t, t_out)
-        hit_node = torch.logical_or(hit_node, new_hit_node)
-        miss_node = torch.logical_not(hit_node)
-    t3 = time.time()
-    print("tree traversal time: ", t3 - t2)
-
-    for step in range(1000):
-        bad_node = torch.logical_and(hit_node, not_hit)
-        curr_ray_end = roots + (t_out.view(-1, 1) + delta) * dirs
-        curr_output = torch.zeros((dirs.shape[0],))
-        curr_output[bad_node] = func(params, curr_ray_end[bad_node]).flatten()
-        t_out[bad_node] += delta * torch.sign(curr_output[bad_node])
-        new_hit = torch.logical_and(curr_output < 0., not_hit)
-        is_hit = torch.logical_or(new_hit, is_hit)
-        not_hit = torch.logical_not(is_hit)
-        hit_id_out[new_hit] = 1.
-
-    t4 = time.time()
-    print("ray marching time: ", t4 - t3)
-    print("total time: ", t4 - t0)
-    return t_out, hit_id_out, torch.zeros((dirs.shape[0],)), 0
-
 def cast_rays_shell_based(
         func_tuple,
         params_tuple,
         roots,
         dirs,
         intersector,
+        approx=False,
         delta=0.001,
 ) -> Tuple[Tensor, Tensor, Tensor, float]:
     """
@@ -210,47 +52,31 @@ def cast_rays_shell_based(
     """
     func = func_tuple[0]
     params = params_tuple[0]
-    # roots = roots.reshape((res, res, 3))
-    # dirs = dirs.reshape((res, res, 3))
-    start_time = time.time()
-    # to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
-    # all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
-    # while to_check.any():
-    #     t0 = time.time()
-    #     hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-    #         roots[to_check], dirs[to_check], stream_compaction=True
-    #     )
-    #     t1 = time.time()
-    #     print("ray-mesh intersection calc time: ", t1 - t0)
-    #     to_check[to_check.clone()] = hit
-    #     if not to_check.any():
-    #         break
-    #     # roots[to_check] = location + delta * dirs[to_check]
-    #     roots[to_check] = location
-    #     t2 = time.time()
-    #     print("pre NN query time: ", t2 - t1)
-    #     print(to_check.sum())
-    #     true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
-    #     t3 = time.time()
-    #     print("NN query time: ", t3 - t2)
-    #     all_true_hit[to_check] = true_hit
-    #     to_check[to_check.clone()] = ~true_hit
-    #     t4 = time.time()
-    #     roots[to_check] = roots[to_check] + delta * dirs[to_check]
-    #     true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
-    #     all_true_hit[to_check] = true_hit
-    #     to_check[to_check.clone()] = ~true_hit
-    #     print("post NN query time: ", t4 - t3)
-    all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-        roots, dirs, stream_compaction=True
-    )
-    # mask = (func(params, location + delta * dirs[all_true_hit]) > 0.).squeeze(1)
-    # location[mask] += delta * dirs[all_true_hit][mask]
-    roots[all_true_hit] = location
+    # start_time = time.perf_counter()
+    if not approx:
+        to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
+        all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
+        while to_check.any():
+            hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+                roots[to_check], dirs[to_check], stream_compaction=True
+            )
+            to_check[to_check.clone()] = hit
+            if not to_check.any():
+                break
+            roots[to_check] = location
+            true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
+            all_true_hit[to_check] = true_hit
+            to_check[to_check.clone()] = ~true_hit
+            roots[to_check] = roots[to_check] + delta * dirs[to_check]
+    else:
+        all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+            roots, dirs, stream_compaction=True
+        )
+        roots[all_true_hit] = location
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
-    end_time = time.time()
-    print("total rendering time: ", end_time - start_time)
+    # end_time = time.perf_counter()
+    # print("total rendering time: ", end_time - start_time)
     return roots, hit_id_out, all_true_hit, tri_idx, uv, torch.zeros((dirs.shape[0],)), 0
 
 
@@ -493,7 +319,7 @@ def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs,
 
 
 def cast_rays(funcs_tuple, params_tuple, roots, dirs, opts):
-    t0 = time.time()
+    t0 = time.perf_counter()
     N = roots.shape[0]
     N_evals = 0  # all of the evaluations, INCLUDING those performed on unused padded array elements
     n_substeps = opts['n_substeps']
@@ -534,7 +360,7 @@ def cast_rays(funcs_tuple, params_tuple, roots, dirs, opts):
             curr_valid, empty_start, curr_roots, curr_dirs, curr_t, curr_int_size, curr_inds, curr_count = \
                 compactify_and_rebucket_arrays(curr_valid, new_bucket_size, curr_roots, curr_dirs, curr_t,
                                                curr_int_size, curr_inds, curr_count)
-    t1 = time.time()
+    t1 = time.perf_counter()
     print("total time: ", t1 - t0)
     return out_t, out_hit_id, out_count, N_evals
 
