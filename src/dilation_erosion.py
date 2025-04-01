@@ -61,8 +61,8 @@ def main():
     # Build arguments
     parser.add_argument("input", type=str)
     parser.add_argument("--output", type=str)
-    parser.add_argument("--grid_res", type=int, default=2**9)
-    parser.add_argument("--eps", type=float, default=0.001)
+    parser.add_argument("--grid_res", type=int, default=2**10)
+    parser.add_argument("--eps", type=float, default=0.002)
     # Parse arguments
     args = parser.parse_args()
 
@@ -86,10 +86,17 @@ def main():
     verts_inner = verts_inner + bbox_min[None,:]
     verts = np.concatenate((verts_outer, verts_inner), axis=0)
     faces = np.concatenate((faces_outer, faces_inner+len(verts_outer)), axis=0)
-    mesh = trimesh.Trimesh(verts, faces)
+    mesh_dilation = trimesh.Trimesh(verts_outer, faces_outer)
+    mesh_erosion = trimesh.Trimesh(verts_inner, faces_inner)
+    mesh_de = trimesh.Trimesh(verts, faces)
+    verts_0lvl, faces_0lvl, _, _ = measure.marching_cubes(sdf_vals, level=0., spacing=(delta, delta, delta))
+    verts_0lvl = verts_0lvl + bbox_min[None, :]
+    mesh_0lvl = trimesh.Trimesh(verts_0lvl, faces_0lvl)
     if output:
-        mesh.export(output)
-    mesh.show()
+        mesh_dilation.export(output[:-4]+"_dilation.obj")
+        mesh_de.export(output[:-4] + "_de.obj")
+        mesh_0lvl.export(output[:-4] + "_0lvl.obj")
+        mesh_erosion.export(output[:-4] + "_erosion.obj")
 
 if __name__ == '__main__':
     main()

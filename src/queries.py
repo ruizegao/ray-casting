@@ -8,6 +8,7 @@ from bucketing import *
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 from crown import CrownImplicitFunction
 from typing import Tuple, Callable
+import matplotlib.pyplot as plt
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -68,6 +69,9 @@ def cast_rays_shell_based(
             all_true_hit[to_check] = true_hit
             to_check[to_check.clone()] = ~true_hit
             roots[to_check] = roots[to_check] + delta * dirs[to_check]
+            # print(to_check.sum())
+            # plt.imshow(all_true_hit.detach().cpu().numpy().reshape(1024, 1024))
+            # plt.show()
     else:
         all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
             roots, dirs, stream_compaction=True
@@ -75,10 +79,90 @@ def cast_rays_shell_based(
         roots[all_true_hit] = location
     hit_id_out = torch.zeros((dirs.shape[0],))
     hit_id_out[all_true_hit] = 1.
-    # end_time = time.perf_counter()
-    # print("total rendering time: ", end_time - start_time)
+    print(all_true_hit.sum())
     return roots, hit_id_out, all_true_hit, tri_idx, uv, torch.zeros((dirs.shape[0],)), 0
 
+# def cast_rays_shell_based(
+#         func_tuple,
+#         params_tuple,
+#         roots,
+#         dirs,
+#         intersector,
+#         approx=False,
+#         delta=0.001,
+# ) -> Tuple[Tensor, Tensor, Tensor, float]:
+#     """
+#     :param func_tuple:
+#     :param params_tuple:
+#     :param roots:
+#     :param dirs:
+#     :param delta:
+#     :return:
+#     """
+#     func = func_tuple[0]
+#     params = params_tuple[0]
+#     # start_time = time.perf_counter()
+#     with torch.no_grad():
+#         if not approx:
+#             steps = 0
+#             to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
+#             all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
+#             while to_check.any():
+#                 hit, front, _, tri_idx, location, uv = intersector.intersects_closest(
+#                     roots[to_check], dirs[to_check], stream_compaction=True
+#                 )
+#                 to_check_copy = to_check.clone()
+#                 to_check_copy[to_check_copy.clone()] = hit
+#                 roots[to_check_copy] = location  # shape is (num_hits, 3)
+#
+#                 hit_next, front_next, _, tri_idx_next, location_next, uv_next = intersector.intersects_closest(
+#                     roots[to_check]+1e-8, dirs[to_check], stream_compaction=True
+#                 )
+#
+#                 to_check[to_check.clone()] = hit_next
+#                 roots_copy = roots.clone()
+#                 roots_copy[to_check] = location_next
+#                 to_check = to_check & to_check_copy
+#                 # print(to_check.sum())
+#                 available_steps, _ = ((roots_copy[to_check] - roots[to_check]) / dirs[to_check]).min(dim=1) # shape is (num_hits,)
+#                 used_steps = torch.zeros_like(available_steps) # shape is (num_hits,)
+#                 this_to_check = torch.ones_like(available_steps, dtype=torch.bool)
+#                 this_roots = roots[to_check]
+#                 this_dirs = dirs[to_check]
+#                 this_true_hit = torch.zeros_like(this_to_check, dtype=torch.bool)
+#                 print("starting new while loop")
+#
+#                 while this_to_check.any():
+#                     new_hit = (func.torch_forward(this_roots[this_to_check] + delta * this_dirs[this_to_check]) < 0.).squeeze()
+#                     this_true_hit[this_to_check] = new_hit
+#                     all_true_hit[to_check] = this_true_hit
+#                     plt.imshow(all_true_hit.detach().cpu().numpy().reshape((1024, 1024)))
+#                     plt.show()
+#                     # this_to_check = torch.logical_and(this_to_check, ~this_true_hit)
+#                     this_to_check = torch.logical_and(used_steps <= available_steps, ~this_true_hit)
+#                     this_roots[this_to_check] += delta * this_dirs[this_to_check]
+#                     used_steps[this_to_check] += delta
+#                     steps += 1
+#                     # this_to_check = torch.logical_and(this_to_check, used_steps <= available_steps)
+#                 print("loop ends")
+#                 roots[to_check] = this_roots
+#                 all_true_hit[to_check] = this_true_hit
+#                 plt.imshow(all_true_hit.detach().cpu().numpy().reshape((1024, 1024)))
+#                 plt.show()
+#                 to_check[to_check.clone()] = ~this_true_hit
+#                 plt.imshow(to_check.detach().cpu().numpy().reshape((1024, 1024)))
+#                 plt.show()
+#                 if not to_check.any():
+#                     print(steps)
+#                     break
+#         else:
+#             all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+#                 roots, dirs, stream_compaction=True
+#             )
+#             roots[all_true_hit] = location
+#         hit_id_out = torch.zeros((dirs.shape[0],))
+#         hit_id_out[all_true_hit] = 1.
+#     return roots, hit_id_out, all_true_hit, tri_idx, uv, torch.zeros((dirs.shape[0],)), 0
 
 
 def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs, curr_t, curr_int_size, curr_inds,
@@ -122,7 +206,7 @@ def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs,
             is_hit = torch.logical_or(is_hit, this_is_hit)
             func_id += 1
 
-        # take a full step of step_size if it was safe, but even if not we still inch forward 
+        # take a full step of step_size if it was safe, but even if not we still inch forward
         # (this matches our convergence/progress guarantee)
         # this_step_size = torch.where(can_step, step_size, opts['hit_eps'])
         this_step_size = step_size.where(can_step, torch.full_like(step_size, opts['hit_eps']))
@@ -774,7 +858,7 @@ def cast_rays_frustum(funcs_tuple, params_tuple, cam_params, in_opts):
     N_valid = N_init_frust
     while (True):
 
-        # Take a step 
+        # Take a step
         N_evals += curr_frust_t.shape[0]
         curr_valid, curr_frust_t, curr_frust_int_size, curr_frust_count, needs_refine, \
             finished_frust_range, finished_frust_t, finished_frust_hit_id, finished_frust_count, finished_start_ind, N_valid, N_needs_refine = \
@@ -827,7 +911,7 @@ def cast_rays_frustum(funcs_tuple, params_tuple, cam_params, in_opts):
         finished_start_ind += torch.sum(needs_subd)
         # NOTE: this will always yield exactly N frusta total (one per pixel), so there is no need to resize the 'finished' arrays
 
-    ## (3) Write the result (one pixel per frustum) 
+    ## (3) Write the result (one pixel per frustum)
     out_t, out_count, out_hit_id = write_frust_output(res_x, res_y, finished_frust_range, finished_frust_t,
                                                       finished_frust_count, finished_frust_hit_id)
 

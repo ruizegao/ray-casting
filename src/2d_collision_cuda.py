@@ -74,6 +74,7 @@ set_t = {
 def main():
     c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
     c_net = c_net.to(device=set_t['device'])
+    c_polygon_l = carve(c_net, deep=False, smoothify=False, return_merged=True)
     c_polygon_t = carve(c_net, deep=True, smoothify=False, return_merged=True)
     i_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/I_MLP.pth', 'mlp')
     i_net = i_net.to(device=set_t['device'])
@@ -86,9 +87,12 @@ def main():
     # print(f'Number of incorrect checks: {wrong_results}')
 
     c_polygon_t_vertices = torch.tensor(c_polygon_t.exterior.coords, device=set_t['device'])
+    c_polygon_l_vertices = torch.tensor(c_polygon_l.exterior.coords, device=set_t['device'])
+    bbox = c_polygon_t.envelope
+    bbox_vertices = torch.tensor(bbox.exterior.coords, device=set_t['device'])
     # test_circle_centers = torch.rand(10000, 2) - 0.5
     # test_circle_radius = torch.rand(10000,) * 0.5
-    num_trials = 100
+    num_trials = 1000
     test_circle_centers = torch.from_numpy(np.random.uniform(-0.5, 0.5, (num_trials, 2))).float().cuda()
     test_circle_radius = torch.from_numpy(np.random.uniform(0.01, 0.1, (num_trials,))).float().cuda()
     # test_circle_centers.cuda()
@@ -99,27 +103,61 @@ def main():
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
+    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results_early_outs = ~mesh_results_not_early_outs
+    mesh_results_ = compiled_fn(test_circle_centers[~mesh_results_early_outs],
+                                test_circle_radius[~mesh_results_early_outs], c_polygon_t_vertices)
+    mesh_results = ~mesh_results_early_outs
+    mesh_results[mesh_results.clone()] = mesh_results_
+    mesh_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results_early_outs = ~mesh_results_not_early_outs
+    mesh_results_ = compiled_fn(test_circle_centers[~mesh_results_early_outs],
+                                test_circle_radius[~mesh_results_early_outs], c_polygon_t_vertices)
+    mesh_results = ~mesh_results_early_outs
+    mesh_results[mesh_results.clone()] = mesh_results_
+    mesh_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results_early_outs = ~mesh_results_not_early_outs
+    mesh_results_ = compiled_fn(test_circle_centers[~mesh_results_early_outs],
+                                test_circle_radius[~mesh_results_early_outs], c_polygon_t_vertices)
+    mesh_results = ~mesh_results_early_outs
+    mesh_results[mesh_results.clone()] = mesh_results_
     time_0 = time.perf_counter()
-    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
+    mesh_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
+    mesh_results_early_outs = ~mesh_results_not_early_outs
+    mesh_results_ = compiled_fn(test_circle_centers[~mesh_results_early_outs], test_circle_radius[~mesh_results_early_outs], c_polygon_t_vertices)
+    print(mesh_results.sum(), (~mesh_results).sum())
+    mesh_results = ~mesh_results_early_outs
+    mesh_results[mesh_results.clone()] = mesh_results_
+    # mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
+
     time_1 = time.perf_counter()
     mesh_time = time_1 - time_0
     print(f'mesh time {mesh_time * 1000:.3f}')
-
+    print(f'mesh num of early outs {mesh_results_early_outs.sum()}')
     # scripted_c_net = torch.jit.script(c_net)
     scripted_c_net = c_net
     # Warmup
+    _ = compiled_fn(test_circle_centers, test_circle_radius, bbox_vertices)
+
     sdf_distances = scripted_c_net(test_circle_centers)
     sdf_distances = scripted_c_net(test_circle_centers)
     sdf_distances = scripted_c_net(test_circle_centers)
     sdf_distances = scripted_c_net(test_circle_centers)
     time_2 = time.perf_counter()
+    sdf_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, bbox_vertices)
+    sdf_results_early_outs = ~sdf_results_not_early_outs
     sdf_distances = scripted_c_net(test_circle_centers).squeeze(-1)
     time_3 = time.perf_counter()
     mlp_time = time_3 - time_2
     print(f'mlp time {mlp_time * 1000:.3f}')
+    print(f'mlp num of early outs {sdf_results_early_outs.sum()}')
     print(mlp_time / mesh_time)
     sdf_results = sdf_distances <= test_circle_radius
     mesh_results = mesh_results.detach().cpu().numpy()
+    print((~mesh_results).sum())
     sdf_results = sdf_results.detach().cpu().numpy()
     print(np.sum(mesh_results != sdf_results))
 if __name__ == "__main__":

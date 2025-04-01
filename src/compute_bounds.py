@@ -1,26 +1,16 @@
 # import igl # work around some env/packaging problems by loading this first
 
-import sys, os, time, math, datetime
+import os, datetime
 import time
 import argparse
-import warnings
 
-import numpy as np
-import torch
-import imageio
 import polyscope.imgui as psim
 from prettytable import PrettyTable
-# Imports from this project
-import render, geometry, queries
+import render, queries
 from kd_tree import *
 import implicit_mlp_utils
-from scipy.spatial import Delaunay
-import polyscope as ps
-from skimage import measure
-from mesh_utils import *
-# import trimesh
-# from auto_LiRPA.hyperplane_volume_intersection import custom_loss_batch_estimate_volume
 
+from mesh_utils import *
 # Config
 
 SRC_DIR = os.path.dirname(os.path.realpath(__file__))

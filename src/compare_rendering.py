@@ -3,9 +3,9 @@ from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similari
 import matplotlib.pyplot as plt
 
 # Load arrays
-loaded1 = np.load('fox_grid_cam_baseline.npz')
-loaded2 = np.load('fox_grid_cam_exact.npz')
-loaded3 = np.load('fox_grid_cam_de.npz')
+loaded1 = np.load('rendering/fox_grid_cam_baseline.npz')
+loaded2 = np.load('rendering/fox_grid_cam_mid_shell.npz')
+loaded3 = np.load('rendering/fox_grid_cam_0lvl.npz')
 arrays1 = [loaded1[f'arr_{i}'] for i in range(len(loaded1.files))]
 arrays2 = [loaded2[f'arr_{i}'] for i in range(len(loaded2.files))]
 arrays3 = [loaded3[f'arr_{i}'] for i in range(len(loaded3.files))]
@@ -14,6 +14,8 @@ arrays2 = arrays2[0]
 arrays3 = arrays3[0]
 
 # Compute PSNR, track the most different pair
+ssim_values_12 = []
+ssim_values_13 = []
 psnr_values_12 = []
 psnr_values_13 = []
 max_diff_index = -1
@@ -23,6 +25,11 @@ min_psnr = float('inf')
 for i, (img1, img2, img3) in enumerate(zip(arrays1, arrays2, arrays3)):
     if img1.shape != img2.shape:
         raise ValueError(f"Shape mismatch at index {i}: {img1.shape} vs {img2.shape}")
+
+    # ssim_value_12 = ssim(img1, img2, channel_axis=-1, data_range=1.0)
+    # ssim_value_13 = ssim(img1, img3, channel_axis=-1, data_range=1.0)
+    # ssim_values_12.append(ssim_value_12)
+    # ssim_values_13.append(ssim_value_13)
 
     psnr_value_12 = psnr(img1, img2, data_range=img1.max() - img1.min())
     psnr_value_13 = psnr(img1, img3, data_range=img1.max() - img1.min())
@@ -53,6 +60,9 @@ plt.axis('off')
 plt.show()
 
 # Results
-# print(f'Average PSNR: {np.mean(psnr_values):.2f}')
+print(f'Average PSNR 12: {np.mean(psnr_values_12):.2f}')
+print(f'Average PSNR 13: {np.mean(psnr_values_13):.2f}')
+# print(f'Average SSIM 12: {np.mean(ssim_values_12):.2f}')
+# print(f'Average SSIM 13: {np.mean(ssim_values_13):.2f}')
 # print(f'Most Different Pair Index: {max_diff_index}')
 # print(f'Minimum PSNR: {min_psnr:.2f}')
