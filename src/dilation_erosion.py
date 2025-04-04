@@ -62,7 +62,8 @@ def main():
     parser.add_argument("input", type=str)
     parser.add_argument("--output", type=str)
     parser.add_argument("--grid_res", type=int, default=2**10)
-    parser.add_argument("--eps", type=float, default=0.002)
+    parser.add_argument("--eps_d", type=float, default=0.002)
+    parser.add_argument("--eps_e", type=float, default=0.002)
     # Parse arguments
     args = parser.parse_args()
 
@@ -70,7 +71,8 @@ def main():
 
     grid_res = args.grid_res
     output = args.output
-    eps = args.eps
+    eps_d = args.eps_d
+    eps_e = args.eps_e
     delta = 2. / grid_res
     print(delta)
     sdf_vals = []
@@ -80,8 +82,8 @@ def main():
         sdf_vals.append(sdf_val.reshape(chunk_size, chunk_size, chunk_size))
     sdf_vals = combine_sdf_chunks(sdf_vals, grid_res, chunk_size)
     bbox_min = np.array([-1., -1., -1.])
-    verts_outer, faces_outer, _, _ = measure.marching_cubes(sdf_vals, level=eps, spacing=(delta, delta, delta))
-    verts_inner, faces_inner, _, _ = measure.marching_cubes(sdf_vals, level=-eps, spacing=(delta, delta, delta))
+    verts_outer, faces_outer, _, _ = measure.marching_cubes(sdf_vals, level=eps_d, spacing=(delta, delta, delta))
+    verts_inner, faces_inner, _, _ = measure.marching_cubes(sdf_vals, level=-eps_e, spacing=(delta, delta, delta))
     verts_outer = verts_outer + bbox_min[None,:]
     verts_inner = verts_inner + bbox_min[None,:]
     verts = np.concatenate((verts_outer, verts_inner), axis=0)

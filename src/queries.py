@@ -33,12 +33,94 @@ def get_default_cast_opts():
     }
     return d
 
+# @torch.jit.script
+def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions):
+    """
+    Generates a concatenated linspace between start and end points using a directional delta.
+
+    Args:
+        start_tensor (torch.Tensor): Tensor of shape (N, 3) representing the start points.
+        end_tensor (torch.Tensor): Tensor of shape (N, 3) representing the end points.
+        delta (float): Scalar step size.
+        directions (torch.Tensor): Tensor of shape (N, 3) representing direction multipliers.
+
+    Returns:
+        torch.Tensor: Concatenated tensor of all linspace values, shape (total_points, 3).
+        torch.Tensor: Number of points per linspace (N,).
+    """
+    # Compute step sizes per dimension
+    step_sizes = directions * delta  # Shape: (N, 3)
+
+    # Compute number of points per linspace
+    # num_points = torch.mean((end_tensor - start_tensor) / step_sizes, dim=-1).clip(min=0.).ceil().to(torch.int64) + 1  # Shape: (N,)
+    num_points = ((end_tensor - start_tensor) / step_sizes)[:, 0].clip(min=0.).ceil().to(torch.int64) + 1  # Shape: (N,)
+
+    # Compute start indices of each linspace in the final output tensor
+    start_indices = torch.cat((torch.tensor([0], device=start_tensor.device), num_points.cumsum(0)[:-1]))
+
+    # Compute total number of points needed
+    total_points = num_points.sum()
+
+    # Generate a 1D index tensor for all points
+    index = torch.arange(total_points, device=start_tensor.device)
+
+    # Expand indices to match their respective linspace
+    linspace_ids = torch.searchsorted(start_indices, index, right=True) - 1  # Shape: (total_points,)
+
+    # Compute the values directly using the corresponding start points and step sizes
+    points = start_tensor[linspace_ids] + (index - start_indices[linspace_ids]).unsqueeze(-1) * step_sizes[linspace_ids]
+
+    # Ensure each linspace segment ends exactly at end_tensor
+    mask = torch.cat((start_indices[1:] - 1, torch.tensor([total_points - 1], device=start_tensor.device)))
+    points[mask] = end_tensor  # Overwrite last points of each segment
+
+    return points, num_points
+
+# @torch.jit.script
+def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
+    """
+    Finds the index of the first '1' in each segment of a binary tensor.
+
+    Parameters:
+        binary_tensor (torch.Tensor): A 1D binary tensor (values 0 or 1).
+        lengths (torch.Tensor): A 1D tensor specifying the lengths of each segment.
+
+    Returns:
+        torch.Tensor: A 1D tensor with the index of the first '1' in each segment,
+                      or -1 if no '1' is found in a segment.
+    """
+    # Compute start indices of each segment
+    start_indices = torch.cat((torch.tensor([0], device=binary_tensor.device), lengths.cumsum(0)[:-1]))
+
+    # Find positions of all ones
+    ones_positions = torch.nonzero(binary_tensor, as_tuple=True)[0]
+
+    if ones_positions.numel() == 0:  # Edge case: no "1" in the entire tensor
+        return torch.full_like(lengths, -1)
+
+    # Identify the segment each "1" belongs to
+    segment_ids = torch.searchsorted(start_indices, ones_positions, right=True) - 1
+
+    if segment_ids.numel() == 0:
+        return torch.full_like(lengths, -1)
+
+    # Ensure first_indices has the same dtype as ones_positions
+    first_indices = torch.full_like(lengths, fill_value=torch.iinfo(ones_positions.dtype).max, dtype=ones_positions.dtype)
+
+    # Use scatter_reduce_ to find the first occurrence of '1' in each segment
+    first_indices.scatter_reduce_(0, segment_ids, ones_positions, reduce="amin")
+
+    # Replace large values (where no "1" was found) with -1
+    first_indices[first_indices == torch.iinfo(ones_positions.dtype).max] = -1
+
+    return first_indices
+
 
 def cast_rays_shell_based(
         func_tuple,
         params_tuple,
-        roots,
-        dirs,
+        ray_roots,
+        ray_dirs,
         intersector,
         approx=False,
         delta=0.001,
@@ -51,118 +133,74 @@ def cast_rays_shell_based(
     :param delta:
     :return:
     """
-    func = func_tuple[0]
-    params = params_tuple[0]
-    # start_time = time.perf_counter()
-    if not approx:
-        to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
-        all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
-        while to_check.any():
-            hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-                roots[to_check], dirs[to_check], stream_compaction=True
-            )
-            to_check[to_check.clone()] = hit
-            if not to_check.any():
-                break
-            roots[to_check] = location
-            true_hit = (func.torch_forward(roots[to_check] + delta * dirs[to_check]) < 0.).squeeze()
-            all_true_hit[to_check] = true_hit
-            to_check[to_check.clone()] = ~true_hit
-            roots[to_check] = roots[to_check] + delta * dirs[to_check]
-            # print(to_check.sum())
-            # plt.imshow(all_true_hit.detach().cpu().numpy().reshape(1024, 1024))
-            # plt.show()
-    else:
-        all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-            roots, dirs, stream_compaction=True
+    if approx:
+        hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
+            ray_roots, ray_dirs, stream_compaction=True
         )
-        roots[all_true_hit] = location
-    hit_id_out = torch.zeros((dirs.shape[0],))
-    hit_id_out[all_true_hit] = 1.
-    print(all_true_hit.sum())
-    return roots, hit_id_out, all_true_hit, tri_idx, uv, torch.zeros((dirs.shape[0],)), 0
+        ray_roots[hit] = location
+        hit_ids = torch.zeros(ray_roots.shape[0])
+        hit_ids[hit] = 1.
+        return ray_roots, hit_ids, hit
 
-# def cast_rays_shell_based(
-#         func_tuple,
-#         params_tuple,
-#         roots,
-#         dirs,
-#         intersector,
-#         approx=False,
-#         delta=0.001,
-# ) -> Tuple[Tensor, Tensor, Tensor, float]:
-#     """
-#     :param func_tuple:
-#     :param params_tuple:
-#     :param roots:
-#     :param dirs:
-#     :param delta:
-#     :return:
-#     """
-#     func = func_tuple[0]
-#     params = params_tuple[0]
-#     # start_time = time.perf_counter()
-#     with torch.no_grad():
-#         if not approx:
-#             steps = 0
-#             to_check = torch.full((roots.shape[0],), True, dtype=torch.bool)
-#             all_true_hit = torch.full((roots.shape[0],), False, dtype=torch.bool)
-#             while to_check.any():
-#                 hit, front, _, tri_idx, location, uv = intersector.intersects_closest(
-#                     roots[to_check], dirs[to_check], stream_compaction=True
-#                 )
-#                 to_check_copy = to_check.clone()
-#                 to_check_copy[to_check_copy.clone()] = hit
-#                 roots[to_check_copy] = location  # shape is (num_hits, 3)
-#
-#                 hit_next, front_next, _, tri_idx_next, location_next, uv_next = intersector.intersects_closest(
-#                     roots[to_check]+1e-8, dirs[to_check], stream_compaction=True
-#                 )
-#
-#                 to_check[to_check.clone()] = hit_next
-#                 roots_copy = roots.clone()
-#                 roots_copy[to_check] = location_next
-#                 to_check = to_check & to_check_copy
-#                 # print(to_check.sum())
-#                 available_steps, _ = ((roots_copy[to_check] - roots[to_check]) / dirs[to_check]).min(dim=1) # shape is (num_hits,)
-#                 used_steps = torch.zeros_like(available_steps) # shape is (num_hits,)
-#                 this_to_check = torch.ones_like(available_steps, dtype=torch.bool)
-#                 this_roots = roots[to_check]
-#                 this_dirs = dirs[to_check]
-#                 this_true_hit = torch.zeros_like(this_to_check, dtype=torch.bool)
-#                 print("starting new while loop")
-#
-#                 while this_to_check.any():
-#                     new_hit = (func.torch_forward(this_roots[this_to_check] + delta * this_dirs[this_to_check]) < 0.).squeeze()
-#                     this_true_hit[this_to_check] = new_hit
-#                     all_true_hit[to_check] = this_true_hit
-#                     plt.imshow(all_true_hit.detach().cpu().numpy().reshape((1024, 1024)))
-#                     plt.show()
-#                     # this_to_check = torch.logical_and(this_to_check, ~this_true_hit)
-#                     this_to_check = torch.logical_and(used_steps <= available_steps, ~this_true_hit)
-#                     this_roots[this_to_check] += delta * this_dirs[this_to_check]
-#                     used_steps[this_to_check] += delta
-#                     steps += 1
-#                     # this_to_check = torch.logical_and(this_to_check, used_steps <= available_steps)
-#                 print("loop ends")
-#                 roots[to_check] = this_roots
-#                 all_true_hit[to_check] = this_true_hit
-#                 plt.imshow(all_true_hit.detach().cpu().numpy().reshape((1024, 1024)))
-#                 plt.show()
-#                 to_check[to_check.clone()] = ~this_true_hit
-#                 plt.imshow(to_check.detach().cpu().numpy().reshape((1024, 1024)))
-#                 plt.show()
-#                 if not to_check.any():
-#                     print(steps)
-#                     break
-#         else:
-#             all_true_hit, front, ray_idx, tri_idx, location, uv = intersector.intersects_closest(
-#                 roots, dirs, stream_compaction=True
-#             )
-#             roots[all_true_hit] = location
-#         hit_id_out = torch.zeros((dirs.shape[0],))
-#         hit_id_out[all_true_hit] = 1.
-#     return roots, hit_id_out, all_true_hit, tri_idx, uv, torch.zeros((dirs.shape[0],)), 0
+    func = func_tuple[0]
+
+    to_check = torch.ones(ray_roots.shape[0], dtype=torch.bool)
+    hit = torch.zeros(ray_roots.shape[0], dtype=torch.bool)
+
+    while to_check.sum() > 0:
+        ray_roots_to_check = ray_roots[to_check]
+        ray_dirs_to_check = ray_dirs[to_check]
+        # hit_to_check = hit[to_check]
+        hit_first, front_first, tri_idx, location_first, uv = intersector.intersects_closest(
+            ray_roots_to_check, ray_dirs_to_check, stream_compaction=False
+        )
+        ray_roots_to_check[hit_first] = location_first[hit_first] + ray_dirs_to_check[hit_first] * 1e-6
+
+        hit_second, front_second, tri_idx, location_second, uv = intersector.intersects_closest(
+            ray_roots_to_check, ray_dirs_to_check, stream_compaction=False
+        )
+        ray_roots_to_check[hit_second] = location_second[hit_second] + ray_dirs_to_check[hit_second] * 1e-6
+        # location_second[~hit_second] = location_first[~hit_second]
+
+        hit_both = hit_first & hit_second
+        # plt.imshow(hit_second.detach().cpu().numpy().reshape(1024, 1024))
+        # plt.show()
+        # print((location_first[hit_both] == location_second[hit_both]).sum())
+        if hit_both.sum() == 0:
+            break
+        # print("hit both shape:", hit_both.shape)
+        # print(location_first[hit_both], location_second[hit_both])
+        points_to_check, num_points = linspace_with_directional_delta(location_first[hit_both],
+                                                                      location_second[hit_both],
+                                                                      torch.tensor(delta),
+                                                                      ray_dirs_to_check[hit_both])
+        # print("number of points to check", len(points_to_check))
+        # assert len(points_to_check) == num_points.sum()
+        with torch.no_grad():
+            # preds = torch.empty(points_to_check.shape[0])
+            # total_samples = points_to_check.shape[0]
+            # batch_size = 1024 * 1024 * 3
+            # for start_idx in range(0, total_samples, batch_size):
+            #     end_idx = min(start_idx + batch_size, total_samples)
+            #     preds[start_idx:end_idx] = func.torch_forward(points_to_check[start_idx:end_idx]).flatten()
+            preds = func.torch_forward(points_to_check)
+        sign_change_mask = (preds <= 0).to(torch.int64).flatten()
+        sign_change_inds = first_one_in_segments(sign_change_mask, num_points)
+        check_next_round = sign_change_inds < 0
+        hit_to_check = hit_both.clone()
+        hit_to_check[hit_both] = ~check_next_round
+        # hit_pos = ray_roots.clone()
+        ray_roots_to_check[hit_to_check] = points_to_check[sign_change_inds[~check_next_round]]
+        ray_roots[to_check] = ray_roots_to_check
+        hit[to_check] = hit_to_check
+        # plt.imshow(hit.detach().cpu().numpy().reshape(1024, 1024))
+        # plt.show()
+        hit_both[hit_both.clone()] = check_next_round
+        to_check[to_check.clone()] = hit_both
+
+    hit_ids = torch.zeros(ray_roots.shape[0])
+    hit_ids[hit] = 1.
+    return ray_roots, hit_ids, hit
 
 
 def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs, curr_t, curr_int_size, curr_inds,

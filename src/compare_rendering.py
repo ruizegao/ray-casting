@@ -3,9 +3,9 @@ from skimage.metrics import peak_signal_noise_ratio as psnr, structural_similari
 import matplotlib.pyplot as plt
 
 # Load arrays
-loaded1 = np.load('rendering/fox_grid_cam_baseline.npz')
-loaded2 = np.load('rendering/fox_grid_cam_mid_shell.npz')
-loaded3 = np.load('rendering/fox_grid_cam_0lvl.npz')
+loaded1 = np.load('rendering/hammer_grid_cam_baseline.npz')
+loaded2 = np.load('rendering/hammer_grid_cam_both_shells.npz')
+loaded3 = np.load('rendering/fox_grid_cam_de.npz')
 arrays1 = [loaded1[f'arr_{i}'] for i in range(len(loaded1.files))]
 arrays2 = [loaded2[f'arr_{i}'] for i in range(len(loaded2.files))]
 arrays3 = [loaded3[f'arr_{i}'] for i in range(len(loaded3.files))]

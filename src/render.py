@@ -263,7 +263,7 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
 
 
 def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
-                      shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), approx=False, delta=0.001, matcaps=None, tonemap=False,
+                      shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), approx=False, matcaps=None, tonemap=False,
                       shading_color_func=None):
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
@@ -276,23 +276,11 @@ def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, e
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
 
-    # if approx:
-    #     vertex_normals = outward_normals(funcs_tuple, params_tuple, vertices.float(), torch.ones_like(vertices), opts['hit_eps'], method='finite_differences')
-
     # _, _, _, _, _, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, torch.empty_like(ray_roots), torch.empty_like(ray_dirs), intersector, approx, delta)
 
     time_render_start = time.time()
-    hit_pos, hit_ids, hit, tri_idx, uv, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector, approx, delta)
-    # plt.imshow(hit_ids.detach().cpu().numpy().reshape(res, res))
-    # plt.show()
-    # if approx:
-    #     hit_normals = torch.zeros_like(ray_dirs)
-    #     tri_v = faces[tri_idx]
-    #     tri_norm = vertex_normals[tri_v]
-    #     hit_norm = uv[:, :1] * tri_norm[:, 0] + uv[:, 1:] * tri_norm[:, 1] + (1 - uv[:, :1] - uv[:, 1:]) * tri_norm[:, 2]
-    #     hit_normals[hit] = hit_norm
-    # else:
-    #     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
+    hit_pos, hit_ids, hit = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector, approx, opts['hit_eps'])
+
     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
 
     hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
@@ -309,161 +297,6 @@ def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, e
 
     return img, time_render_end - time_render_start
 
-# @torch.jit.script
-def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions):
-    """
-    Generates a concatenated linspace between start and end points using a directional delta.
-
-    Args:
-        start_tensor (torch.Tensor): Tensor of shape (N, 3) representing the start points.
-        end_tensor (torch.Tensor): Tensor of shape (N, 3) representing the end points.
-        delta (float): Scalar step size.
-        directions (torch.Tensor): Tensor of shape (N, 3) representing direction multipliers.
-
-    Returns:
-        torch.Tensor: Concatenated tensor of all linspace values, shape (total_points, 3).
-        torch.Tensor: Number of points per linspace (N,).
-    """
-    # Compute step sizes per dimension
-    step_sizes = directions * delta  # Shape: (N, 3)
-
-    # Compute number of points per linspace
-    # num_points = torch.mean((end_tensor - start_tensor) / step_sizes, dim=-1).clip(min=0.).ceil().to(torch.int64) + 1  # Shape: (N,)
-    num_points = ((end_tensor - start_tensor) / step_sizes)[:, 0].clip(min=0.).ceil().to(torch.int64) + 1  # Shape: (N,)
-
-    # Compute start indices of each linspace in the final output tensor
-    start_indices = torch.cat((torch.tensor([0], device=start_tensor.device), num_points.cumsum(0)[:-1]))
-
-    # Compute total number of points needed
-    total_points = num_points.sum()
-
-    # Generate a 1D index tensor for all points
-    index = torch.arange(total_points, device=start_tensor.device)
-
-    # Expand indices to match their respective linspace
-    linspace_ids = torch.searchsorted(start_indices, index, right=True) - 1  # Shape: (total_points,)
-
-    # Compute the values directly using the corresponding start points and step sizes
-    points = start_tensor[linspace_ids] + (index - start_indices[linspace_ids]).unsqueeze(-1) * step_sizes[linspace_ids]
-
-    # Ensure each linspace segment ends exactly at end_tensor
-    mask = torch.cat((start_indices[1:] - 1, torch.tensor([total_points - 1], device=start_tensor.device)))
-    points[mask] = end_tensor  # Overwrite last points of each segment
-
-    return points, num_points
-
-# @torch.jit.script
-def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) -> torch.Tensor:
-    """
-    Finds the index of the first '1' in each segment of a binary tensor.
-
-    Parameters:
-        binary_tensor (torch.Tensor): A 1D binary tensor (values 0 or 1).
-        lengths (torch.Tensor): A 1D tensor specifying the lengths of each segment.
-
-    Returns:
-        torch.Tensor: A 1D tensor with the index of the first '1' in each segment,
-                      or -1 if no '1' is found in a segment.
-    """
-    # Compute start indices of each segment
-    start_indices = torch.cat((torch.tensor([0], device=binary_tensor.device), lengths.cumsum(0)[:-1]))
-
-    # Find positions of all ones
-    ones_positions = torch.nonzero(binary_tensor, as_tuple=True)[0]
-
-    if ones_positions.numel() == 0:  # Edge case: no "1" in the entire tensor
-        return torch.full_like(lengths, -1)
-
-    # Identify the segment each "1" belongs to
-    segment_ids = torch.searchsorted(start_indices, ones_positions, right=True) - 1
-
-    if segment_ids.numel() == 0:
-        return torch.full_like(lengths, -1)
-
-    # Ensure first_indices has the same dtype as ones_positions
-    print("one pos dtype:", ones_positions.dtype)
-    first_indices = torch.full_like(lengths, fill_value=torch.iinfo(ones_positions.dtype).max, dtype=ones_positions.dtype)
-
-    # Use scatter_reduce_ to find the first occurrence of '1' in each segment
-    first_indices.scatter_reduce_(0, segment_ids, ones_positions, reduce="amin")
-
-    # Replace large values (where no "1" was found) with -1
-    first_indices[first_indices == torch.iinfo(ones_positions.dtype).max] = -1
-
-    # Convert to relative indices
-    # valid_mask = first_indices != -1
-    # first_indices[valid_mask] -= start_indices[valid_mask]
-
-    return first_indices
-
-def render_image_de(funcs_tuple, params_tuple, faces, vertices, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
-                      shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), matcaps=None, tonemap=False,
-                      shading_color_func=None):
-    if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
-    if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
-
-    # wrap in tuples if single was passed
-    if not isinstance(funcs_tuple, tuple):
-        funcs_tuple = (funcs_tuple,)
-    if not isinstance(params_tuple, tuple):
-        params_tuple = (params_tuple,)
-    func = funcs_tuple[0]
-    params = params_tuple[0]
-
-    ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
-    time_render_start = time.perf_counter()
-
-    hit_first, front_first, tri_idx, location_first, uv = intersector.intersects_closest(
-        ray_roots, ray_dirs, stream_compaction=False
-    )
-    ray_roots[hit_first] = location_first[hit_first] #+ opts['hit_eps']
-    ray_roots_copy = ray_roots.detach().clone()
-    # location_first[~hit_first] = ray_roots[~hit_first]
-    hit_second, front_second, tri_idx, location_second, uv = intersector.intersects_closest(
-        ray_roots_copy, ray_dirs, stream_compaction=False
-    )
-    location_second[~hit_second] = location_first[~hit_second]
-    hit_both = hit_first & hit_second
-    points_to_check, num_points = linspace_with_directional_delta(location_first[hit_both], location_second[hit_both], torch.tensor(opts['hit_eps']), ray_dirs[hit_both])
-    print("number of points to check", len(points_to_check))
-    assert len(points_to_check) == num_points.sum()
-    with torch.no_grad():
-        preds = torch.empty(points_to_check.shape[0])
-        total_samples = points_to_check.shape[0]
-        batch_size = 1024 * 1024 * 2
-        for start_idx in range(0, total_samples, batch_size):
-            end_idx = min(start_idx + batch_size, total_samples)
-            preds[start_idx:end_idx] = func.torch_forward(points_to_check[start_idx:end_idx]).flatten()
-        # preds = func.torch_forward(points_to_check)
-    sign_change_mask = (preds <= 0).to(torch.int64).flatten()
-    sign_change_inds = first_one_in_segments(sign_change_mask, num_points)
-    check_next_round = sign_change_inds < 0
-    time_intersection = time.perf_counter()
-    hit = hit_both.clone()
-    hit[hit_both] = ~check_next_round
-    hit_pos = ray_roots.clone()
-    hit_pos[hit] = points_to_check[sign_change_inds[~check_next_round]]
-    plt.imshow(hit.detach().cpu().numpy().reshape(1024, 1024))
-    plt.show()
-    hit_ids = torch.zeros(ray_roots.shape[0])
-    hit_ids[hit] = 1.
-
-    hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
-
-    hit_color = shade_image(shading, ray_dirs, hit_pos, hit_normals, hit_ids, up_dir, matcaps, shading_color_tuple,
-                            shading_color_func=shading_color_func)
-    img = torch.where(hit_ids[:, None].bool(), hit_color, torch.ones((res * res, 3)))
-
-    if tonemap:
-        # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
-        img = tonemap_image(img)
-
-    img = img.reshape(res, res, 3)
-    time_render_end = time.perf_counter()
-    print("Time intersection", time_intersection - time_render_start)
-    print("Time rendering:", time_render_end - time_render_start)
-
-    return img, time_render_end - time_render_start
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure

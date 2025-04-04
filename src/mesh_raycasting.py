@@ -90,28 +90,15 @@ def save_render_current_view(args, implicit_func, params, faces, vertices, inter
     option = args.option
 
     if option == 'exact':
-        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
-                                                       look,
+        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look,
                                                        up, left, res,
                                                        fov_deg, opts,
-                                                       shading='matcap_color', matcaps=matcaps, approx=False,
-                                                       delta=opts['hit_eps'])
-        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
-                                                       look,
-                                                       up, left, res,
-                                                       fov_deg, opts,
-                                                       shading='matcap_color', matcaps=matcaps, approx=False,
-                                                       delta=opts['hit_eps'])
-    elif option == 'single':
+                                                       shading='matcap_color', matcaps=matcaps, approx=False)
+    elif option == 'approx':
         img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look,
                                                        up, left, res,
                                                        fov_deg, opts,
                                                        shading='matcap_color', matcaps=matcaps, approx=True)
-    elif option == 'double':
-        img, rendering_time = render.render_image_de(implicit_func, params, faces, vertices, intersector, root, look,
-                                                     up, left, res,
-                                                     fov_deg, opts,
-                                                     shading='matcap_color', matcaps=matcaps)
     else:
         raise NotImplementedError('option must be one of "exact", "single", "double"')
 
@@ -127,43 +114,43 @@ def save_render_current_view(args, implicit_func, params, faces, vertices, inter
 
 def render_random_camera(args, implicit_func, params, faces, vertices, intersector, opts, matcaps):
     res = args.res // opts['res_scale']
+    option = args.option
 
     cameras = generate_camera_positions_on_grid((1, 1), 2.5, 45.)
     root, look, up, left, fov_deg = cameras[0]['root'], cameras[0]['look'], cameras[0]['up'], cameras[0]['left'], cameras[0]['fov_deg']
-    img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look, up, left, res,
-                                   fov_deg, opts, delta=opts['hit_eps'],
-                                   shading='matcap_color', matcaps=matcaps, approx=True)
-
+    if option == 'exact':
+        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
+                                                       look,
+                                                       up, left, res,
+                                                       fov_deg, opts,
+                                                       shading='matcap_color', matcaps=matcaps, approx=False)
+    elif option == 'approx':
+        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
+                                                       look,
+                                                       up, left, res,
+                                                       fov_deg, opts,
+                                                       shading='matcap_color', matcaps=matcaps, approx=True)
     print("=====")
     imgs, rendering_times = [], []
     # cameras = generate_camera_positions(1000, (5., 6.), (30., 90.))
     cameras = generate_camera_positions_on_grid((5, 10), 2.5, 45.)
     for cam in cameras:
         root, look, up, left, fov_deg = cam['root'], cam['look'], cam['up'], cam['left'], cam['fov_deg']
-        # img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look, up, left, res,
-        #                                fov_deg, opts, delta=opts['hit_eps'],
-        #                                shading='matcap_color', matcaps=matcaps)
-        option = args.option
+
 
         if option == 'exact':
             img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
                                                            look,
                                                            up, left, res,
                                                            fov_deg, opts,
-                                                           shading='matcap_color', matcaps=matcaps, approx=False,
-                                                           delta=opts['hit_eps'])
-        elif option == 'single':
+                                                           shading='matcap_color', matcaps=matcaps, approx=False)
+        elif option == 'approx':
             img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root,
                                                            look,
                                                            up, left, res,
                                                            fov_deg, opts,
                                                            shading='matcap_color', matcaps=matcaps, approx=True)
-        elif option == 'double':
-            img, rendering_time = render.render_image_de(implicit_func, params, faces, vertices, intersector, root,
-                                                         look,
-                                                         up, left, res,
-                                                         fov_deg, opts,
-                                                         shading='matcap_color', matcaps=matcaps)
+
         else:
             raise NotImplementedError('option must be one of "exact", "single", "double"')
         imgs.append(img.detach().cpu().numpy())
@@ -209,7 +196,8 @@ def main():
         faces = mesh.faces
         print(len(vertices))
         print(len(faces))
-    # mesh.show()
+
+    mesh.show()
     vertices = torch.tensor(vertices)
     with torch.no_grad():
         verts_dist = implicit_func.torch_forward(vertices.float())
