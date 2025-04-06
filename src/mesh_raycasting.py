@@ -81,15 +81,26 @@ def save_render_current_view(args, implicit_func, params, faces, vertices, inter
     look = torch.tensor([0.4, 1., 0.5])
     up = torch.tensor([0., 0., 1.])
 
-    root = torch.tensor([0., -3., 0.])
+    # root = torch.tensor([0., -3., 0.])
+    # left = torch.tensor([1., 0., 0.])
+    # look = torch.tensor([0., 1., 0.])
+    # up = torch.tensor([0., 0., 1.])
+
+    root = torch.tensor([0., 0., 4.])
+    up = torch.tensor([0., 1., 0.])
+    look = torch.tensor([0., 0., -1.])
     left = torch.tensor([1., 0., 0.])
-    look = torch.tensor([0., 1., 0.])
-    up = torch.tensor([0., 0., 1.])
+
     fov_deg = 30
     res = args.res // opts['res_scale']
     option = args.option
 
     if option == 'exact':
+        img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look,
+                                                       up, left, res,
+                                                       fov_deg, opts,
+                                                       shading='matcap_color', matcaps=matcaps, approx=False)
+        print("=======")
         img, rendering_time = render.render_image_mesh(implicit_func, params, faces, vertices, intersector, root, look,
                                                        up, left, res,
                                                        fov_deg, opts,
@@ -197,28 +208,28 @@ def main():
         print(len(vertices))
         print(len(faces))
 
-    mesh.show()
-    vertices = torch.tensor(vertices)
-    with torch.no_grad():
-        verts_dist = implicit_func.torch_forward(vertices.float())
-        print(verts_dist.mean())
-        pos_mask = (verts_dist > 0.).squeeze()
-        neg_mask = ~pos_mask
-        print(pos_mask.sum(), neg_mask.sum())
+    # mesh.show()
+    # vertices = torch.tensor(vertices)
+    # with torch.no_grad():
+    #     verts_dist = implicit_func.torch_forward(vertices.float())
+    #     print(verts_dist.mean())
+    #     pos_mask = (verts_dist > 0.).squeeze()
+    #     neg_mask = ~pos_mask
+    #     print(pos_mask.sum(), neg_mask.sum())
 
-    import open3d as o3d
-    masked_pcd = o3d.geometry.PointCloud()
-    masked_pcd.points = o3d.utility.Vector3dVector(vertices[pos_mask].cpu().numpy())
-    masked_pcd.paint_uniform_color([1, 0, 0])  # Red for masked points
-
-    unmasked_pcd = o3d.geometry.PointCloud()
-    unmasked_pcd.points = o3d.utility.Vector3dVector(vertices[neg_mask].cpu().numpy())
-    unmasked_pcd.paint_uniform_color([0, 1, 0])  # Green for unmasked points
-
-    # Visualize
-    o3d.visualization.draw_geometries([masked_pcd, unmasked_pcd])
-    o3d.visualization.draw_geometries([unmasked_pcd])
-    faces = torch.tensor(faces)
+    # import open3d as o3d
+    # masked_pcd = o3d.geometry.PointCloud()
+    # masked_pcd.points = o3d.utility.Vector3dVector(vertices[pos_mask].cpu().numpy())
+    # masked_pcd.paint_uniform_color([1, 0, 0])  # Red for masked points
+    #
+    # unmasked_pcd = o3d.geometry.PointCloud()
+    # unmasked_pcd.points = o3d.utility.Vector3dVector(vertices[neg_mask].cpu().numpy())
+    # unmasked_pcd.paint_uniform_color([0, 1, 0])  # Green for unmasked points
+    #
+    # # Visualize
+    # o3d.visualization.draw_geometries([masked_pcd, unmasked_pcd])
+    # o3d.visualization.draw_geometries([unmasked_pcd])
+    # faces = torch.tensor(faces)
 
     intersector = RayMeshIntersector(mesh)
 

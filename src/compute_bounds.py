@@ -72,7 +72,7 @@ def main():
     surf_color = (0.157, 0.613, 1.000)
 
     implicit_func, params = implicit_mlp_utils.generate_implicit_from_file(args.input, mode=mode, **affine_opts)
-
+    print(implicit_func)
     # load the matcaps
     matcaps = render.load_matcap(os.path.join(ROOT_DIR, "assets", "matcaps", "wax_{}.png"))
     if mode == 'affine_truncate':

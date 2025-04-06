@@ -182,6 +182,19 @@ def bounded_func_from_spec(mode='affine'):
 
     return eval_spec
 
+class Sin(torch.nn.Module):
+    def forward(self, x):
+        return torch.sin(x)
+
+class PosEnc(torch.nn.Module):
+    def __init__(self, coefs, shift):
+        super().__init__()
+        self.register_buffer('coefs', coefs[None, :])
+        self.register_buffer('shift', shift[None, :])
+    def forward(self, x):
+        x = x.unsqueeze(-1) * self.coefs + self.shift
+        x = x.reshape(x.shape[0], -1)
+        return x
 
 def func_as_torch(params):
     op_list = []
@@ -206,6 +219,13 @@ def func_as_torch(params):
             op_list.append(GELU())
         elif name == 'sigmoid':
             op_list.append(torch.nn.Sigmoid())
+        elif name == 'sin':
+            op_list.append(Sin())
+        elif name == 'pow2_frequency_encode':
+            coefs = torch.tensor(args['coefs'], dtype=torch.float32).T  # .to(device)
+            shift = torch.tensor(args['shift'], dtype=torch.float32)  # .to(device)
+            pos_enc = PosEnc(coefs, shift)
+            op_list.append(pos_enc)
     model = torch.nn.Sequential(*op_list)
 
     return model
@@ -454,7 +474,6 @@ def pow2_frequency_encode(count_pow2, start_pow=0, with_shift=True):
         return {"pow2_frequency_encode.coefs" : coefs, "pow2_frequency_encode.shift" : shift}
     else:
         return {"pow2_frequency_encode.coefs" : coefs}
-
 def default_pow2_frequency_encode(input, coefs, shift=None):
     x = input[:,None] * coefs[None,:]
     if shift is not None:

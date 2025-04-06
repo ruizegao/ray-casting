@@ -636,6 +636,8 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         out_ub.append(ret[5])
         to_split_lower = ret[6]
         to_split_upper = ret[7]
+        if to_split_lower is not None:
+            print(i_depth, to_split_lower.shape)
         if include_pos_neg:
             pos_lower.append(ret[8])
             pos_upper.append(ret[9])
@@ -656,6 +658,8 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         out_ub.append(ret[5])
         to_split_lower = ret[6]
         to_split_upper = ret[7]
+        if to_split_lower is not None:
+            print(i_depth, to_split_lower.shape)
         if include_pos_neg:
             pos_lower.append(ret[8])
             pos_upper.append(ret[9])

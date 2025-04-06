@@ -278,7 +278,7 @@ def main():
     opts['tree_split_aff'] = False
     cast_frustum = False
     cast_opt_based = False
-    mode = 'affine_fixed'
+    mode = 'crown'
     modes = ['sdf', 'interval', 'affine_fixed', 'affine_truncate', 'affine_append', 'affine_all', 'affine_quad', 'slope_interval', 'crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward', 'dynamic_forward+backward', 'affine+backward']
     crown_modes = ['crown', 'alpha_crown', 'forward+backward', 'forward', 'forward-optimized', 'dynamic_forward',
                    'dynamic_forward+backward']
@@ -489,7 +489,7 @@ def main():
         sdf_vals = vmap(partial(implicit_func, params))(grid)
     sdf_vals = sdf_vals.reshape(grid_res, grid_res, grid_res)
     bbox_min = grid[0,:]
-    verts, faces, normals, values = measure.marching_cubes(sdf_vals.cpu().numpy(), level=0., spacing=(delta, delta, delta))
+    verts, faces, normals, values = measure.marching_cubes(sdf_vals.detach().cpu().numpy(), level=0., spacing=(delta, delta, delta))
     verts = torch.from_numpy(verts).to(device)
     verts = verts + bbox_min[None,:]
     ps.register_surface_mesh("coarse shape preview", verts.cpu().numpy(), faces)

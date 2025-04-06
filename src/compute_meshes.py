@@ -127,7 +127,6 @@ def build_shell(
             if inflate:
                 inflation_amount = 5e-2 * (mesh.volume ** (1 / 3))
                 # inflation_amount = 5e-4
-                print(inflation_amount)
                 normals = mesh.vertex_normals
                 mesh.vertices += normals * inflation_amount
             trimesh_meshes.append(mesh)
@@ -139,7 +138,6 @@ def build_shell(
         if inflate:
             inflation_amount = 5e-2 * (mesh.volume ** (1 / 3))
             # inflation_amount = 5e-4
-            print(inflation_amount)
             normals = mesh.vertex_normals
             mesh.vertices += normals * inflation_amount
         trimesh_meshes.append(mesh)

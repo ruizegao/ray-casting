@@ -48,6 +48,7 @@ def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions)
         torch.Tensor: Concatenated tensor of all linspace values, shape (total_points, 3).
         torch.Tensor: Number of points per linspace (N,).
     """
+    time0 = time.perf_counter()
     # Compute step sizes per dimension
     step_sizes = directions * delta  # Shape: (N, 3)
 
@@ -73,7 +74,7 @@ def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions)
     # Ensure each linspace segment ends exactly at end_tensor
     mask = torch.cat((start_indices[1:] - 1, torch.tensor([total_points - 1], device=start_tensor.device)))
     points[mask] = end_tensor  # Overwrite last points of each segment
-
+    print("linspace time:", time.perf_counter() - time0)
     return points, num_points
 
 # @torch.jit.script
@@ -89,6 +90,7 @@ def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) ->
         torch.Tensor: A 1D tensor with the index of the first '1' in each segment,
                       or -1 if no '1' is found in a segment.
     """
+    time0 = time.perf_counter()
     # Compute start indices of each segment
     start_indices = torch.cat((torch.tensor([0], device=binary_tensor.device), lengths.cumsum(0)[:-1]))
 
@@ -112,7 +114,7 @@ def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) ->
 
     # Replace large values (where no "1" was found) with -1
     first_indices[first_indices == torch.iinfo(ones_positions.dtype).max] = -1
-
+    print("find first idx time", time.perf_counter() - time0)
     return first_indices
 
 
@@ -183,7 +185,9 @@ def cast_rays_shell_based(
             # for start_idx in range(0, total_samples, batch_size):
             #     end_idx = min(start_idx + batch_size, total_samples)
             #     preds[start_idx:end_idx] = func.torch_forward(points_to_check[start_idx:end_idx]).flatten()
+            time0 = time.perf_counter()
             preds = func.torch_forward(points_to_check)
+            print("nn query time", time.perf_counter() - time0)
         sign_change_mask = (preds <= 0).to(torch.int64).flatten()
         sign_change_inds = first_one_in_segments(sign_change_mask, num_points)
         check_next_round = sign_change_inds < 0
