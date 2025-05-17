@@ -26,7 +26,7 @@ from clip_utils import clip_domains
 from split import kd_split
 
 INVALID_IND = 2**30
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
+# torch.set_default_tensor_type(torch.cuda.FloatTensor)
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_printoptions(threshold=6)
 DEBUG_NONUNIFORM_KDTREE = False
@@ -464,8 +464,6 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
         lbs = crown_ret['lbias'].squeeze(1).detach()
         uAs = crown_ret['uA'].squeeze(1).detach()
         ubs = crown_ret['ubias'].squeeze(1).detach()
-        # lAs = lbs = uAs = ubs = None
-        # return types, crown_ret['lA'].squeeze(1).cpu(), crown_ret['lbias'].squeeze(1).cpu(), crown_ret['uA'].squeeze(1).cpu(), crown_ret['ubias'].squeeze(1).cpu()
         return types, lAs, lbs, uAs, ubs
 
     total_samples = node_lower.shape[0]
@@ -520,7 +518,6 @@ def construct_static_unknown_tree_iter(func, params, node_lower, node_upper, con
 
     output = [finished_node_lower, finished_node_upper, finished_node_lA, finished_node_lb, finished_node_uA,
             finished_node_ub, split_node_lower, split_node_upper]
-
     if include_pos_neg:
         output = output + [node_lower[pos_mask], node_upper[pos_mask], node_lower[neg_mask], node_upper[neg_mask]]
 
@@ -636,8 +633,8 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         out_ub.append(ret[5])
         to_split_lower = ret[6]
         to_split_upper = ret[7]
-        if to_split_lower is not None:
-            print(i_depth, to_split_lower.shape)
+        # if to_split_upper is not None:
+        #     print(to_split_upper.shape)
         if include_pos_neg:
             pos_lower.append(ret[8])
             pos_upper.append(ret[9])
@@ -658,8 +655,6 @@ def construct_hybrid_unknown_tree(func, params, lower, upper, base_depth=21, max
         out_ub.append(ret[5])
         to_split_lower = ret[6]
         to_split_upper = ret[7]
-        if to_split_lower is not None:
-            print(i_depth, to_split_lower.shape)
         if include_pos_neg:
             pos_lower.append(ret[8])
             pos_upper.append(ret[9])

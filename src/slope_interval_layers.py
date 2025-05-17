@@ -1,8 +1,8 @@
 from functools import partial
 
-import jax
-import jax.numpy as jnp
-from jax import lax
+# import jax
+# import jax.numpy as jnp
+# from jax import lax
 
 import slope_interval
 import mlp

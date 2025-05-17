@@ -48,7 +48,7 @@ def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions)
         torch.Tensor: Concatenated tensor of all linspace values, shape (total_points, 3).
         torch.Tensor: Number of points per linspace (N,).
     """
-    time0 = time.perf_counter()
+    # time0 = time.perf_counter()
     # Compute step sizes per dimension
     step_sizes = directions * delta  # Shape: (N, 3)
 
@@ -74,7 +74,7 @@ def linspace_with_directional_delta(start_tensor, end_tensor, delta, directions)
     # Ensure each linspace segment ends exactly at end_tensor
     mask = torch.cat((start_indices[1:] - 1, torch.tensor([total_points - 1], device=start_tensor.device)))
     points[mask] = end_tensor  # Overwrite last points of each segment
-    print("linspace time:", time.perf_counter() - time0)
+    # print("linspace time:", time.perf_counter() - time0)
     return points, num_points
 
 # @torch.jit.script
@@ -90,7 +90,7 @@ def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) ->
         torch.Tensor: A 1D tensor with the index of the first '1' in each segment,
                       or -1 if no '1' is found in a segment.
     """
-    time0 = time.perf_counter()
+    # time0 = time.perf_counter()
     # Compute start indices of each segment
     start_indices = torch.cat((torch.tensor([0], device=binary_tensor.device), lengths.cumsum(0)[:-1]))
 
@@ -114,7 +114,7 @@ def first_one_in_segments(binary_tensor: torch.Tensor, lengths: torch.Tensor) ->
 
     # Replace large values (where no "1" was found) with -1
     first_indices[first_indices == torch.iinfo(ones_positions.dtype).max] = -1
-    print("find first idx time", time.perf_counter() - time0)
+    # print("find first idx time", time.perf_counter() - time0)
     return first_indices
 
 
@@ -142,17 +142,19 @@ def cast_rays_shell_based(
         ray_roots[hit] = location
         hit_ids = torch.zeros(ray_roots.shape[0])
         hit_ids[hit] = 1.
-        return ray_roots, hit_ids, hit
+
+        return ray_roots, hit_ids, hit, None
 
     func = func_tuple[0]
 
     to_check = torch.ones(ray_roots.shape[0], dtype=torch.bool)
     hit = torch.zeros(ray_roots.shape[0], dtype=torch.bool)
-
+    count = torch.zeros(ray_roots.shape[0])
     while to_check.sum() > 0:
         ray_roots_to_check = ray_roots[to_check]
         ray_dirs_to_check = ray_dirs[to_check]
-        # hit_to_check = hit[to_check]
+        count_to_check = count[to_check]
+
         hit_first, front_first, tri_idx, location_first, uv = intersector.intersects_closest(
             ray_roots_to_check, ray_dirs_to_check, stream_compaction=False
         )
@@ -162,34 +164,28 @@ def cast_rays_shell_based(
             ray_roots_to_check, ray_dirs_to_check, stream_compaction=False
         )
         ray_roots_to_check[hit_second] = location_second[hit_second] + ray_dirs_to_check[hit_second] * 1e-6
-        # location_second[~hit_second] = location_first[~hit_second]
 
         hit_both = hit_first & hit_second
-        # plt.imshow(hit_second.detach().cpu().numpy().reshape(1024, 1024))
-        # plt.show()
-        # print((location_first[hit_both] == location_second[hit_both]).sum())
+
         if hit_both.sum() == 0:
             break
-        # print("hit both shape:", hit_both.shape)
-        # print(location_first[hit_both], location_second[hit_both])
+
         points_to_check, num_points = linspace_with_directional_delta(location_first[hit_both],
                                                                       location_second[hit_both],
                                                                       torch.tensor(delta),
                                                                       ray_dirs_to_check[hit_both])
-        # print("number of points to check", len(points_to_check))
-        # assert len(points_to_check) == num_points.sum()
+        count_to_check[hit_both] += num_points
+
         with torch.no_grad():
-            # preds = torch.empty(points_to_check.shape[0])
-            # total_samples = points_to_check.shape[0]
-            # batch_size = 1024 * 1024 * 3
-            # for start_idx in range(0, total_samples, batch_size):
-            #     end_idx = min(start_idx + batch_size, total_samples)
-            #     preds[start_idx:end_idx] = func.torch_forward(points_to_check[start_idx:end_idx]).flatten()
-            time0 = time.perf_counter()
-            preds = func.torch_forward(points_to_check)
-            print("nn query time", time.perf_counter() - time0)
+            preds = torch.empty(points_to_check.shape[0])
+            total_samples = points_to_check.shape[0]
+            batch_size = 1024 * 1024 * 1
+            for start_idx in range(0, total_samples, batch_size):
+                end_idx = min(start_idx + batch_size, total_samples)
+                preds[start_idx:end_idx] = func.torch_forward(points_to_check[start_idx:end_idx]).flatten()
+            # preds = func.torch_forward(points_to_check)
         sign_change_mask = (preds <= 0).to(torch.int64).flatten()
-        sign_change_inds = first_one_in_segments(sign_change_mask, num_points)
+        sign_change_inds = first_one_in_segments(sign_change_mask, num_points) - 1
         check_next_round = sign_change_inds < 0
         hit_to_check = hit_both.clone()
         hit_to_check[hit_both] = ~check_next_round
@@ -197,14 +193,26 @@ def cast_rays_shell_based(
         ray_roots_to_check[hit_to_check] = points_to_check[sign_change_inds[~check_next_round]]
         ray_roots[to_check] = ray_roots_to_check
         hit[to_check] = hit_to_check
+        count[to_check] = count_to_check
         # plt.imshow(hit.detach().cpu().numpy().reshape(1024, 1024))
         # plt.show()
         hit_both[hit_both.clone()] = check_next_round
         to_check[to_check.clone()] = hit_both
+        # plt.imshow(hit.detach().reshape(1024, 1024).flip(dims=(0, 1)).cpu().numpy())
+        # print(hit.sum())
+        # plt.show()
+        # plt.imshow(to_check.detach().reshape(1024, 1024).flip(dims=(0, 1)).cpu().numpy())
+        # print(to_check.sum())
+        # plt.show()
+
+    # im = plt.imshow(count.detach().reshape(1024, 1024).cpu().numpy(), cmap='viridis', origin='lower')
+    # plt.colorbar(im, label='Samples per Pixel')
+    # print(count.sum(), count.max(), count.min())
+    # plt.show()
 
     hit_ids = torch.zeros(ray_roots.shape[0])
     hit_ids[hit] = 1.
-    return ray_roots, hit_ids, hit
+    return ray_roots, hit_ids, hit, count
 
 
 def cast_rays_iter(funcs_tuple, params_tuple, n_substeps, curr_roots, curr_dirs, curr_t, curr_int_size, curr_inds,

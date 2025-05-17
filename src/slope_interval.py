@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-import jax
-import jax.numpy as jnp
+# import jax
+# import jax.numpy as jnp
 
 import utils
 from utils import printarr

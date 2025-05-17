@@ -3,13 +3,13 @@ from functools import partial
 import torch
 import torch.nn.init as torch_init
 from torch import Tensor
-import jax
-import jax.random as jax_random
+# import jax
+# import jax.random as jax_random
 import numpy as np
 import functorch
 # Imports from this project
 from utils import *
-import jax.numpy as jnp
+# import jax.numpy as jnp
 import affine
 import slope_interval
 from auto_LiRPA import BoundedModule, BoundedTensor

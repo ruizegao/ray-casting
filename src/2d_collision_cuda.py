@@ -92,7 +92,7 @@ def main():
     bbox_vertices = torch.tensor(bbox.exterior.coords, device=set_t['device'])
     # test_circle_centers = torch.rand(10000, 2) - 0.5
     # test_circle_radius = torch.rand(10000,) * 0.5
-    num_trials = 1000
+    num_trials = 1000000
     test_circle_centers = torch.from_numpy(np.random.uniform(-0.5, 0.5, (num_trials, 2))).float().cuda()
     test_circle_radius = torch.from_numpy(np.random.uniform(0.01, 0.1, (num_trials,))).float().cuda()
     # test_circle_centers.cuda()
@@ -102,10 +102,6 @@ def main():
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
     mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
-    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_t_vertices)
-    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
-    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
-    mesh_results = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
     mesh_results_not_early_outs = compiled_fn(test_circle_centers, test_circle_radius, c_polygon_l_vertices)
     mesh_results_early_outs = ~mesh_results_not_early_outs
     mesh_results_ = compiled_fn(test_circle_centers[~mesh_results_early_outs],

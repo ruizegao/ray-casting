@@ -1,30 +1,19 @@
-import os
-import sys
-import gc
-from typing import Optional, Tuple
-
 import functorch
 import torch
-import scipy
-import numpy as np
-from functools import partial
+import torch.nn.functional as F
 from functorch import vmap
 from crown import CrownImplicitFunction
 import imageio
-from PIL import Image
 import geometry
 import queries
 from utils import *
-import affine
-import trimesh
 import matplotlib.pyplot as plt
-import sys, os, time, math
-import jax
-import jax.numpy as jnp
+import os, time
 
 os.environ['OptiX_INSTALL_DIR'] = '/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
+# os.environ['OptiX_INSTALL_DIR'] = '/media/gaorz/b5df3483-c11a-42f1-b414-023f33bc5312/home/ruize/Documents/NVIDIA-OptiX-SDK-8.0.0-linux64-x86_64'
 
-from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
+# from triro.ray.ray_optix import RayMeshIntersector  # FIXME: Should be uncommented when rendering meshes
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 torch.set_default_tensor_type(torch.cuda.FloatTensor)
@@ -36,7 +25,7 @@ FD_OFFSET = torch.tensor((
                 (-HIT_EPS, -HIT_EPS, +HIT_EPS),
                 (-HIT_EPS, +HIT_EPS, -HIT_EPS),
                 (+HIT_EPS, +HIT_EPS, +HIT_EPS),
-            ))
+            )) * 10.
 
 # theta_x/y should be
 def camera_ray(look_dir, up_dir, left_dir, fov_deg_x, fov_deg_y, theta_x, theta_y):
@@ -92,7 +81,10 @@ def outward_normal(funcs_tuple, params_tuple, hit_pos, hit_id, eps, method='fini
             # see e.g. https://www.iquilezles.org/www/articles/normalsSDF/normalsSDF.htm
 
             x_pts = hit_pos[None, :] + FD_OFFSET
-            samples = vmap(f)(x_pts).squeeze(1).detach()
+            samples = vmap(f)(x_pts).detach()
+            if samples.dim() > 1:
+                samples = samples.squeeze(1)
+            # samples = vmap(f)(x_pts).squeeze(1).detach()
             grad = torch.sum(FD_OFFSET * samples[:, None], dim=0)
 
         else:
@@ -119,7 +111,7 @@ def outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, eps, method='fi
     elif method == 'finite_differences':
         total_samples = hit_pos.shape[0]
         out_normal = torch.empty_like(hit_pos)
-        batch_size_per_iteration = 2**17
+        batch_size_per_iteration = 2**19
         # batch_size_per_iteration = 2**12
         for start_idx in range(0, total_samples, batch_size_per_iteration):
             end_idx = min(start_idx + batch_size_per_iteration, total_samples)
@@ -196,24 +188,24 @@ def render_image(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir,
 
 
 def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, frustum, opts,
-                       shading="normal", shading_color_tuple=((0.157, 0.613, 1.000)), matcaps=None, tonemap=False,
+                       shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), matcaps=None, tonemap=False,
                        shading_color_func=None, tree_based=False, shell_based=False, batch_size=None, enable_clipping=False, load_from=None, save_to=None):
     # make sure inputs are tuples not lists (can't has lists)
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
     if isinstance(params_tuple, list): params_tuple = tuple(params_tuple)
-    if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
+    # if isinstance(shading_color_tuple, list): shading_color_tuple = tuple(shading_color_tuple)
 
     # wrap in tuples if single was passed
     if not isinstance(funcs_tuple, tuple):
         funcs_tuple = (funcs_tuple,)
     if not isinstance(params_tuple, tuple):
         params_tuple = (params_tuple,)
-    if not isinstance(shading_color_tuple[0], tuple):
-        shading_color_tuple = (shading_color_tuple,)
+    # if not isinstance(shading_color_tuple[0], tuple):
+    #     shading_color_tuple = (shading_color_tuple,)
 
-    L = len(funcs_tuple)
-    if (len(params_tuple) != L) or (len(shading_color_tuple) != L):
-        raise ValueError("render_image tuple arguments should all be same length")
+    # L = len(funcs_tuple)
+    # if (len(params_tuple) != L) or (len(shading_color_tuple) != L):
+    #     raise ValueError("render_image tuple arguments should all be same length")
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
     if frustum:
@@ -262,7 +254,7 @@ def render_image_naive(funcs_tuple, params_tuple, eye_pos, look_dir, up_dir, lef
     return img, depth, counts, hit_ids, n_eval, -1
 
 
-def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
+def render_image_mesh(funcs_tuple, params_tuple, intersector, eye_pos, look_dir, up_dir, left_dir, res, fov_deg, opts,
                       shading="normal", shading_color_tuple=torch.tensor(((0.157, 0.613, 1.000),)), approx=False, matcaps=None, tonemap=False,
                       shading_color_func=None):
     if isinstance(funcs_tuple, list): funcs_tuple = tuple(funcs_tuple)
@@ -275,11 +267,10 @@ def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, e
         params_tuple = (params_tuple,)
 
     ray_roots, ray_dirs = generate_camera_rays(eye_pos, look_dir, up_dir, res=res, fov_deg=fov_deg)
+    _, _, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, torch.empty_like(ray_roots), torch.empty_like(ray_dirs), intersector, approx, opts['hit_eps'])
 
-    # _, _, _, _, _, _, _ = queries.cast_rays_shell_based(funcs_tuple, params_tuple, torch.empty_like(ray_roots), torch.empty_like(ray_dirs), intersector, approx, delta)
-
-    time_render_start = time.time()
-    hit_pos, hit_ids, hit = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector, approx, opts['hit_eps'])
+    time_render_start = time.perf_counter()
+    hit_pos, hit_ids, hit, count = queries.cast_rays_shell_based(funcs_tuple, params_tuple, ray_roots, ray_dirs, intersector, approx, opts['hit_eps'])
 
     hit_normals = outward_normals(funcs_tuple, params_tuple, hit_pos, hit_ids, opts['hit_eps'], method='finite_differences')
 
@@ -290,13 +281,12 @@ def render_image_mesh(funcs_tuple, params_tuple, faces, vertices, intersector, e
     if tonemap:
         # We intentionally tonemap before compositing in the shadow. Otherwise the white level clips the shadow and gives it a hard edge.
         img = tonemap_image(img)
+    time_render_end = time.perf_counter()
 
     img = img.reshape(res, res, 3)
-    time_render_end = time.time()
     print("Time rendering:", time_render_end - time_render_start)
 
-    return img, time_render_end - time_render_start
-
+    return img, time_render_end - time_render_start, count
 
 def tonemap_image(img, gamma=2.2, white_level=.75, exposure=1.):
     img = img * exposure
@@ -333,6 +323,7 @@ def shade_image(shading: str, ray_dirs: torch.Tensor, hit_pos: torch.Tensor, hit
     mat_k = matcaps[3][x, y]
 
     shading_color = torch.ones_like(hit_pos)
+    # print(shading_color)
     # if shading_color_func is None:
     i_func = 1
     for c in shading_color_tuple:
@@ -342,7 +333,7 @@ def shade_image(shading: str, ray_dirs: torch.Tensor, hit_pos: torch.Tensor, hit
         i_func += 1
     # else:
     #     shading_color = shading_color_func(hit_pos)
-
+    # print(shading_color)
     c_r, c_g, c_b = shading_color[:, 0], shading_color[:, 1], shading_color[:, 2]
     c_k = 1. - (c_r + c_b + c_g)
 
@@ -354,6 +345,34 @@ def shade_image(shading: str, ray_dirs: torch.Tensor, hit_pos: torch.Tensor, hit
     hit_color = c_r * mat_r + c_b * mat_b + c_g * mat_g + c_k * mat_k
 
     return hit_color
+
+# @torch.jit.script
+def phong_shading(
+    hit_points,
+    normals,
+    view_dirs,
+    light_pos,
+    light_color,
+    albedo,
+    shininess=64,
+    specular_strength=0.5,
+    ambient_strength=0.1,
+    ambient_color=torch.tensor([1.0, 1.0, 1.0])
+):
+    L = F.normalize(light_pos - hit_points, dim=-1)
+    V = F.normalize(view_dirs, dim=-1)
+    N = F.normalize(normals, dim=-1)
+    R = F.normalize(2 * (N * (L * N).sum(-1, keepdim=True)) - L, dim=-1)
+
+    diff = torch.clamp((N * L).sum(-1, keepdim=True), min=0.0)
+    diffuse = albedo * diff * light_color
+
+    spec = torch.clamp((R * V).sum(-1, keepdim=True), min=0.0)
+    specular = specular_strength * (spec ** shininess) * light_color
+
+    ambient = ambient_strength * albedo * ambient_color
+
+    return ambient + diffuse + specular
 
 
 def look_at(eye_pos, target=None, up_dir='y'):

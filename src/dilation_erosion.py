@@ -61,7 +61,7 @@ def main():
     # Build arguments
     parser.add_argument("input", type=str)
     parser.add_argument("--output", type=str)
-    parser.add_argument("--grid_res", type=int, default=2**10)
+    parser.add_argument("--grid_res", type=int, default=2**9)
     parser.add_argument("--eps_d", type=float, default=0.002)
     parser.add_argument("--eps_e", type=float, default=0.002)
     # Parse arguments
@@ -95,10 +95,11 @@ def main():
     verts_0lvl = verts_0lvl + bbox_min[None, :]
     mesh_0lvl = trimesh.Trimesh(verts_0lvl, faces_0lvl)
     if output:
-        mesh_dilation.export(output[:-4]+"_dilation.obj")
+        # mesh_dilation.export(output[:-4]+"_dilation.obj")
         mesh_de.export(output[:-4] + "_de.obj")
-        mesh_0lvl.export(output[:-4] + "_0lvl.obj")
-        mesh_erosion.export(output[:-4] + "_erosion.obj")
+        # mesh_0lvl.export(output[:-4] + "_0lvl.obj")
+        # print(len(mesh_0lvl.vertices), len(mesh_0lvl.faces))
+        # mesh_erosion.export(output[:-4] + "_erosion.obj")
 
 if __name__ == '__main__':
     main()

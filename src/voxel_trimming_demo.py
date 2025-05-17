@@ -115,13 +115,25 @@ def build_shell(
         pos_upper: np.ndarray,
         neg_lower: np.ndarray,
         neg_upper: np.ndarray,
-        inflate=True,
+        inflate=False,
+        no_slice=False,
 ):
     start_time = time.time()
 
     num_success, num_errors = 0, 0
     trimesh_meshes = []
     for A, b, l, u in zip(As, bs, lower, upper):
+        if no_slice:
+            min_width = np.min(u - l)
+            shrink = 0.05 * min_width
+            l_shrinked = l + shrink
+            u_shrinked = u - shrink
+            trimesh_meshes.append(trimesh.creation.box(bounds=np.vstack((l_shrinked, u_shrinked))))
+        else:
+            min_width = np.min(u - l)
+            shrink = 0.05 * min_width
+            l = l + shrink
+            u = u - shrink
             mesh = slice_box(A, b, l, u, keep_pos=False)
             if mesh:
                 if inflate:
@@ -134,6 +146,11 @@ def build_shell(
                 print(num_success)
 
     for n_l, n_u in zip(neg_lower, neg_upper):
+        if True:
+            min_width = np.min(n_u - n_l)
+            shrink = 0.05 * min_width
+            n_l = n_l + shrink
+            n_u = n_u - shrink
         mesh = trimesh.creation.box(bounds=np.vstack((n_l, n_u)))
         if inflate:
             inflation_amount = 5e-2 * (mesh.volume ** (1 / 3))
@@ -202,6 +219,64 @@ def carve_shell(
     print(len(trimesh_mesh.faces))
     return trimesh_mesh
 
+def union_voxels(
+        lowers: np.ndarray,
+        uppers: np.ndarray,
+):
+    vertices = []
+    faces = []
+    vertex_offset = 0
+
+    for l, u in zip(lowers, uppers):
+        min_width = np.min(u - l)
+        shrink = 0.05 * min_width
+        l = l + shrink
+        u = u - shrink
+        mesh = trimesh.creation.box(bounds=np.vstack((l, u)))
+
+        vertices.append(mesh.vertices)
+        faces.append(mesh.faces + vertex_offset)
+        vertex_offset += len(mesh.vertices)
+
+    vertices = np.vstack(vertices)
+    faces = np.vstack(faces)
+
+    combined_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    return combined_mesh
+
+def trim_voxels(
+        As: np.ndarray,
+        bs: np.ndarray,
+        lowers: np.ndarray,
+        uppers: np.ndarray,
+        part: str
+):
+    vertices = []
+    faces = []
+    vertex_offset = 0
+
+    for A, b, l, u in zip(As, bs, lowers, uppers):
+        min_width = np.min(u - l)
+        shrink = 0.05 * min_width
+        l = l + shrink
+        u = u - shrink
+        # mesh = trimesh.creation.box(bounds=np.vstack((l, u)))
+        if part == "outer":
+            mesh = slice_box(A, b, l, u, keep_pos=True)
+        elif part == "inner":
+            mesh = slice_box(A, b, l, u, keep_pos=False)
+        else:
+            raise ValueError(f"Unknown part: {part}")
+        if mesh:
+            vertices.append(mesh.vertices)
+            faces.append(mesh.faces + vertex_offset)
+            vertex_offset += len(mesh.vertices)
+
+    vertices = np.vstack(vertices)
+    faces = np.vstack(faces)
+
+    combined_mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+    return combined_mesh
 
 
 if __name__ == '__main__':
@@ -209,7 +284,7 @@ if __name__ == '__main__':
 
     # Build arguments
     parser.add_argument("load_from", type=str)
-    parser.add_argument("save_to", type=str)
+    # parser.add_argument("save_to", type=str)
     parser.add_argument("--mode", type=str, default='crown')
     parser.add_argument("--res", type=int, default=1024)
     parser.add_argument("--smooth", action='store_true')
@@ -223,29 +298,34 @@ if __name__ == '__main__':
     mode = args.mode
 
     ret_val = [val for val in np.load(args.load_from).values()]
-    [node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs, pos_lower, pos_upper, neg_lower, nge_upper, plane_constraints_lower, plane_constraints_upper] = ret_val
+    [node_lower, node_upper, mAs, mbs, lAs, lbs, uAs, ubs, pos_lower, pos_upper, neg_lower, neg_upper, plane_constraints_lower, plane_constraints_upper] = ret_val
 
     num_constraints = plane_constraints_lower.shape[1]
     # num_constraints = 0
     print(f"Found {num_constraints} constraint plane(s) to add to the mesh")
-    if num_constraints == 0:
-        # outer_shell = build_shell(lAs, lbs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=True)#, no_slice=True)
-        # outer_shell.fill_holes()
-        # outer_shell.export(args.save_to[:-4]+'_outer.obj')
-        # print(outer_shell.vertices[:, 1].min())
-        # outer_shell.show()
-        # mid_shell = build_shell(mAs, mbs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=True)
-        mid_shell = carve_shell(mAs, mbs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=True)
-        mid_shell.fill_holes()
-        mid_shell.show()
-        mid_shell.export(args.save_to[:-4]+'_mid.obj')
-        # inner_shell = carve_shell(uAs, ubs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=True)
-        # inner_shell.fill_holes()
-        # inner_shell.export(args.save_to[:-4]+'_inner.obj')
 
-        # both_shell_verts = np.concatenate((np.array(outer_shell.vertices), np.array(inner_shell.vertices)), axis=0)
-        # both_shell_faces = np.concatenate((np.array(outer_shell.faces), np.array(inner_shell.faces) + len(outer_shell.vertices)), axis=0)
-        # both_shells = trimesh.Trimesh(both_shell_verts, both_shell_faces)
-        # both_shells.export(args.save_to[:-4]+'_both.obj')
-    else:
-        raise ValueError("More than 2 planes is not supported as of yet")
+
+
+    # outer_shell = build_shell(lAs, lbs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=False)#, no_slice=True)
+    # outer_shell.fill_holes()
+    # outer_shell.export(args.save_to[:-4]+'_outer.obj')
+    # outer_shell.show()
+    # mid_shell = register_plane_and_cube_with_polyscope(mAs, mbs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper)
+    # mid_shell.export(args.save_to[:-4]+'_mid.obj')
+    # inner_shell = carve_shell(uAs, ubs, node_lower, node_upper, pos_lower, pos_upper, neg_lower, nge_upper, inflate=True)
+    # inner_shell.fill_holes()
+    # inner_shell.export(args.save_to[:-4]+'_inner.obj')
+
+    # both_shell_verts = np.concatenate((np.array(outer_shell.vertices), np.array(inner_shell.vertices)), axis=0)
+    # both_shell_faces = np.concatenate((np.array(outer_shell.faces), np.array(inner_shell.faces) + len(outer_shell.vertices)), axis=0)
+    # both_shells = trimesh.Trimesh(both_shell_verts, both_shell_faces)
+    # both_shells.export(args.save_to[:-4]+'_both.obj')
+
+    pos_voxels = union_voxels(pos_lower, pos_upper)
+    pos_voxels.export("meshes/koala_pos_voxels.obj")
+    neg_voxels = union_voxels(neg_lower, neg_upper)
+    neg_voxels.export("meshes/koala_neg_voxels.obj")
+    unk_inner = trim_voxels(uAs, ubs, node_lower, node_upper, part="inner")
+    unk_inner.export("meshes/koala_unk_inner.obj")
+    unk_outer = trim_voxels(lAs, lbs, node_lower, node_upper, part="outer")
+    unk_outer.export("meshes/koala_unk_outer.obj")

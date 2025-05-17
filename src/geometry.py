@@ -5,7 +5,7 @@ from typing import Union, Tuple, Optional
 from torch import Tensor
 from numpy import ndarray
 import igl
-import jax.numpy as jnp
+# import jax.numpy as jnp
 
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 to_numpy = lambda x: x.detach().cpu().numpy()

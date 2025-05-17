@@ -6,6 +6,8 @@ import pygame.gfxdraw
 import numpy as np
 import torch
 import matplotlib.pyplot as plt
+import math
+
 from neural_sdf import MLP, Siren
 from neural_utils import load_net_object
 import crown
@@ -16,6 +18,7 @@ import shapely
 import imageio.v2 as imageio
 
 global I_COMP, C_COMP, V_COMP
+global c_shape, v_shape, i_shape
 
 LETTER_COLORS = {
     'I': (255, 0, 0, 255),   # Red
@@ -94,18 +97,6 @@ def carve(net: MLP, deep=False, smoothify=True, return_merged=False):
     for n_l, n_u in zip(neg_lowers, neg_uppers):
         box_inside = shapely.geometry.Polygon([n_l, (n_l[0], n_u[1]), n_u, (n_u[0], n_l[1])])
         convex_poly_list.append(box_inside.buffer(0))
-    # merged_inner_nodes = shapely.ops.unary_union(convex_poly_list)
-    # if merged_inner_nodes.geom_type == 'Polygon':
-    #     print("Merged into one polygon")
-    #     convex_poly_list = shapely.ops.triangulate(merged_inner_nodes)
-    # elif merged_inner_nodes.geom_type == 'MultiPolygon':
-    #     convex_poly_list = []
-    #     print("Merged into multiple polygons")
-    #     for poly in merged_inner_nodes.geoms:
-    #         convex_poly_list.extend(shapely.ops.triangulate(poly))
-    # else:
-    #     print("Keeping the original polygons")
-    # print("After re-arrangement, # of polygons: {}".format(len(convex_poly_list)))
 
     # Include the negative portions of unknown nodes
     for l, u, lA, lb, uA, ub in zip(lowers, uppers, lAs, lbs, uAs, ubs):
@@ -216,6 +207,23 @@ def scale_polygon(vertices, scale_factor):
     """ Scale a polygon's vertices by a given factor. """
     return [(x * scale_factor, y * scale_factor) for x, y in vertices]
 
+def rotate_polygon(vertices, angle_rad, origin=(0, 0)):
+    # Translate to origin
+    translated = vertices - origin
+
+    # Rotation matrix
+    c, s = np.cos(angle_rad), np.sin(angle_rad)
+    R = np.array([[c, -s], [s, c]])
+
+    # Rotate
+    rotated = translated @ R.T
+
+    # Translate back
+    return rotated + origin
+
+def translate_polygon(vertices, offset):
+    return vertices + offset  # offset is (dx, dy)
+
 """This example spawns (bouncing) balls randomly on a L-shape constructed of 
 two segment shapes. Not interactive.
 """
@@ -253,7 +261,7 @@ class BouncyBalls(object):
 
         # pygame
         pygame.init()
-        self._screen = pygame.display.set_mode((608, 608))
+        self._screen = pygame.display.set_mode((608 * 2, 608 * 2))
         self._clock = pygame.time.Clock()
 
         self._draw_options = pymunk.pygame_util.DrawOptions(self._screen)
@@ -267,6 +275,9 @@ class BouncyBalls(object):
         # Execution control and time until the next ball spawns
         self._running = True
         self._ticks_to_next_ball = 30
+        self._collision_points = []
+        handler = self._space.add_default_collision_handler()
+        handler.post_solve = self._collect_collision_points
 
     def run(self) -> None:
         """
@@ -289,6 +300,8 @@ class BouncyBalls(object):
             # Delay fixed time between frames
             self._clock.tick(50)
             pygame.display.set_caption("fps: " + str(self._clock.get_fps()))
+            # self._decay_collision_points()
+            self._collision_points.clear()
 
         print(f'{len(frames)} frames saved.')
         writer = imageio.get_writer('output.mp4', fps=60)
@@ -304,13 +317,13 @@ class BouncyBalls(object):
         """
         static_body = self._space.static_body
         static_lines = [
-            pymunk.Segment(static_body, (50, 500), (550, 500), 1.0),
-            pymunk.Segment(static_body, (50, 500), (50, 400), 1.0),
-            pymunk.Segment(static_body, (550, 500), (550, 400), 1.0),
+            pymunk.Segment(static_body, (100, 1000), (1100, 1000), 1.0),
+            pymunk.Segment(static_body, (100, 1000), (100, 400), 1.0),
+            pymunk.Segment(static_body, (1100, 1000), (1100, 400), 1.0),
         ]
         for line in static_lines:
             line.elasticity = 0.9
-            line.friction = 0.8
+            line.friction = 0.5
         self._space.add(*static_lines)
 
     def _process_events(self) -> None:
@@ -336,7 +349,7 @@ class BouncyBalls(object):
             self._create_letter()
             self._ticks_to_next_ball = 100
         # Remove balls that fall below 100 vertically
-        balls_to_remove = [ball for ball in self._letters if any([component.body.position.y > 600 for component in ball])]
+        balls_to_remove = [ball for ball in self._letters if any([component.body.position.y > 1200 for component in ball])]
         for ball in balls_to_remove:
             # for component in ball:
             self._space.remove(*ball, ball[0].body)
@@ -350,14 +363,21 @@ class BouncyBalls(object):
         mass = 300
 
         # Convert to pymunk-friendly format
-        complex_polygon, color = random.choice([(I_COMP, LETTER_COLORS['I']), (C_COMP, LETTER_COLORS['C']), (C_COMP, LETTER_COLORS['C']), (V_COMP, LETTER_COLORS['V'])])
-        scaled_polygons = [scale_polygon(polygon.exterior.coords, 60) for polygon in complex_polygon]
-
+        complex_polygon, color, render_shape = random.choice([(I_COMP, LETTER_COLORS['I'], i_shape), (C_COMP, LETTER_COLORS['C'], c_shape), (C_COMP, LETTER_COLORS['C'], c_shape), (V_COMP, LETTER_COLORS['V'], v_shape)])
+        scaled_polygons = [scale_polygon(polygon.exterior.coords, 120) for polygon in complex_polygon]
+        # scaled_render_shape = np.array(scale_polygon(render_shape, 120))
         # Create body with appropriate moment of inertia
         inertia = sum(pymunk.moment_for_poly(mass / len(scaled_polygons), vertices) for vertices in scaled_polygons)
         body = pymunk.Body(mass, inertia)
-        x = random.randint(100, 500)
-        body.position = x, 50
+        x = random.randint(200, 1000)
+        body.position = x, 100
+        body.render_shape = pil_to_pygame(render_shape)
+        # mode = render_shape.mode
+        # size = render_shape.size
+        # data = render_shape.tobytes()
+        # body.render_shape = pygame.image.fromstring(data, size, mode).convert_alpha()
+        # body.render_shape = render_shape
+        body.color = color
 
         # Create and add each convex polygon shape to the body
         shapes = []
@@ -378,6 +398,11 @@ class BouncyBalls(object):
         """
         self._screen.fill(pygame.Color("white"))
 
+    def _collect_collision_points(self, arbiter, space, data):
+        for contact in arbiter.contact_point_set.points:
+            point = contact.point_b
+            self._collision_points.append((int(point.x), int(point.y)))
+
     def _draw_objects(self) -> None:
         """
         Draw the objects.
@@ -385,90 +410,144 @@ class BouncyBalls(object):
         """
         # self._space.debug_draw(self._draw_options)
         self._screen.fill((255, 255, 255))
+        for body in self._space.bodies:
+            pos = np.array(body.position)
+            # pos[1] = 12 00 - pos[1]
+            ang = body.angle
+            render_shape = body.render_shape
+            # render_shape = rotate_polygon(render_shape, ang)
+            # render_shape = translate_polygon(render_shape, pos)
+            # pygame.gfxdraw.aapolygon(self._screen, render_shape, body.color)  # Blue
+            # pygame.gfxdraw.filled_polygon(self._screen, render_shape, body.color)
 
-        for shape in self._space.shapes:
-            if isinstance(shape, pymunk.Poly):  # For polygons
-                # Get the points of the polygon shape
-                points = [(p.rotated(shape.body.angle)[0] + shape.body.position[0], p.rotated(shape.body.angle)[1] + shape.body.position[1]) for p in shape.get_vertices()]
-                # Draw the polygon with anti-aliasing (using aapolygon for smoothness)
-                pygame.gfxdraw.aapolygon(self._screen, points, shape.color)  # Blue
-                pygame.gfxdraw.filled_polygon(self._screen, points, shape.color)  # Fill with blue
+            render_shape = pygame.transform.smoothscale(render_shape, (120, 120))
+            angle_degrees = math.degrees(ang) # 180
+            render_shape = pygame.transform.rotate(render_shape, angle_degrees)
+            rect = render_shape.get_rect(center=pos)
+            self._screen.blit(render_shape, rect.topleft)
 
-            elif isinstance(shape, pymunk.Circle):  # For circles
-                # Get the center and radius of the circle
-                center = (int(shape.body.position.x), int(shape.body.position.y))
-                radius = int(shape.radius)
+            # p = logo_shape.body.position
+            # p = Vec2d(p.x, flipy(p.y))
+            #
+            # # we need to rotate 180 degrees because of the y coordinate flip
+            # angle_degrees = math.degrees(logo_shape.body.angle) + 180
+            # rotated_logo_img = pygame.transform.rotate(logo_img, angle_degrees)
+            #
+            # offset = Vec2d(*rotated_logo_img.get_size()) / 2
+            # p = p - offset
+            #
+            # screen.blit(rotated_logo_img, (round(p.x), round(p.y)))
 
-                # Draw the circle using pygame.draw
-                pygame.draw.circle(self._screen, shape.color, center, radius)  # Red circle
+        for shape in self._space.static_body.shapes:
+            start = (int(shape.a.x), int(shape.a.y))
+            end = (int(shape.b.x), int(shape.b.y))
 
-            elif isinstance(shape, pymunk.Segment):  # For line segments
-                # Get the start and end points of the segment
-                start = (int(shape.a.x), int(shape.a.y))
-                end = (int(shape.b.x), int(shape.b.y))
+            # Draw the segment (line) using pygame.draw
+            pygame.draw.line(self._screen, (0, 0, 0), start, end, int(2*shape.radius))  # Green line
 
-                # Draw the segment (line) using pygame.draw
-                pygame.draw.line(self._screen, (0, 0, 0), start, end, int(2*shape.radius))  # Green line
+        for point in self._collision_points:
+            pygame.draw.circle(self._screen, (255, 0, 0), point, 6)  # Slightly larger
 
+    def _decay_collision_points(self):
+        if len(self._collision_points) > 300:
+            self._collision_points = self._collision_points[-300:]
+
+
+def marching_squares(net, resolution=2**6+1):
+    x = np.linspace(-0.53, 0.53, resolution)
+    y = np.linspace(-0.53, 0.53, resolution)
+    xx, yy = np.meshgrid(x, y)
+    sdf_values = np.zeros_like(xx)
+
+    # Evaluate the SDF function at each grid point
+    for i in range(resolution):
+        for j in range(resolution):
+            sdf_values[i, j] = net(torch.tensor((xx[i, j], yy[i, j])).unsqueeze(0).float().cuda()).detach().cpu().numpy().flatten()
+
+    contour = plt.contour(
+            xx, yy, sdf_values, levels=[0.], colors='blue', linewidths=2, label="SDF Contour"
+        )
+
+    verts = contour.collections[0].get_paths()[0].vertices
+
+    return verts
+
+from PIL import Image
+
+def generate_sdf_boundary_image(sdf, bounds=((-0.55, 0.55), (-0.55, 0.55)), resolution=(512, 512), threshold=1e-3):
+    """
+    Renders an RGBA image from a 2D neural SDF by marking near-boundary points in black
+    and setting the background to transparent.
+
+    Args:
+        sdf: Callable sdf(x, y) → scalar (can be vectorized with NumPy or batched torch)
+        bounds: ((xmin, xmax), (ymin, ymax)) → domain to sample
+        resolution: (width, height) of the output image
+        threshold: Distance threshold for considering a point "on the surface"
+
+    Returns:
+        PIL Image in RGBA mode
+    """
+    width, height = resolution
+    (xmin, xmax), (ymin, ymax) = bounds
+
+    # Generate a grid of (x, y) coordinates
+    xs = np.linspace(xmin, xmax, width)
+    ys = np.linspace(ymax, ymin, height)  # flip y so image is upright
+    x_grid, y_grid = np.meshgrid(xs, ys)
+    x_grid = x_grid.astype(np.float32)
+    y_grid = y_grid.astype(np.float32)
+    grid = torch.from_numpy(np.stack([x_grid, y_grid], axis=-1)).view(-1, 2).to('cuda')
+    # Evaluate SDF on the grid
+    sdf_vals = sdf(grid).detach().cpu().numpy().reshape(height, width)
+
+    # Create RGBA image array
+    img = np.zeros((height, width, 4), dtype=np.uint8)
+
+    # Mark points near the surface as black with full alpha
+    # mask = np.abs(sdf_vals) < threshold
+    mask = sdf_vals < threshold
+    img[mask] = [0, 0, 0, 255]  # black and opaque
+
+    # Everything else stays transparent (0 alpha)
+    return Image.fromarray(img, mode='RGBA')
+
+def pil_to_pygame(pil_image):
+    """
+    Converts a Pillow image to a Pygame Surface.
+    """
+    mode = pil_image.mode
+    size = pil_image.size
+    data = pil_image.tobytes()
+    return pygame.image.fromstring(data, size, mode).convert_alpha()
 
 def main():
-    c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/C_MLP.pth', 'mlp')
+    c_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/sample_inputs/dog_2d.pth', 'mlp')
     c_net = c_net.to(device=set_t['device'])
-    c_components = carve(c_net, deep=True)
+    c_components = carve(c_net, deep=True, smoothify=False)
     global C_COMP
     C_COMP = [shapely.geometry.Polygon(vertices) for vertices in c_components]
 
-    v_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/V_MLP.pth', 'mlp')
+    v_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/sample_inputs/dolphin_2d.pth', 'mlp')
     v_net = v_net.to(device=set_t['device'])
-    v_components = carve(v_net, deep=True)
+    v_components = carve(v_net, deep=True, smoothify=False)
     global V_COMP
     V_COMP = [shapely.geometry.Polygon(vertices) for vertices in v_components]
 
-    i_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/models/I_MLP.pth', 'mlp')
+    i_net = load_net_object('/home/ruize/PycharmProjects/ray-casting/sample_inputs/bunny_2d.pth', 'mlp')
     i_net = i_net.to(device=set_t['device'])
-    i_components = carve(i_net, deep=True)
+    i_components = carve(i_net, deep=True, smoothify=False)
     global I_COMP
     I_COMP = [shapely.geometry.Polygon(vertices) for vertices in i_components]
 
-    # parser = argparse.ArgumentParser()
-    #
-    # parser.add_argument("input_file", type=str,
-    #                     help="The path to the .pth model from the root directory.")
-    # parser.add_argument("--model_type", type=str, required=True,
-    #                     help="Must specify if the model is one of the following: [mlp, siren].")
-    # parser.add_argument("--x_L", type=float, nargs='+', default=[-1., -1.],
-    #                     help="Bottom left point of the input bounding box.")
-    # parser.add_argument("--x_U", type=float, nargs='+', default=[1., 1.],
-    #                     help="Upper right point of the input bounding box.")
-    # parser.add_argument("--crown_mode", type=str, default='CROWN',
-    #                     help="Bounding method to use on the neural SDF.")
-    # parser.add_argument("--deep", default=False, action='store_true')
-    # # Parse arguments
-    # args = parser.parse_args()
-    # net = load_net_object(args.input_file, args.model_type)
-    # net = net.to(device=set_t['device'])
-    # concex_polygons = carve(net, deep=args.deep)
-
-    # poly_body = pymunk.Body(body_type=pymunk.Body.STATIC)
-    # poly_body.position = 600, 400
-    # # poly = pymunk.Poly.create_box(poly_body, (200, 100), 10)
-    # # poly.sensor = True
-    # convex_polygons = [
-    #     list(polygon.exterior.coords) for polygon in concex_polygons
-    # ]
-    #
-    # scaled_polygons = [scale_polygon(convex_polygon, 100) for convex_polygon in convex_polygons]
-    #
-    # # Create and add each convex polygon to the space
-    # shapes = []
-    # for vertices in scaled_polygons:
-    #     poly = pymunk.Poly(poly_body, vertices)
-    #     poly.sensor = True  # Keeps it as a sensor if needed
-    #     shapes.append(poly)
-    #
-    # # Add the body and all shapes at the same time
-    # space.add(poly_body, *shapes)
-
+    global c_shape, v_shape, i_shape
+    # c_shape = marching_squares(c_net, resolution=2**6+1)
+    # v_shape = marching_squares(v_net, resolution=2**6+1)
+    # i_shape = marching_squares(i_net, resolution=2**6+1)
+    c_shape = generate_sdf_boundary_image(c_net)
+    v_shape = generate_sdf_boundary_image(v_net)
+    i_shape = generate_sdf_boundary_image(i_net)
+    # return
     game = BouncyBalls()
     game.run()
 

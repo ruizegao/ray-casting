@@ -1,4 +1,4 @@
-import jax
+# import jax
 from functools import partial
 import math
 from functorch import vmap

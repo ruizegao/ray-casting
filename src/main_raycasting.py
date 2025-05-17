@@ -59,6 +59,10 @@ def save_render_current_view(args: dict, implicit_func, params, cast_frustum, op
     left = torch.tensor([1., 0., 0.])
     look = torch.tensor([0., 1., 0.])
     up = torch.tensor([0., 0., 1.])
+    root = torch.tensor([0., 0., 3.5])
+    up = torch.tensor([0., 1., 0.])
+    look = torch.tensor([0., 0., -1.])
+    left = torch.tensor([1., 0., 0.])
     fov_deg = 30
     res = args['res'] // opts['res_scale']
 

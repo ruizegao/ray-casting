@@ -7,10 +7,9 @@ import implicit_function
 from implicit_function import SIGN_UNKNOWN, SIGN_POSITIVE, SIGN_NEGATIVE
 from auto_LiRPA import BoundedModule, BoundedTensor
 from auto_LiRPA.perturbations import PerturbationLpNorm
-
+import matplotlib.pyplot as plt
 device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-torch.set_default_tensor_type(torch.cuda.FloatTensor)
-
+# torch.set_default_tensor_type(torch.cuda.FloatTensor)
 
 batch_size_per_iteration = 100
 
@@ -201,9 +200,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         self.torch_model = crown_func.to(device)
 
         self.torch_model.eval()
-        scripted_model = torch.jit.script(crown_func)
-        self.scripted_model = scripted_model.to(device)
-
         self.crown_mode = crown_mode
         self.input_dim = input_dim
         self.obj_name = obj_name
@@ -221,7 +217,6 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         return self.implicit_func(params, x)
 
     def _init_bounded_func(self, bound_opts: Optional[dict] = None):
-
         if self.crown_mode.lower() == 'alpha-crown':
             # default_bound_opts = {
             #     'optimize_bound_args':
@@ -251,6 +246,35 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
         else:
             self.reuse_alpha = False
             self.bounded_func = BoundedModule(self.torch_model, torch.empty((batch_size_per_iteration, self.input_dim)))#, bound_opts={'relu': 'same-slope'})
+
+            # x_L = torch.tensor([[-1.7500, -1.0000],
+            #                     [-1.0000, -1.7500],
+            #                     [-1.7500, -0.2500],
+            #                     [-0.2500, -1.7500],
+            #                     [-1.7500, -1.7500],
+            #                     [0.1250, -1.7500],
+            #                     [-1.3750, -1.7500]])#.to(device)
+            # x_U = torch.tensor([[-1.0000, -0.2500],
+            #                     [-0.2500, -1.0000],
+            #                     [-1.3750, 0.5000],
+            #                     [0.1250, -1.0000],
+            #                     [-1.3750, -1.0000],
+            #                     [0.5000, -1.0000],
+            #                     [-1., -1.]])#.to(device)
+            # x = (x_L + x_U) / 2.
+            #
+            # ptb = PerturbationLpNorm(x_L=x_L, x_U=x_U)
+            # bounded_x = BoundedTensor(x, ptb)
+            #
+            # ret_x_L = self.bounded_func(x_L)
+            # ret_x_U = self.bounded_func(x_U)
+            #
+            # lb, ub = self.bounded_func.compute_bounds(x=(bounded_x,), method='backward')
+            #
+            # print(lb)
+            # print(ub)
+            # print(ret_x_L)
+            # print(ret_x_U)
 
     def torch_forward(self, x):
         return self.torch_model(x)
@@ -285,15 +309,8 @@ class CrownImplicitFunction(implicit_function.ImplicitFunction):
 
     def classify_box(self, params, box_lower, box_upper, offset=0., use_custom_loss=False, swap_loss=False, return_A=True,
                      plane_constraints_lower: Optional[Tensor]=None, plane_constraints_upper: Optional[Tensor]=None):
-
-        # may_lower, may_upper = self.bounded_func.compute_bounds(x=(bounded_x,), method=self.crown_mode, bound_upper=True)
-        # bound_dict = self.bounded_func.save_intermediate()
-        # unstable_counts = []
-        # for k, v in bound_dict.items():
-        #     if 'input' in k:
-        #         unstable_counts.append(torch.logical_and(v[0] < 0, v[1] > 0).sum().item())
         ptb = PerturbationLpNorm(x_L=box_lower.float(), x_U=box_upper.float())
-        bounded_x = BoundedTensor(box_lower.float(), ptb)
+        bounded_x = BoundedTensor(box_lower, ptb)
         # prepare A_dict to retrieve final lA
         if return_A:
             needed_A_dict = defaultdict(set)
